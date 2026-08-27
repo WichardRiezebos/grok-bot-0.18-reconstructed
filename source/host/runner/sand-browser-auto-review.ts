@@ -1,4 +1,5 @@
-import { Struct } from "@bufbuild/protobuf";
+import { Struct, type JsonValue } from "@bufbuild/protobuf";
+import { sanitizeToolInputForStruct } from "../../shared/struct-json.js";
 import type { Context } from "../../packages/context/core.js";
 import type { RemoteExecManager } from "../../packages/agent-exec/remote.js";
 import type { ResourceAccessor } from "../../packages/agent-exec/resource-provider.js";
@@ -57,7 +58,7 @@ export function buildSandBrowserClassifierRiskTarget(args: { canonicalTarget: Re
   }));
   return new SmartModeRiskTarget({
     action: SAND_COMPUTER_CLASSIFIER_TARGET_ACTION,
-    arguments: Struct.fromJson(argumentsJson),
+    arguments: Struct.fromJson(sanitizeToolInputForStruct(argumentsJson) as JsonValue),
   });
 }
 
@@ -108,7 +109,8 @@ export async function runSandBrowserAutoReviewPreflight(args: {
   });
   if (options.mode === "shadow") {
     void runClassifier().catch((error: unknown) => {
-      if (!(error instanceof Error && error.name === "AbortError")) throw error;
+      if (error instanceof Error && error.name === "AbortError") return;
+      console.error("[sand-browser-auto-review] shadow classifier failed", error);
     });
     return;
   }

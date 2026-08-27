@@ -112,8 +112,18 @@ The container:
 - is validated before the coordinator connects; and
 - is stopped or replaced through the same settings lifecycle.
 
-Docker Desktop, or another compatible local Docker daemon, must be running.
-Remote mode remains the default.
+A Docker-compatible engine (OrbStack, Docker Desktop, Colima, or Rancher Desktop)
+must be running. Remote mode remains the default.
+
+### Web app on Docker (Dokploy)
+
+The same reconstruction can also run as a **browser web app** on a Compose
+stack (`control` + `box`). You open a URL. Bots keep running after you close
+the tab. OpenRouter is the only provider in that stack.
+
+See [docs/REMOTE-RUNTIME.md](docs/REMOTE-RUNTIME.md) for Dokploy steps, the
+local Compose overlay on `http://127.0.0.1:8080`, and the `/health` plus
+`/debug` verification surface.
 
 ## Requirements
 
@@ -121,7 +131,7 @@ Remote mode remains the default.
 - Node.js 26.5.x
 - Xcode Command Line Tools
 - Git LFS
-- Docker Desktop (optional, only for the local sandbox)
+- a Docker-compatible engine (OrbStack, Docker Desktop, Colima, …; optional, only for the local sandbox)
 - local Claude Code or Codex authentication for those router choices
 
 ## Quick start
@@ -183,6 +193,8 @@ The main source areas are:
 
 - `source/electron-main/` — desktop lifecycle, settings, auth, box connectors,
   coordinator ownership, and RPC handlers;
+- `source/server-main/` — Docker web control plane (HTTP, WebSocket shim, debug
+  surface) used by `deploy/`;
 - `source/electron-preload/` — the narrow trusted bridge exposed to the UI;
 - `source/host/` — inference, tools, MCP, settings, and turn execution;
 - `source/node-agent-coordinator/` — transcript routing, streaming activity,
@@ -206,7 +218,7 @@ npm run frontend:build    # build the readable renderer reconstruction
 npm run package           # build, sign, and verify the macOS app
 npm run verify            # verify an existing packaged app
 npm run smoke             # bounded native smoke check
-npm run publication:check # prove a fresh-history export is lossless
+npm run web:build         # compile the Docker web-runtime artifacts
 ```
 
 Generated directories including `.cache`, `.build`, `dist`, `src/app/dist`,

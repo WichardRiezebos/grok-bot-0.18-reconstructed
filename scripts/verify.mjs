@@ -178,11 +178,26 @@ if (rendererComposition?.mode === "clean-source") {
   if (acceptance?.verdict !== "verified" || acceptance.provenance !== rendererProvenancePath || acceptance.fileCount !== rendererProvenance.fileCount || acceptance.inventorySha256 !== rendererProvenance.inventorySha256) throw new Error("Packaged artifact renderer acceptance does not match its provenance.");
   if (!Array.isArray(rendererProvenance.files) || rendererProvenance.files.length !== rendererProvenance.fileCount) throw new Error("Packaged artifact renderer provenance has an invalid file inventory.");
   const declaredPaths = new Set();
+  const extensionByPath = new Map();
+  if (listing.has("/dist/renderer-router-extension.json")) {
+    const extension = JSON.parse(extractFile(builtAsar, "dist/renderer-router-extension.json").toString("utf8"));
+    if (extension?.schemaVersion !== 1 || extension?.mode !== "original-renderer-settings-extension" || !Array.isArray(extension.chunks)) {
+      throw new Error("Packaged renderer extension provenance contract is invalid.");
+    }
+    for (const row of extension.chunks) {
+      const relative = typeof row?.path === "string" && row.path.startsWith("dist/renderer/") ? row.path.slice("dist/renderer/".length) : null;
+      if (relative == null || !Number.isInteger(row.patched?.bytes) || !/^[0-9a-f]{64}$/.test(row.patched?.sha256)) {
+        throw new Error("Packaged renderer extension chunk provenance is invalid.");
+      }
+      extensionByPath.set(relative, row.patched);
+    }
+  }
   for (const file of rendererProvenance.files) {
     if (typeof file.path !== "string" || declaredPaths.has(file.path)) throw new Error("Packaged artifact renderer provenance contains a missing or duplicate path.");
     declaredPaths.add(file.path);
     const bytes = extractFile(builtAsar, `dist/renderer/${file.path}`);
-    if (bytes.byteLength !== file.bytes || sha256(bytes) !== file.sha256) throw new Error(`Packaged artifact renderer differs from its checksum inventory: ${file.path}`);
+    const wanted = extensionByPath.get(file.path) ?? file;
+    if (bytes.byteLength !== wanted.bytes || sha256(bytes) !== wanted.sha256) throw new Error(`Packaged artifact renderer differs from its checksum inventory: ${file.path}`);
   }
   const packagedPaths = rendererListing.filter(entry => entry.startsWith("dist/renderer/")).map(entry => entry.slice("dist/renderer/".length)).filter(Boolean);
   const undeclaredFiles = packagedPaths.filter(candidate => !declaredPaths.has(candidate) && ![...declaredPaths].some(file => file.startsWith(`${candidate}/`)));

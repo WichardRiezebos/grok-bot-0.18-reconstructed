@@ -541,7 +541,17 @@ export interface ComputerProjection {
 
 export function projectComputerStatus(value: unknown, isStarting = false): ComputerProjection {
   if (!isRecord(value)) return { phase: isStarting ? "starting" : "off", vncUrl: null, pullPercent: null, handoff: null };
-  const vncUrl = typeof value.vncUrl === "string" && value.vncUrl.length > 0 ? value.vncUrl : null;
+  const windows = Array.isArray(value.windows) ? value.windows : [];
+  let vncUrl = typeof value.vncUrl === "string" && value.vncUrl.length > 0 ? value.vncUrl : null;
+  let bestIndex = -1;
+  for (const window of windows) {
+    if (!isRecord(window) || typeof window.vncUrl !== "string" || window.vncUrl.length === 0) continue;
+    const index = typeof window.windowIndex === "number" ? window.windowIndex : 0;
+    if (index >= bestIndex) {
+      bestIndex = index;
+      vncUrl = window.vncUrl;
+    }
+  }
   const pull = isRecord(value.pull) ? value.pull : null;
   const phase = pull != null
     ? "pulling"

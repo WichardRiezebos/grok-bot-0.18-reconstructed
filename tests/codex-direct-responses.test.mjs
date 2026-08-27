@@ -1,16 +1,23 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { transform } from "esbuild";
+import { build } from "esbuild";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 async function loadModule() {
-  const source = await readFile(path.join(repoRoot, "source/host/extensions/inference/codex-direct-responses.ts"), "utf8");
-  const { code } = await transform(source, { format: "esm", loader: "ts", target: "es2022" });
+  const result = await build({
+    absWorkingDir: repoRoot,
+    bundle: true,
+    entryPoints: [path.join(repoRoot, "source/host/extensions/inference/codex-direct-responses.ts")],
+    format: "esm",
+    platform: "node",
+    write: false,
+  });
+  const code = result.outputFiles[0]?.text;
+  assert.ok(code);
   return import(`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`);
 }
 

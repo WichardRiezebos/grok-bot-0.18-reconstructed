@@ -9,11 +9,19 @@ import { jsonSchema, streamText, tool, type CoreMessage, type LanguageModelV1, t
 import { BasePromptBuilder, BasePromptExecutor } from "../../../packages/chat-inference/base.js";
 import type { SandInferenceProvider } from "../../../shared/inference-router.js";
 import { resolveClaudeCodeCliPath } from "../../../shared/node/inference-router-local.js";
-import { getSandRootDir } from "../../host-paths.js";
+import { getSandRootDir, SAND_BOX_DATA_ROOT } from "../../host-paths.js";
 import { SandSettingsStore } from "../../../shared/node/settings/sand-settings-store.js";
-import { getBoxSecretsStorePath } from "../secrets/secrets-service.js";
+import { DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, DEFAULT_OPENROUTER_REASONING_EFFORT, injectOpenRouterReasoningIntoBody, resolveOpenRouterComputerModel, resolveOpenRouterModel, resolveOpenRouterReasoningEffort, type OpenRouterReasoningEffort } from "../../../shared/openrouter-models.js";
+import { boundOpenRouterRequestBody } from "../../../shared/openrouter-prompt-budget.js";
+import {
+  ROUTED_PLUGIN_MAX_STEPS,
+  openRouterToolResultContent,
+  routedToolsIncludeComputer,
+} from "../../../shared/routed-computer-tools.js";
+import { BOX_SECRETS_FILENAME, getBoxSecretsStorePath } from "../secrets/secrets-service.js";
 import { streamCodexDirectResponses, type CodexDirectTool } from "./codex-direct-responses.js";
 import type { LabelMessage, PromptExecutor } from "./sand-labeling.js";
+import { awaitAbortRace, routedStreamEventToolName, routedStreamProgressLine } from "../../../shared/routed-inference-log.js";
 
 type Loose = Record<string, any>;
 interface ProviderMessage extends LabelMessage { role: string; content: string | readonly unknown[] }
@@ -21,10 +29,18 @@ type RoutedProvider = Exclude<SandInferenceProvider, "cursor">;
 type UsageRecord = { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number };
 type RoutedToolExecutor = (tool: Loose, args: unknown, toolCallId: string) => Promise<unknown>;
 
-const GROK_ROUTER_SYSTEM_PROMPT = [
+export const GROK_ROUTER_SYSTEM_PROMPT = [
   "You are Grok Bot, a warm, concise desktop assistant.",
   "You are running inside Grok Bot, not inside Codex CLI or Claude Code.",
-  "The tools supplied with this request are Grok Bot's already-connected plugins and accounts. Use them whenever they are relevant instead of claiming that a plugin is unavailable or asking the user to reconnect it.",
+  "The tools supplied with this request include Grok Bot's already-connected plugins and accounts, plus Computer for this agent's own box desktop (the live screen in the UI). Use plugins whenever they are relevant instead of claiming that a plugin is unavailable or asking the user to reconnect it.",
+  "You do have a screen you can drive: it is this agent's box desktop. Chrome starts with no visible window. Call box_chrome with the destination URL first, then use Computer to screenshot, click, type, and scroll. Never claim a page is loaded, searched, or clicked unless the latest Computer screenshot shows that window.",
+  "Report only what the latest Computer screenshot actually shows. If the expected page or window is not visible, say so plainly and fix it (box_chrome again, wait, re-screenshot) instead of describing what should be there.",
+  "The user watches your screen live next to this chat. You cannot attach or show screenshots in chat, so never say you are showing one; when asked to show something, put it on the screen and point them to your screen.",
+  "Do not screenshot in a loop. After at most two screenshots, click, type, or navigate, or stop and tell the user what you see.",
+  "Cookie banners, GDPR consent, and Accept/Accepteren/Akkoord buttons are yours: click them with Computer. Never request_box_help for a cookie banner, and never ask the user to click one.",
+  "Do not announce screenshots, clicks, or waits. Speak only when you are blocked or done.",
+  "Do not close the box browser or its windows. If a page looks blank, screenshot again after a short wait instead of quitting Chrome.",
+  "When a step needs the user (a login, 2FA, captcha, or payment), hand them the box with request_box_help immediately. Do not keep driving Computer toward checkout. You never see their password or 2FA.",
   "Never ask for an API key for an already-connected plugin. Respond directly to the user in natural language after completing any necessary tool calls.",
 ].join("\n");
 
@@ -32,14 +48,30 @@ function recordRoutedUsage(provider: RoutedProvider, usage: UsageRecord): void {
   new SandSettingsStore(join(getSandRootDir(), "settings.json")).recordInferenceUsage(provider, usage);
 }
 
+function secretsFromFile(path: string): Record<string, string> {
+  const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+  if (typeof parsed !== "object" || parsed == null || Array.isArray(parsed)) return {};
+  const secrets = (parsed as { secrets?: unknown }).secrets;
+  if (typeof secrets !== "object" || secrets == null || Array.isArray(secrets)) return {};
+  return Object.fromEntries(Object.entries(secrets).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
 function persistedSecrets(): Record<string, string> {
-  try {
-    const parsed = JSON.parse(readFileSync(getBoxSecretsStorePath(), "utf8")) as unknown;
-    if (typeof parsed !== "object" || parsed == null || Array.isArray(parsed)) return {};
-    const secrets = (parsed as { secrets?: unknown }).secrets;
-    if (typeof secrets !== "object" || secrets == null || Array.isArray(secrets)) return {};
-    return Object.fromEntries(Object.entries(secrets).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
-  } catch { return {}; }
+  const candidates = [
+    getBoxSecretsStorePath(),
+    join(getSandRootDir(), "local-docker-credential", BOX_SECRETS_FILENAME),
+    join(SAND_BOX_DATA_ROOT, BOX_SECRETS_FILENAME),
+    join(homedir(), ".grokbot", BOX_SECRETS_FILENAME),
+    join(homedir(), ".grokbot", "local-docker-credential", BOX_SECRETS_FILENAME),
+    join(homedir(), ".cursor", "sand-dev", BOX_SECRETS_FILENAME),
+  ];
+  for (const path of candidates) {
+    try {
+      const secrets = secretsFromFile(path);
+      if (Object.keys(secrets).length > 0) return secrets;
+    } catch {}
+  }
+  return {};
 }
 
 function openRouterCredential(): string {
@@ -56,7 +88,67 @@ function providerPrompt(messages: readonly ProviderMessage[]): string {
   return `${GROK_ROUTER_SYSTEM_PROMPT}\n\nContinue this Grok Bot conversation.\n\n${rendered}`;
 }
 
-function deferred<T>() { return Promise.withResolvers<T>(); }
+function configuredOpenRouterModel(): string {
+  try { return resolveOpenRouterModel(new SandSettingsStore(join(getSandRootDir(), "settings.json")).getOpenRouterModel()); }
+  catch { return resolveOpenRouterModel(undefined); }
+}
+
+function configuredOpenRouterComputerModel(): string {
+  try {
+    const store = new SandSettingsStore(join(getSandRootDir(), "settings.json"));
+    return resolveOpenRouterComputerModel(store.getOpenRouterComputerModel(), store.getOpenRouterModel());
+  } catch { return configuredOpenRouterModel(); }
+}
+
+function configuredOpenRouterReasoningEffort(computer: boolean): OpenRouterReasoningEffort {
+  const fallback = computer ? DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT : DEFAULT_OPENROUTER_REASONING_EFFORT;
+  const env = computer ? process.env.SAND_OPENROUTER_COMPUTER_REASONING_EFFORT : process.env.SAND_OPENROUTER_REASONING_EFFORT;
+  try {
+    const store = new SandSettingsStore(join(getSandRootDir(), "settings.json"));
+    const stored = computer ? store.getOpenRouterComputerReasoningEffort() : store.getOpenRouterReasoningEffort();
+    return resolveOpenRouterReasoningEffort(stored, fallback, env);
+  } catch { return resolveOpenRouterReasoningEffort(undefined, fallback, env); }
+}
+
+function openRouterFetch(effort: OpenRouterReasoningEffort): typeof fetch {
+  return async (input, init) => {
+    const nextInit = init == null ? init : (() => {
+      const body = injectOpenRouterReasoningIntoBody(boundOpenRouterRequestBody(init.body), effort);
+      return body === init.body ? init : { ...init, body: body as BodyInit };
+    })();
+    const response = await fetch(input, nextInit);
+    if (response.ok) return response;
+    const text = await response.text();
+    let message = `OpenRouter HTTP ${response.status}`;
+    try {
+      const parsed: unknown = JSON.parse(text);
+      const record = typeof parsed === "object" && parsed != null && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+      const nested = record?.error;
+      if (typeof nested === "string" && nested.trim().length > 0) message = nested.trim();
+      else if (typeof nested === "object" && nested != null) {
+        const error = nested as Record<string, unknown>;
+        if (typeof error.message === "string" && error.message.trim().length > 0) message = error.message.trim();
+        const metadata = error.metadata;
+        if (typeof metadata === "object" && metadata != null) {
+          const raw = (metadata as Record<string, unknown>).raw;
+          if (typeof raw === "string" && raw.trim().length > 0) message = `${message}: ${raw.trim()}`;
+        }
+      }
+    } catch {
+      if (text.trim().length > 0) message = `${message}: ${text.trim()}`;
+    }
+    return new Response(JSON.stringify({ error: { message: message.slice(0, 400), type: "openrouter_error" } }), {
+      status: response.status,
+      headers: { "content-type": "application/json" },
+    });
+  };
+}
+
+function deferred<T>() {
+  const resolvers = Promise.withResolvers<T>();
+  void resolvers.promise.catch(() => {});
+  return resolvers;
+}
 
 function response(text: string, id: string, modelId: string) {
   return { id, modelId, timestamp: new Date(), headers: {}, messages: [{ role: "assistant", content: [{ type: "text", text }] }] };
@@ -114,6 +206,12 @@ async function refreshCodexCredentials(current: CodexCredentials): Promise<Codex
   return codexCredentials();
 }
 
+let inflightCodexRefresh: Promise<CodexCredentials> | undefined;
+function refreshCodexCredentialsSingleFlight(current: CodexCredentials): Promise<CodexCredentials> {
+  inflightCodexRefresh ??= refreshCodexCredentials(current).finally(() => { inflightCodexRefresh = undefined; });
+  return inflightCodexRefresh;
+}
+
 function codexAuthenticatedFetch(initial: CodexCredentials): typeof fetch {
   let credentials = initial;
   return async (input, init) => {
@@ -125,7 +223,7 @@ function codexAuthenticatedFetch(initial: CodexCredentials): typeof fetch {
     };
     let result = await perform();
     if (result.status !== 401) return result;
-    credentials = await refreshCodexCredentials(credentials);
+    credentials = await refreshCodexCredentialsSingleFlight(credentials);
     result = await perform();
     return result;
   };
@@ -164,7 +262,12 @@ function codexTools(definitions: readonly Loose[] | undefined): CodexDirectTool[
   return tools.length === 0 ? undefined : tools;
 }
 
-function codexExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void) {
+function resolvedMaxSteps(toolsPresent: boolean, requested?: number): number {
+  if (!toolsPresent) return 1;
+  return requested ?? ROUTED_PLUGIN_MAX_STEPS;
+}
+
+function codexExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void, maxSteps?: number) {
   const credentials = codexCredentials();
   const usage = deferred<{ promptTokens: number; completionTokens: number; totalTokens: number }>();
   const extendedUsage = deferred<{ inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; maxTokens: number }>();
@@ -184,7 +287,7 @@ function codexExecutor(messages: readonly ProviderMessage[], invocationId: strin
         input: messages.map(message => ({ role: message.role === "assistant" ? "assistant" : "user", content: typeof message.content === "string" ? message.content : JSON.stringify(message.content) })),
         ...(tools == null ? {} : { tools }),
         ...(executeTool == null ? {} : { executeTool: async (selected, args, toolCallId) => await executeTool(selected.source, args, toolCallId) }),
-        maxSteps: tools == null ? 1 : 8,
+        maxSteps: resolvedMaxSteps(tools != null, maxSteps),
       })) {
         if (event.type === "text-delta") { text += event.delta; yield { type: "text-delta" as const, textDelta: event.delta }; continue; }
         const basic = { promptTokens: event.usage.inputTokens, completionTokens: event.usage.outputTokens, totalTokens: event.usage.inputTokens + event.usage.outputTokens };
@@ -200,7 +303,7 @@ function codexExecutor(messages: readonly ProviderMessage[], invocationId: strin
   return { fullStream, response: resultResponse.promise, usage: usage.promise, extendedUsage: extendedUsage.promise, providerMetadata: metadata.promise, invocationId: Promise.resolve(invocationId) };
 }
 
-function claudeExecutor(messages: readonly ProviderMessage[], invocationId: string, onUsage?: (usage: UsageRecord) => void, mcpServerUrl?: string) {
+function claudeExecutor(messages: readonly ProviderMessage[], invocationId: string, onUsage?: (usage: UsageRecord) => void, mcpServerUrl?: string, maxSteps?: number) {
   const executable = resolveClaudeCodeCliPath();
   if (executable == null) throw new Error("Claude Code is not installed. Install and sign in to Claude Code, then reopen Grok Bot.");
   const usage = deferred<{ promptTokens: number; completionTokens: number; totalTokens: number }>();
@@ -211,7 +314,7 @@ function claudeExecutor(messages: readonly ProviderMessage[], invocationId: stri
     try {
       let final: SDKResultMessage | undefined;
       const selectedModel = process.env.SAND_CLAUDE_MODEL?.trim();
-      for await (const message of queryClaude({ prompt: providerPrompt(messages), options: { pathToClaudeCodeExecutable: executable, cwd: getSandRootDir(), tools: mcpServerUrl == null ? [] : ["mcp__grok_bot_plugins__*"], ...(mcpServerUrl == null ? {} : { mcpServers: { grok_bot_plugins: { type: "http" as const, url: mcpServerUrl } }, strictMcpConfig: true }), permissionMode: "default", maxTurns: mcpServerUrl == null ? 1 : 8, persistSession: false, ...(selectedModel == null || selectedModel.length === 0 ? {} : { model: selectedModel }) } })) if (message.type === "result") final = message;
+      for await (const message of queryClaude({ prompt: providerPrompt(messages), options: { pathToClaudeCodeExecutable: executable, cwd: getSandRootDir(), tools: [], ...(mcpServerUrl == null ? {} : { allowedTools: ["mcp__grok_bot_plugins__*"], mcpServers: { grok_bot_plugins: { type: "http" as const, url: mcpServerUrl } }, strictMcpConfig: true }), permissionMode: "default", maxTurns: resolvedMaxSteps(mcpServerUrl != null, maxSteps), persistSession: false, ...(selectedModel == null || selectedModel.length === 0 ? {} : { model: selectedModel }) } })) if (message.type === "result") final = message;
       if (final == null) throw new Error("Claude Code ended without a result.");
       if (final.subtype !== "success") throw new Error(final.errors.join("\n") || `Claude Code failed (${final.subtype}).`);
       const text = final.result;
@@ -237,6 +340,7 @@ function toToolSet(definitions: readonly Loose[] | undefined, executeTool?: Rout
     const routedTool: any = {
       ...(typeof definition.description === "string" ? { description: definition.description } : {}),
       parameters: jsonSchema(parameters),
+      experimental_toToolResultContent: (result: unknown) => openRouterToolResultContent(result),
     };
     if (executeTool != null) routedTool.execute = async (args: unknown, options: { toolCallId: string }) => await executeTool(definition, args, options.toolCallId);
     tools[definition.name] = tool(routedTool);
@@ -244,13 +348,14 @@ function toToolSet(definitions: readonly Loose[] | undefined, executeTool?: Rout
   return Object.keys(tools).length === 0 ? undefined : tools;
 }
 
-function openRouterExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void) {
-  const id = process.env.SAND_OPENROUTER_MODEL?.trim() || "openai/gpt-5.2";
-  const model: LanguageModelV1 = createOpenAI({ apiKey: openRouterCredential(), baseURL: "https://openrouter.ai/api/v1", compatibility: "compatible", name: "openrouter", headers: { "HTTP-Referer": "https://github.com/grok-bot-reconstructed", "X-Title": "Grok Bot Reconstructed" } }).chat(id as any);
+function openRouterExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void, abortSignal?: AbortSignal, maxSteps?: number) {
+  const computer = routedToolsIncludeComputer(definitions ?? []);
+  const id = computer ? configuredOpenRouterComputerModel() : configuredOpenRouterModel();
+  const model: LanguageModelV1 = createOpenAI({ apiKey: openRouterCredential(), baseURL: "https://openrouter.ai/api/v1", compatibility: "compatible", name: "openrouter", headers: { "HTTP-Referer": "https://github.com/grok-bot-reconstructed", "X-Title": "Grok Bot Reconstructed" }, fetch: openRouterFetch(configuredOpenRouterReasoningEffort(computer)) }).chat(id as any);
   const tools = toToolSet(definitions, executeTool);
-  const result = streamText({ model, system: GROK_ROUTER_SYSTEM_PROMPT, messages: messages as CoreMessage[], ...(tools === undefined ? {} : { tools }), toolCallStreaming: true, maxSteps: tools === undefined ? 1 : 8 });
+  const result = streamText({ model, system: GROK_ROUTER_SYSTEM_PROMPT, messages: messages as CoreMessage[], ...(tools === undefined ? {} : { tools }), toolCallStreaming: true, maxRetries: 0, maxSteps: resolvedMaxSteps(tools !== undefined, maxSteps), ...(abortSignal == null ? {} : { abortSignal }) });
   const extendedUsage = result.usage.then(value => ({ inputTokens: value.promptTokens, outputTokens: value.completionTokens, cacheReadTokens: 0, cacheWriteTokens: 0, maxTokens: 0 }));
-  if (onUsage != null) void extendedUsage.then(onUsage);
+  if (onUsage != null) void extendedUsage.then(onUsage, () => undefined);
   return { fullStream: result.fullStream, response: result.response, usage: result.usage, extendedUsage, providerMetadata: result.providerMetadata, invocationId: Promise.resolve(invocationId) };
 }
 
@@ -264,8 +369,51 @@ class ProviderPromptExecutor extends BasePromptExecutor<ProviderMessage> {
 }
 
 export function createProviderPromptSession(provider: RoutedProvider): { getModelId(): string; getExecutor(state?: unknown): PromptExecutor } {
-  const modelId = provider === "codex" ? configuredCodexModel() : provider === "claude-code" ? "claude-code" : process.env.SAND_OPENROUTER_MODEL?.trim() || "openai/gpt-5.2";
+  const modelId = provider === "codex" ? configuredCodexModel() : provider === "claude-code" ? "claude-code" : configuredOpenRouterModel();
   return { getModelId: () => modelId, getExecutor: state => new ProviderPromptExecutor(provider, Array.isArray(state) ? state as ProviderMessage[] : undefined, usage => recordRoutedUsage(provider, usage)) };
+}
+
+function routedTurnTimeoutError(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error ? signal.reason : new Error("The routed request timed out after 90 seconds.");
+}
+
+async function collectRoutedText(
+  fullStream: AsyncIterable<{ type: string; textDelta?: string; toolName?: unknown; toolCall?: unknown }>,
+  onTextDelta?: (delta: string, accumulated: string) => void,
+  abortSignal?: AbortSignal,
+  onStreamEvent?: (event: { readonly type: string; readonly toolName?: string; readonly elapsedMs: number }) => void,
+  onProgress?: (line: string) => void,
+): Promise<string> {
+  let text = "";
+  const started = Date.now();
+  const iterate = (async () => {
+    for await (const event of fullStream) {
+      if (abortSignal?.aborted) throw routedTurnTimeoutError(abortSignal);
+      const toolName = routedStreamEventToolName(event);
+      onStreamEvent?.({
+        type: event.type,
+        ...(toolName == null ? {} : { toolName }),
+        elapsedMs: Date.now() - started,
+      });
+      if (event.type === "error") {
+        const failure = (event as { error?: unknown }).error;
+        throw failure instanceof Error ? failure : new Error(String(failure ?? "Routed provider stream failed."));
+      }
+      if (event.type === "text-delta" && typeof event.textDelta === "string") {
+        text += event.textDelta;
+        onTextDelta?.(event.textDelta, text);
+        continue;
+      }
+      const progress = routedStreamProgressLine(event);
+      if (progress != null) onProgress?.(progress);
+    }
+  })();
+  if (abortSignal == null) {
+    await iterate;
+    return text;
+  }
+  await awaitAbortRace(iterate, abortSignal, () => routedTurnTimeoutError(abortSignal));
+  return text;
 }
 
 export async function runRoutedProviderText(provider: RoutedProvider, messages: readonly ProviderMessage[], options?: {
@@ -273,21 +421,29 @@ export async function runRoutedProviderText(provider: RoutedProvider, messages: 
   readonly tools?: readonly Loose[];
   readonly executeTool?: RoutedToolExecutor;
   readonly onTextDelta?: (delta: string, accumulated: string) => void;
+  readonly onProgress?: (line: string) => void;
+  readonly onStreamEvent?: (event: { readonly type: string; readonly toolName?: string; readonly elapsedMs: number }) => void;
+  readonly abortSignal?: AbortSignal;
+  readonly maxSteps?: number;
 }): Promise<string> {
   const invocationId = crypto.randomUUID();
   const onUsage = (usage: UsageRecord) => recordRoutedUsage(provider, usage);
+  const abortSignal = options?.abortSignal;
   const result = provider === "codex"
-    ? codexExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage)
+    ? codexExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage, options?.maxSteps)
     : provider === "claude-code"
-      ? claudeExecutor(messages, invocationId, onUsage, options?.mcpServerUrl)
-      : openRouterExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage);
-  let text = "";
-  for await (const event of result.fullStream) {
-    if (event.type === "text-delta" && typeof event.textDelta === "string") {
-      text += event.textDelta;
-      options?.onTextDelta?.(event.textDelta, text);
-    }
+      ? claudeExecutor(messages, invocationId, onUsage, options?.mcpServerUrl, options?.maxSteps)
+      : openRouterExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage, abortSignal, options?.maxSteps);
+  try {
+    const text = await collectRoutedText(result.fullStream, options?.onTextDelta, abortSignal, options?.onStreamEvent, options?.onProgress);
+    if (abortSignal?.aborted) throw routedTurnTimeoutError(abortSignal);
+    await result.response;
+    return text;
+  } catch (error) {
+    void result.response.catch(() => {});
+    void result.usage.catch(() => {});
+    void result.extendedUsage.catch(() => {});
+    void result.providerMetadata.catch(() => {});
+    throw error;
   }
-  await result.response;
-  return text;
 }

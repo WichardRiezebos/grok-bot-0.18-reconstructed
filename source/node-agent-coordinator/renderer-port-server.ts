@@ -54,7 +54,10 @@ export function createRendererPortServer(port: RendererPort, options: RendererPo
         inFlight.delete(requestId);
         reply(requestId, outcome);
       },
-      () => breach(`request ${requestId} dispatch rejected instead of settling`)
+      () => {
+        if (phase !== "serving" || inFlight.get(requestId) !== controller) return;
+        breach(`request ${requestId} dispatch rejected instead of settling`);
+      }
     );
   };
   const handleFrame = (frame: CoordinatorFrame) => {
@@ -72,7 +75,16 @@ export function createRendererPortServer(port: RendererPort, options: RendererPo
       options.onServing?.();
       return;
     }
-    if (frame.kind === "lifecycle") { breach("hello repeated on a live session"); return; }
+    if (frame.kind === "lifecycle") {
+      if (frame.protocolVersion !== COORDINATOR_PROTOCOL_VERSION) {
+        breach(`hello.protocolVersion ${frame.protocolVersion} is not the supported ${COORDINATOR_PROTOCOL_VERSION}`);
+        return;
+      }
+      for (const controller of inFlight.values()) controller.abort();
+      inFlight.clear();
+      port.post({ kind: "lifecycle", phase: "ready", protocolVersion: COORDINATOR_PROTOCOL_VERSION });
+      return;
+    }
     if (frame.kind === "request") {
       if (inFlight.has(frame.requestId)) { breach(`request.requestId ${frame.requestId} reused while in flight`); return; }
       dispatchRequest(frame.requestId, frame.method, frame.args);

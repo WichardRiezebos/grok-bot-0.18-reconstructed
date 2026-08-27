@@ -110,6 +110,7 @@ import {
 } from "./runner/prompt-collector-glue.js";
 import type { GeneratedTurnPromptOptions } from "./runner/prompt-collector-glue.js";
 import { createRunnerPromptGlue } from "./runner/runner-prompt-glue.js";
+import { productionParentSubagentConfigs } from "./production-subagent-configs.js";
 import {
   createShellWatchGeneratedStateProjection,
   createShellWatchReadAccessor,
@@ -1288,6 +1289,7 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
             ? {}
             : { readVideoAttachmentBytes: readVideoAttachment }),
           isSpotlightEnabled: () => method(experiments, "isSpotlightEnabled")?.() ?? false,
+          isBrowserUseSubagentEnabled: () => method(experiments, "isBrowserUseSubagentEnabled")?.() ?? false,
           uploadAttachmentsIntoBox: async paths =>
             new Map(await method(attachments, "stageIntoBox")?.(session.id, paths) ?? []),
           getRemoteBoxAvailable: () => method(remoteBox, "isAvailable")?.() !== false,
@@ -2302,7 +2304,10 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
       };
       const baseTurn: TurnToolsetTurnInput = {
         autoReviewModes,
-        subagentConfigs: [],
+        subagentConfigs: productionParentSubagentConfigs({
+          remoteBoxHasDesktop: true,
+          browserUseOffered: method(experiments, "isBrowserUseSubagentEnabled")?.() === true,
+        }),
       };
       const staticModelId = process.env.SAND_AGENT_MODEL ?? DEFAULT_SAND_MODEL;
       const lazyToolHost = () => createProductionTurnToolsetHost({

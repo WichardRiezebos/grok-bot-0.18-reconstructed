@@ -261,7 +261,14 @@ export function createDesktopPreloadBridge(options: {
       setComputerUseModel: (model: unknown) => edge("setComputerUseModel", { model }),
       getAvailableModels: () => edge("getAvailableModels"),
       getInferenceRouter: () => edge("getInferenceRouter"),
-      setInferenceRouter: (provider: string) => edge("setInferenceRouter", { provider }),
+      setInferenceRouter: (provider: string, extras?: { readonly model?: string; readonly computerModel?: string | null; readonly reasoningEffort?: string; readonly computerReasoningEffort?: string }) => edge("setInferenceRouter", {
+        provider,
+        ...(typeof extras?.model === "string" && extras.model.trim().length > 0 ? { model: extras.model.trim() } : {}),
+        ...(extras != null && Object.prototype.hasOwnProperty.call(extras, "computerModel") ? { computerModel: extras.computerModel } : {}),
+        ...(typeof extras?.reasoningEffort === "string" && extras.reasoningEffort.trim().length > 0 ? { reasoningEffort: extras.reasoningEffort.trim() } : {}),
+        ...(typeof extras?.computerReasoningEffort === "string" && extras.computerReasoningEffort.trim().length > 0 ? { computerReasoningEffort: extras.computerReasoningEffort.trim() } : {}),
+      }),
+      listOpenRouterModels: () => edge("listOpenRouterModels"),
       getBoxRuntime: () => edge("getBoxRuntime"),
       setBoxRuntime: (mode: string) => edge("setBoxRuntime", { mode }),
       clientPersistence: {

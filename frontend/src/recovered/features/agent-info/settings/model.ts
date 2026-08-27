@@ -91,17 +91,21 @@ export function createAgentSettingsController(source: AgentSettingsSource, initi
   let disposed = false;
   let snapshot: AgentSettingsSnapshot = { agent: current, pending, error, generation };
   const listeners = new Set<() => void>();
-  const subscription = source.subscribe?.({
-    agents: (value) => {
-      if (!Array.isArray(value)) return;
-      const next = value.map(projectAgentSettingsAgent).find((agent): agent is AgentSettingsAgent => agent?.id === current.id);
-      if (next != null) applyAuthoritative(next);
-    },
-    "agent-upserted": (value) => {
-      const next = eventAgent(value);
-      if (next?.id === current.id) applyAuthoritative(next);
-    }
-  });
+  let subscription: { dispose(): void } | undefined;
+  const ensureSubscription = () => {
+    if (disposed || subscription != null) return;
+    subscription = source.subscribe?.({
+      agents: (value) => {
+        if (!Array.isArray(value)) return;
+        const next = value.map(projectAgentSettingsAgent).find((agent): agent is AgentSettingsAgent => agent?.id === current.id);
+        if (next != null) applyAuthoritative(next);
+      },
+      "agent-upserted": (value) => {
+        const next = eventAgent(value);
+        if (next?.id === current.id) applyAuthoritative(next);
+      }
+    });
+  };
 
   const emit = () => {
     if (disposed) return;
@@ -118,8 +122,15 @@ export function createAgentSettingsController(source: AgentSettingsSource, initi
   return {
     subscribe(listener: () => void): () => void {
       if (disposed) return () => {};
+      ensureSubscription();
       listeners.add(listener);
-      return () => listeners.delete(listener);
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) {
+          subscription?.dispose();
+          subscription = undefined;
+        }
+      };
     },
     getSnapshot(): AgentSettingsSnapshot { return snapshot; },
     setAgent(next: AgentSettingsAgent): void {

@@ -44,6 +44,10 @@ interface RedactionInfo {
 
 let logger: RedactionLogger | undefined;
 
+export function setRedactionLogger(next: RedactionLogger | undefined): void {
+  logger = next;
+}
+
 function logUnspecifiedWarnings(info: RedactionInfo): void {
   if (info.classification === DataClassification.UNSPECIFIED) {
     try {

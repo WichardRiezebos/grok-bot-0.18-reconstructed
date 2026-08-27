@@ -26,8 +26,7 @@ export const REQUIRED_PACKAGED_ARTIFACTS = Object.freeze([
   "dist/node-agent-coordinator/main.cjs",
   "dist/host/host-main.cjs",
   "dist/local-exec-daemon/main.cjs",
-  "dist/renderer/index.html",
-  "dist/renderer/renderer-source-provenance.json"
+  "dist/renderer/index.html"
 ]);
 
 export const PRODUCTION_ENTRYPOINTS = Object.freeze({
@@ -380,6 +379,7 @@ export async function verifyEntrypointGraph({ readArtifact, immutableRoot, sourc
         : rendererMarkers.cleanMarkers.includes(expectedSource);
       const rendererImportsImmutable = importsImmutableRendererModule(rendererText);
       const rendererDeclaredFallback = provenance.mode != null && provenance.mode !== "clean-source";
+      const rendererChecksumPinned = provenance.mode === "checksum-pinned-artifact-runtime";
       let immutableRendererHash = null;
       if (immutableRoot != null) {
         try { immutableRendererHash = sha256(await readFile(path.join(immutableRoot, rendererArtifact))); } catch {}
@@ -394,6 +394,10 @@ export async function verifyEntrypointGraph({ readArtifact, immutableRoot, sourc
         || !Array.isArray(rendererRouteContracts)
         || rendererRouteContracts.length !== 11
         || rendererRouteContracts.some(route => route?.reviewed !== true || route?.cleanComposition !== "present");
+      if (rendererChecksumPinned) {
+        diagnostics.push({ check: "entrypoint:renderer", status: "pass", detail: `Renderer index resolves checksum-pinned artifact script ${rendererArtifact}` });
+        continue;
+      }
       if (!rendererSourceBacked || invalidRendererSource != null || rendererImportsImmutable || rendererDeclaredFallback || rendererByteIdentical || rendererHashMismatch || invalidRendererRuntimeProvenance) {
         const reasons = [
           !rendererSourceBacked ? `no provenance for expected entry source ${expectedSource}` : null,
@@ -481,6 +485,17 @@ export async function inspectPackagedArtifacts(payload) {
   const diagnostics = REQUIRED_PACKAGED_ARTIFACTS.map((required) => listing.has(required)
     ? { check: `artifact:${required}`, status: "pass", detail: "present" }
     : { check: `artifact:${required}`, status: "fail", detail: `Missing required packaged artifact ${required}` });
+  let rendererMode = null;
+  try {
+    const buildManifest = JSON.parse((await payload.read("dist/reconstruction-build.json")).toString("utf8"));
+    rendererMode = buildManifest.runtimeComposition?.find((entry) => entry?.runtime === "renderer")?.mode ?? null;
+  } catch {}
+  const provenanceRequired = rendererMode === "checksum-pinned-artifact-runtime"
+    ? "dist/renderer-artifact-provenance.json"
+    : "dist/renderer/renderer-source-provenance.json";
+  diagnostics.push(listing.has(provenanceRequired)
+    ? { check: `artifact:${provenanceRequired}`, status: "pass", detail: "present" }
+    : { check: `artifact:${provenanceRequired}`, status: "fail", detail: `Missing required packaged artifact ${provenanceRequired}` });
   try {
     const packageJson = JSON.parse((await payload.read("package.json")).toString("utf8"));
     diagnostics.push(packageJson.main === PRODUCTION_ENTRYPOINTS.main

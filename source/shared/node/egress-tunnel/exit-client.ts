@@ -102,7 +102,7 @@ export class EgressTunnelExitClient {
     const frame = decodeFrame(bytes); if (frame == null) return;
     if (frame.kind === KIND_OPEN) { void this.openStream(frame.streamId, frame.host, frame.port); return; }
     if (frame.kind === KIND_DATA) { const entry = this.streams.get(frame.streamId); if (entry?.socket != null) entry.socket.write(frame.payload); else entry?.pending.push(frame.payload); return; }
-    const entry = this.streams.get(frame.streamId); if (entry == null) return; if (entry.socket != null) { this.streams.delete(frame.streamId); entry.socket.end(); } else entry.closedByPeer = true;
+    const entry = this.streams.get(frame.streamId); if (entry == null) return; if (entry.socket != null) entry.socket.end(); else entry.closedByPeer = true;
   }
   private async openStream(streamId: number, host: string, port: number): Promise<void> {
     if (this.streams.has(streamId)) { this.send(encodeClose(streamId)); return; }

@@ -35,6 +35,7 @@ export interface ProductionCoordinatorAuxiliaryPorts {
     | "detectTimeZone"
     | "getUserTimeZoneOverride"
     | "getComputerUseModel"
+    | "getInferenceRouterSettings"
     | "getAutoReviewInstructions"
     | "getLocalToolPermission"
     | "getWebauthnProxyEnabled"
@@ -122,6 +123,13 @@ export function createProductionCoordinatorAuxiliaryPorts(
       },
       getUserTimeZoneOverride: () => settings.getUserTimeZoneOverride(),
       getComputerUseModel: () => computerUseModel(context),
+      getInferenceRouterSettings: () => ({
+        inferenceProvider: settings.getInferenceProvider(),
+        openRouterModel: settings.getOpenRouterModel(),
+        openRouterComputerModel: settings.getOpenRouterComputerModel() ?? null,
+        openRouterReasoningEffort: settings.getOpenRouterReasoningEffort(),
+        openRouterComputerReasoningEffort: settings.getOpenRouterComputerReasoningEffort(),
+      }),
       getAutoReviewInstructions: () => settings.getAutoReviewInstructions(),
       getLocalToolPermission: () => settings.getLocalToolPermission(),
       getWebauthnProxyEnabled: () => settings.getWebauthnProxyEnabled(),

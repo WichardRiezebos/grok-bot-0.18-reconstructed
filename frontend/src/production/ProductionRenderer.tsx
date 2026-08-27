@@ -2290,27 +2290,20 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
     const isCurrent = () => active
       && clientLifecycleGenerationRef.current === lifecycleGeneration
       && accountScopeGenerationRef.current === accountScopeGeneration;
-    client.ready.then(() => {
-      if (!isCurrent() || accountRef.current?.kind !== "logged-in") return;
-      transportScopeGenerationRef.current += 1;
-      setTransport("connected");
-      void refreshRoster().catch((error: unknown) => setNotice(error instanceof Error ? error.message : String(error)));
-      void refreshAgentNetworkAvailability();
-    }, () => {
-      if (!isCurrent() || accountRef.current?.kind !== "logged-in") return;
-      transportScopeGenerationRef.current += 1;
-      setTransport("down");
-      setRosterLoadFailed(true);
-    });
+    let hadConnected = client.getTransportState() === "connected";
     const stopTransport = client.subscribeTransport((state) => {
       if (!isCurrent()) return;
       transportScopeGenerationRef.current += 1;
       setTransport(state === "connected" ? "connected" : "down");
       if (state === "down") {
-        setRosterLoadFailed(true);
-        setIsRosterRetrying(false);
+        if (hadConnected) {
+          setRosterLoadFailed(true);
+          setIsRosterRetrying(false);
+        }
+        hadConnected = false;
       }
       if (state === "connected" && accountRef.current?.kind === "logged-in") {
+        hadConnected = true;
         if (connectionController?.get().isRetrying !== true) {
           void refreshRoster().catch((error: unknown) => setNotice(error instanceof Error ? error.message : String(error)));
         }

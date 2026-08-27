@@ -1,4 +1,5 @@
 import { Struct } from "@bufbuild/protobuf";
+import { sanitizeToolInputForStruct } from "../../../../shared/struct-json.js";
 
 import { hookExecutorResource } from "../../../agent-exec/hook-executor.js";
 import { createLogger } from "../../../context/logger.js";
@@ -51,7 +52,6 @@ export class RemoteHookBlockedError extends Error {
   constructor(message: string, reason: string) { super(message); this.reason = reason; this.name = "RemoteHookBlockedError"; }
 }
 function isTimeoutError(error: unknown): boolean { return error instanceof ToolTimeoutError || (error instanceof Error && error.name === "TimeoutError"); }
-function sanitizeToolInputForStruct(value: unknown): unknown { return JSON.parse(JSON.stringify(value)); }
 function getRemoteHookExecutor(options: AnyRecord, hookStep: string): AnyRecord | undefined {
   if (!options.enableExecuteHookExec || !isHookStepConfigured(options.configuredSteps, hookStep)) return undefined;
   return options.resourceAccessor.get(hookExecutorResource);

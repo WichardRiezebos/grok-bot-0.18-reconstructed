@@ -97,9 +97,13 @@ export class CoreShellFactory implements BackgroundShellFactory {
           shell.pid = result.value.pid;
           break;
         }
+        if (result.value.type === "exit") {
+          throw new Error(`Background shell exited before becoming ready (code ${result.value.code ?? "null"})`);
+        }
       }
     } catch (error) {
-      if (error instanceof SandboxUnsupportedError) throw error;
+      runInBackground(() => consumeShellEvents(shell, eventIterator));
+      throw error;
     }
     runInBackground(() => consumeShellEvents(shell, eventIterator));
     return shell;

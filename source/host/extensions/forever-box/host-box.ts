@@ -6,14 +6,41 @@ export const RUN_STATE_PROBE_AGENT_ID = "";
 export interface BoxStatus { agentId: string; state: string; vncUrl: string | null; windows?: Array<{ windowIndex: number; vncUrl: string }>; imageUpdateAvailable?: boolean; pull?: { percent: number } }
 export interface BoxConnection { vncUrl: string; imageUpdateAvailable?: boolean; remoteAccessor?: unknown }
 export interface HostBoxInner { ensureReady(ctx: Context, agentId: string): Promise<BoxConnection>; runState(ctx: Context, agentId: string): Promise<string>; listBoxes(): Promise<Array<{ agentId: string; running?: boolean }>>; uploadFile(ctx: Context, agentId: string, path: string, data: Uint8Array): Promise<void>; downloadFile(ctx: Context, agentId: string, path: string): Promise<Uint8Array>; ensureWindow?(ctx: Context, agentId: string, windowIndex: number, options?: unknown): Promise<{ windowIndex: number; vncUrl: string }>; releaseWindow?(ctx: Context, agentId: string): Promise<void>; recreateInBox?(ctx: Context, options: { preserveData: boolean; force?: boolean }): Promise<{ started: boolean; reason?: string }>; getAgentWindowIndex?(agentId: string): number | undefined; maxWindows?(): number; getTerminalsFolder?(): string | undefined; isAvailable?(): boolean | Promise<boolean>; isPreparing?(agentId: string): boolean; describe?(): unknown; applyEnvironment?(ctx: Context, update: unknown): Promise<void>; loadMcpServers?(ctx: Context, configJson: string): Promise<unknown>; mcpResourceAccessor?(ctx: Context): Promise<unknown> }
+export function preferredBoxVncUrl(
+  vncUrl: string | null | undefined,
+  windows?: ReadonlyArray<{ readonly windowIndex: number; readonly vncUrl: string }> | null,
+): string | null {
+  let best: { index: number; url: string } | null = null;
+  for (const window of windows ?? []) {
+    if (typeof window.vncUrl !== "string" || window.vncUrl.length === 0) continue;
+    if (best == null || window.windowIndex > best.index) best = { index: window.windowIndex, url: window.vncUrl };
+  }
+  if (best != null) return best.url;
+  return typeof vncUrl === "string" && vncUrl.length > 0 ? vncUrl : null;
+}
 export class HostBox {
   readonly vncUrls = new Map<string, string>(); readonly forkVncUrls = new Map<string, Map<number, string>>(); private readonly listeners = new Set<(status: BoxStatus) => void>(); private readonly lastReported = new Map<string, BoxStatus>(); private readonly connectionEpochs = new Map<string, number>(); private imageUpdateAvailable: boolean | undefined; constructor(readonly inner: HostBoxInner) {}
   subscribe(listener: (status: BoxStatus) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   buildWindows(agentId: string): Array<{ windowIndex: number; vncUrl: string }> | undefined { const main = this.vncUrls.get(agentId), forks = this.forkVncUrls.get(agentId); if (main == null && (forks == null || forks.size === 0)) return undefined; const windows: Array<{ windowIndex: number; vncUrl: string }> = []; if (main != null) windows.push({ windowIndex: 0, vncUrl: main }); for (const index of [...(forks?.keys() ?? [])].sort((a, b) => a - b)) { const url = forks?.get(index); if (url != null) windows.push({ windowIndex: index, vncUrl: url }); } return windows; }
   recordConnection(agentId: string, connection: BoxConnection): void { this.vncUrls.set(agentId, connection.vncUrl); this.connectionEpochs.set(agentId, (this.connectionEpochs.get(agentId) ?? 0) + 1); if (connection.imageUpdateAvailable !== undefined) this.imageUpdateAvailable = connection.imageUpdateAvailable; }
   recordImageUpdateAvailable(value: boolean | undefined): void { if (value === undefined || value === this.imageUpdateAvailable) return; this.imageUpdateAvailable = value; for (const agentId of this.lastReported.keys()) { const url = this.vncUrls.get(agentId), last = this.lastReported.get(agentId); if (url != null) this.notify(this.runningStatus(agentId, url)); else if (last != null) this.notify({ ...last, imageUpdateAvailable: value }); } }
-  runningStatus(agentId: string, vncUrl: string): BoxStatus { const windows = this.buildWindows(agentId); return { agentId, state: "running", vncUrl, ...(windows === undefined ? {} : { windows }), ...(this.imageUpdateAvailable === undefined ? {} : { imageUpdateAvailable: this.imageUpdateAvailable }) }; }
-  async ensureReady(ctx: Context, agentId: string): Promise<BoxConnection> { const connection = await this.inner.ensureReady(ctx, agentId); this.recordConnection(agentId, connection); this.notify(this.runningStatus(agentId, connection.vncUrl)); return connection; }
+  runningStatus(agentId: string, vncUrl: string): BoxStatus {
+    const windows = this.buildWindows(agentId);
+    const preferred = preferredBoxVncUrl(vncUrl, windows) ?? vncUrl;
+    return { agentId, state: "running", vncUrl: preferred, ...(windows === undefined ? {} : { windows }), ...(this.imageUpdateAvailable === undefined ? {} : { imageUpdateAvailable: this.imageUpdateAvailable }) };
+  }
+  async ensureReady(ctx: Context, agentId: string): Promise<BoxConnection> {
+    const connection = await this.inner.ensureReady(ctx, agentId);
+    this.recordConnection(agentId, connection);
+    const index = this.inner.getAgentWindowIndex?.(agentId);
+    if (index != null && index > 0) {
+      const forks = this.forkVncUrls.get(agentId) ?? new Map<number, string>();
+      forks.set(index, connection.vncUrl);
+      this.forkVncUrls.set(agentId, forks);
+    }
+    this.notify(this.runningStatus(agentId, connection.vncUrl));
+    return connection;
+  }
   async hibernate(): Promise<void> {} runState(ctx: Context, agentId: string): Promise<string> { return this.inner.runState(ctx, agentId); } describe(): unknown { return boxDescription(this.inner); } isAvailable(): Promise<boolean> { return boxIsAvailable(this.inner); } isPreparing(agentId: string): boolean { return boxIsPreparing(this.inner, agentId); } getTerminalsFolder(): string | undefined { return boxTerminalsFolder(this.inner); } listBoxes() { return this.inner.listBoxes(); } maxWindows(): number { return boxMaxWindows(this.inner); }
   async ensureWindow(ctx: Context, agentId: string, windowIndex: number, options?: unknown): Promise<{ windowIndex: number; vncUrl: string }> { if (this.inner.ensureWindow == null) throw new SandBoxCapabilityError("This box does not support multiple desktop windows."); if (!this.vncUrls.has(agentId)) await this.ensureReady(ctx, agentId); const window = await this.inner.ensureWindow(ctx, agentId, windowIndex, options); if (window.windowIndex === 0) this.vncUrls.set(agentId, window.vncUrl); else { const forks = this.forkVncUrls.get(agentId) ?? new Map<number, string>(); forks.set(window.windowIndex, window.vncUrl); this.forkVncUrls.set(agentId, forks); } this.notify(this.runningStatus(agentId, this.vncUrls.get(agentId) ?? window.vncUrl)); return window; }
   async releaseWindow(ctx: Context, agentId: string): Promise<void> { const epoch = this.connectionEpochs.get(agentId) ?? 0; try { await this.inner.releaseWindow?.(ctx, agentId); } catch {} if ((this.connectionEpochs.get(agentId) ?? 0) !== epoch) return; this.vncUrls.delete(agentId); this.forkVncUrls.delete(agentId); this.connectionEpochs.delete(agentId); this.notify({ agentId, state: "absent", vncUrl: null }); this.lastReported.delete(agentId); }

@@ -10,11 +10,14 @@ import { SidebarSections, type SidebarSection } from "../../sidebar-sections.js"
 import { coerceToEnabledTrack, isSandUpdateTrack, type SandUpdateTrack } from "../../update-track.js";
 import { isSandAgentModelSelection, type SandAgentModelSelection } from "../../agents/sand-agent-model.js";
 import { emptySandInferenceRouterUsage, isSandInferenceProvider, type SandInferenceProvider, type SandInferenceRouterUsage } from "../../inference-router.js";
+import { DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENROUTER_REASONING_EFFORT, normalizeOpenRouterModelId, normalizeOpenRouterReasoningEffort, type OpenRouterReasoningEffort } from "../../openrouter-models.js";
 import { DEFAULT_SAND_BOX_RUNTIME, isSandBoxRuntime, type SandBoxRuntime } from "../../box-runtime.js";
 
 export const SETTINGS_VERSION = 1;
 export const SAND_DOWNGRADE_MAX_FAST_MIGRATION_ID = "downgrade-persisted-max-fast";
-export const SAND_SETTINGS_MIGRATION_IDS = [SAND_DOWNGRADE_MAX_FAST_MIGRATION_ID] as const;
+export const SAND_DROP_QWEN_COMPUTER_MODEL_MIGRATION_ID = "drop-qwen-computer-model";
+export const LEGACY_OPENROUTER_COMPUTER_MODEL = "qwen/qwen3.7-flash";
+export const SAND_SETTINGS_MIGRATION_IDS = [SAND_DOWNGRADE_MAX_FAST_MIGRATION_ID, SAND_DROP_QWEN_COMPUTER_MODEL_MIGRATION_ID] as const;
 
 type StringMap = Record<string, string>;
 type StringListMap = Record<string, string[]>;
@@ -27,6 +30,10 @@ export interface SandStoredSettings {
   userTimeZone?: string; userTimeZoneOverride?: string; autoReviewInstructions?: SandAutoReviewInstructions;
   localToolPermission?: SandLocalToolPermission; localToolPermissionCeiling?: SandLocalToolPermission;
   inferenceProvider?: SandInferenceProvider; inferenceRouterUsage?: SandInferenceRouterUsage;
+  openRouterModel?: string;
+  openRouterComputerModel?: string;
+  openRouterReasoningEffort?: OpenRouterReasoningEffort;
+  openRouterComputerReasoningEffort?: OpenRouterReasoningEffort;
   boxRuntime?: SandBoxRuntime;
   mcpCustomInstructionsAccountScope?: string; pinnedAgentIds?: string[]; sidebarSections?: SidebarSection[];
 }
@@ -70,6 +77,14 @@ function parseSettings(value: unknown): SandStoredSettings | null {
   if (isSandLocalToolPermission(raw.localToolPermission)) result.localToolPermission = raw.localToolPermission;
   if (isSandLocalToolPermission(raw.localToolPermissionCeiling)) result.localToolPermissionCeiling = raw.localToolPermissionCeiling;
   if (isSandInferenceProvider(raw.inferenceProvider)) result.inferenceProvider = raw.inferenceProvider;
+  const openRouterModel = normalizeOpenRouterModelId(raw.openRouterModel);
+  if (openRouterModel !== undefined) result.openRouterModel = openRouterModel;
+  const openRouterComputerModel = normalizeOpenRouterModelId(raw.openRouterComputerModel);
+  if (openRouterComputerModel !== undefined) result.openRouterComputerModel = openRouterComputerModel;
+  const openRouterReasoningEffort = normalizeOpenRouterReasoningEffort(raw.openRouterReasoningEffort);
+  if (openRouterReasoningEffort !== undefined) result.openRouterReasoningEffort = openRouterReasoningEffort;
+  const openRouterComputerReasoningEffort = normalizeOpenRouterReasoningEffort(raw.openRouterComputerReasoningEffort);
+  if (openRouterComputerReasoningEffort !== undefined) result.openRouterComputerReasoningEffort = openRouterComputerReasoningEffort;
   if (isSandBoxRuntime(raw.boxRuntime)) result.boxRuntime = raw.boxRuntime;
   if (typeof raw.inferenceRouterUsage === "object" && raw.inferenceRouterUsage != null && !Array.isArray(raw.inferenceRouterUsage)) {
     const usage = emptySandInferenceRouterUsage();
@@ -98,10 +113,30 @@ export class SandSettingsStore {
     catch { return emptySettings(); }
   }
   private applyPendingMigrations(settings: SandStoredSettings): SandStoredSettings {
-    if (settings.settingsMigrations.includes(SAND_DOWNGRADE_MAX_FAST_MIGRATION_ID)) return settings;
-    const migrated = { ...settings, settingsMigrations: [...settings.settingsMigrations, SAND_DOWNGRADE_MAX_FAST_MIGRATION_ID], ...(settings.agentDefaultModel === undefined ? {} : { agentDefaultModel: downgradePersistedFast(settings.agentDefaultModel) }) };
-    try { this.persist(migrated); } catch {}
-    return migrated;
+    let next = settings;
+    let changed = false;
+    if (!next.settingsMigrations.includes(SAND_DOWNGRADE_MAX_FAST_MIGRATION_ID)) {
+      next = {
+        ...next,
+        settingsMigrations: [...next.settingsMigrations, SAND_DOWNGRADE_MAX_FAST_MIGRATION_ID],
+        ...(next.agentDefaultModel === undefined ? {} : { agentDefaultModel: downgradePersistedFast(next.agentDefaultModel) }),
+      };
+      changed = true;
+    }
+    if (!next.settingsMigrations.includes(SAND_DROP_QWEN_COMPUTER_MODEL_MIGRATION_ID)) {
+      const dropLegacy = next.openRouterComputerModel === LEGACY_OPENROUTER_COMPUTER_MODEL;
+      const { openRouterComputerModel: _old, ...rest } = next;
+      next = {
+        ...rest,
+        ...(dropLegacy || next.openRouterComputerModel === undefined ? {} : { openRouterComputerModel: next.openRouterComputerModel }),
+        settingsMigrations: [...rest.settingsMigrations, SAND_DROP_QWEN_COMPUTER_MODEL_MIGRATION_ID],
+      };
+      changed = true;
+    }
+    if (changed) {
+      try { this.persist(next); } catch {}
+    }
+    return next;
   }
   persist(settings: SandStoredSettings): void { mkdirSync(dirname(this.settingsPath), { recursive: true }); const temp = `${this.settingsPath}.${process.pid}.tmp`; writeFileSync(temp, JSON.stringify(settings, null, 2), "utf8"); renameSync(temp, this.settingsPath); }
   private update(mutator: (settings: SandStoredSettings) => SandStoredSettings): void { this.persist(mutator(this.load())); }
@@ -157,6 +192,42 @@ export class SandSettingsStore {
   setLocalToolPermission(value: SandLocalToolPermission): void { this.update((s) => ({ ...s, localToolPermission: value })); }
   getInferenceProvider(): SandInferenceProvider { return this.load().inferenceProvider ?? "cursor"; }
   setInferenceProvider(value: SandInferenceProvider): void { this.update((s) => ({ ...s, inferenceProvider: value })); }
+  getOpenRouterModel(): string { return this.load().openRouterModel ?? DEFAULT_OPENROUTER_MODEL; }
+  setOpenRouterModel(value: string): void {
+    const model = normalizeOpenRouterModelId(value);
+    this.update((s) => {
+      const { openRouterModel: _old, ...rest } = s;
+      return model === undefined ? rest : { ...rest, openRouterModel: model };
+    });
+  }
+  getOpenRouterComputerModel(): string | undefined { return this.load().openRouterComputerModel; }
+  setOpenRouterComputerModel(value: string | undefined): void {
+    const model = normalizeOpenRouterModelId(value);
+    this.update((s) => {
+      const { openRouterComputerModel: _old, ...rest } = s;
+      return model === undefined ? rest : { ...rest, openRouterComputerModel: model };
+    });
+  }
+  getOpenRouterReasoningEffort(): OpenRouterReasoningEffort {
+    return this.load().openRouterReasoningEffort ?? DEFAULT_OPENROUTER_REASONING_EFFORT;
+  }
+  setOpenRouterReasoningEffort(value: OpenRouterReasoningEffort | undefined): void {
+    const effort = normalizeOpenRouterReasoningEffort(value);
+    this.update((s) => {
+      const { openRouterReasoningEffort: _old, ...rest } = s;
+      return effort === undefined ? rest : { ...rest, openRouterReasoningEffort: effort };
+    });
+  }
+  getOpenRouterComputerReasoningEffort(): OpenRouterReasoningEffort {
+    return this.load().openRouterComputerReasoningEffort ?? DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT;
+  }
+  setOpenRouterComputerReasoningEffort(value: OpenRouterReasoningEffort | undefined): void {
+    const effort = normalizeOpenRouterReasoningEffort(value);
+    this.update((s) => {
+      const { openRouterComputerReasoningEffort: _old, ...rest } = s;
+      return effort === undefined ? rest : { ...rest, openRouterComputerReasoningEffort: effort };
+    });
+  }
   getInferenceRouterUsage(): SandInferenceRouterUsage { return this.load().inferenceRouterUsage ?? emptySandInferenceRouterUsage(); }
   recordInferenceUsage(provider: SandInferenceProvider, usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number }): void {
     const safe = (value: number | undefined): number => Number.isFinite(value) && value! >= 0 ? Math.round(value!) : 0;

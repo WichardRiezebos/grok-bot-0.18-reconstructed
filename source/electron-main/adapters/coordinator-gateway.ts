@@ -51,7 +51,9 @@ export function createProductionCoordinatorGatewayBinding(): Pick<
         context.env,
         context.requireUpdate(),
         descriptorFastPath,
-      ), context.settings.settingsStore) as unknown as {
+      ), context.settings.settingsStore, {
+        exportBoxSecrets: async () => (await context.secretsStores.userSecretsStore.exportSnapshot()).secrets,
+      }) as unknown as {
         connect(): unknown | Promise<unknown>;
         recreate?: (...args: any[]) => unknown;
         forceRecreate?: (...args: any[]) => unknown;

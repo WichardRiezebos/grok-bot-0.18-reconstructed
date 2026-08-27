@@ -1,6 +1,6 @@
 import { installApplicationMenu, type ApplicationMenuElectronPort } from "./application-menu.js";
 import { reportDesktopEdgeFailure } from "./desktop-edge-failures.js";
-import { createDevToolsGate, createDevToolsMembershipResolver } from "./devtools-gate.js";
+import { createDevToolsGate, createDevToolsMembershipResolver, reconstructedDevToolsAllowed } from "./devtools-gate.js";
 import {
   createHostWindowChords,
   type HostInputEvent,
@@ -18,6 +18,8 @@ import {
 } from "./window-chrome.js";
 import type { SandWindowPlacement, WindowStatePersistenceWindow } from "./window-state-persistence.js";
 import { createElectronMainProductionComposition, type ElectronMainProductionBindings } from "./main-production-services.js";
+import { setEnforceRedactionGate } from "../packages/redaction/privacy-context.js";
+import { setRedactionLogger } from "../packages/redaction/types.js";
 
 export interface PreventableEvent {
   preventDefault(): void;
@@ -262,7 +264,9 @@ export function startElectronMain(deps: ElectronMainDependencies): ElectronMainR
     reportFailure: (error) => reportDesktopEdgeFailure("window-focus", "push", error),
   });
 
-  const devToolsGate = createDevToolsGate({ isDevBuild: !deps.app.isPackaged });
+  const devToolsGate = createDevToolsGate({
+    isDevBuild: reconstructedDevToolsAllowed(deps.env ?? process.env, deps.app.isPackaged),
+  });
   const hostChords = createHostWindowChords({
     getMainWindow: () => mainWindow,
     emitZoomFactorChanged: (factor) => services?.mainEdge.emit("zoom-factor-changed", { factor }),
@@ -444,6 +448,8 @@ export function startElectronMain(deps: ElectronMainDependencies): ElectronMainR
 }
 
 export function startElectronMainProduction(bindings: ElectronMainProductionBindings): ElectronMainRuntime {
+  setRedactionLogger({ info(attributes, message) { console.info(message, attributes); } });
+  setEnforceRedactionGate(() => process.env.NODE_ENV !== "development" && process.env.VITEST !== "true");
   const composition = createElectronMainProductionComposition(bindings);
   const runtime = startElectronMain(composition.dependencies);
   composition.bindRuntime(runtime);

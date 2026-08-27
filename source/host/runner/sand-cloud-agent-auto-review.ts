@@ -1,5 +1,6 @@
-import { Struct } from "@bufbuild/protobuf";
+import { Struct, type JsonValue } from "@bufbuild/protobuf";
 import { createHash } from "node:crypto";
+import { sanitizeToolInputForStruct } from "../../shared/struct-json.js";
 import { SmartModeRiskTarget } from "../../packages/proto/generated/agent/v1/smart_mode_classifier_exec_pb.js";
 import {
   fingerprintSandAutoReviewTarget,
@@ -147,7 +148,7 @@ export function buildSandCloudAgentRiskTarget(args: {
     }));
   return new SmartModeRiskTarget({
     action: SAND_CLOUD_AGENT_CLASSIFIER_TARGET_ACTION,
-    arguments: Struct.fromJson(argumentsJson),
+    arguments: Struct.fromJson(sanitizeToolInputForStruct(argumentsJson) as JsonValue),
   });
 }
 

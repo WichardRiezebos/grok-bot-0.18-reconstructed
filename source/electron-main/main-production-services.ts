@@ -649,7 +649,9 @@ export function createElectronMainProductionComposition(bindings: ElectronMainPr
           env,
           { noteBackendUpdateRequirement: (required) => requireValue(update, "update").noteBackendUpdateRequirement(required) },
           gatewayFastPath,
-        ), requireValue(settings, "settings").settingsStore);
+        ), requireValue(settings, "settings").settingsStore, {
+          exportBoxSecrets: async () => (await secretsStores!.userSecretsStore.exportSnapshot()).secrets,
+        });
       const baseRemoteConnector = wrapRemoteHostConnectorWithDevBoxPlane(
         rawRemoteConnector,
         {

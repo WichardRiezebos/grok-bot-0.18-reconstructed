@@ -1,0 +1,109 @@
+# Web app on Docker
+
+This stack is a **browser web app**, not a macOS app. You open a URL. Bots keep
+running in Compose after you close the tab.
+
+The reconstructed Electron app (`npm run package`) stays in the repository as
+the Mac desktop product. Do not add an “Install on local Docker” control to that
+app, and do not make Electron a client of this stack.
+
+OpenRouter is the only inference provider in Compose. Cursor, Claude Code, and
+Codex stay on the untouched Mac package.
+
+## Architecture
+
+```text
+Browser ── HTTPS ── Dokploy Traefik ── control:8080
+                                        ├ static UI + /health + /debug + /ws
+                                        ├ node-agent-coordinator (fork-ipc)
+                                        └ OpenRouter
+control ── HTTP ── box:1340 (sand-host gateway)
+control ── HTTP/WS ── box:6080/6081 (noVNC, same-origin `/__grok_bot/vnc/…`)
+```
+
+`control` binds `0.0.0.0` and serves HTTP and WebSocket on one port so a single
+domain is enough. Traefik is the public proxy. There is no Caddy service.
+
+## Dokploy
+
+1. Service type **Docker Compose**.
+2. Compose path `deploy/docker-compose.yml`.
+3. Environment (Dokploy writes a `.env` file; Compose interpolates `${VAR}`):
+   - `OPENROUTER_API_KEY`
+   - `SAND_GATEWAY_TOKEN` (shared by control and the box gateway)
+   - `RUNTIME_ACCESS_TOKEN` (gates the site, `/debug`, and `/ws`)
+   - `PUBLIC_URL=https://<your-domain>`
+   - optional `RUNTIME_DEBUG=1` for the corner overlay and verbose debug
+4. Enable **Isolated Deployments**. Do not add Traefik labels or `dokploy-network`
+   to the Compose file; Dokploy injects those.
+5. Domain → service `control`, port `8080`, HTTPS.
+6. Grok’s screen is proxied through control at `/__grok_bot/vnc/primary` (box:6080)
+   and `/__grok_bot/vnc/fork` (box:6081). A separate VNC domain is optional.
+7. Volume backups for `box-workspace`, `box-data`, and `control-data`.
+
+The base Compose file uses named volumes only (a Dokploy `git clone` would wipe
+repo bind-mounts). Internal ports are `expose`d, not published on the host.
+Control and box images are `linux/amd64` for the box; the Dokploy host should be
+x86_64.
+
+Loopback `GET /health` skips the access token so Compose healthchecks work.
+Connections through Traefik are not loopback, so public `/health` stays gated.
+
+## Local Compose (no Dokploy)
+
+```sh
+export OPENROUTER_API_KEY=...
+export SAND_GATEWAY_TOKEN=...
+export RUNTIME_ACCESS_TOKEN=...
+export PUBLIC_URL=http://127.0.0.1:8080
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml up --build
+```
+
+Open `http://127.0.0.1:8080`. The local overlay publishes only
+`127.0.0.1:8080:8080` on `control` and turns `RUNTIME_DEBUG` on.
+
+Verify in this order before treating the UI as healthy:
+
+1. `GET /health` → `ok: true`, `runtime: "docker"`, box reachable.
+2. Open `/debug` (send `RUNTIME_ACCESS_TOKEN` as a Bearer token, cookie, or
+   `?token=`). Confirm coordinator alive and WS ready.
+3. Open `/`. Confirm the overlay (`data-testid="grok-bot-debug-overlay"`) or
+   `window.__grokBotDebug.connection === "connected"`.
+4. Exercise send-prompt / settings if the shipped renderer is in the image. If
+   it is not, the fallback shell still talks to the same WebSocket control plane.
+
+Linux/Dokploy builds often do not include the checksum-pinned Mac renderer. The
+control image then serves a small owned shell instead of the shipped UI.
+
+## Debug surface
+
+All of this is behind `RUNTIME_ACCESS_TOKEN`. Logs and RPC traces redact tokens,
+API keys, and cookies to the last four characters.
+
+- `GET /health` — JSON for probes. Stable fields: `ok`, `runtime: "docker"`,
+  control pid/uptime, coordinator child alive + last exit, box gateway probe,
+  OpenRouter configured (boolean only), WS listener ready.
+- `GET /debug` — owned HTML (not the shipped renderer) with `data-testid` on
+  every status row, the last ~200 log lines, last ~100 RPC calls, stubbed
+  Electron methods, WS client counts, and one-click “probe box /health” plus
+  “send ping RPC”.
+- Overlay on `/` when `RUNTIME_DEBUG=1`: WS connected / reconnecting / down and
+  the last RPC error. `window.__grokBotDebug` exposes `health()`, `rpcLog`, and
+  `connection` for DevTools.
+
+Do not mount `docker.sock` into `control`. Box-side `box-doctor` remains a
+command inside the box; the debug page probes the gateway `/health` instead.
+
+## Honest limits
+
+- OpenRouter only.
+- No Mac filesystem tools, WebAuthn, Cursor login, or window chrome.
+- The shipped UI still looks like a desktop shell; Electron RPCs are stubbed
+  rather than restyling the whole frontend.
+- Closing a browser tab does not stop the containers.
+
+## Leftover macOS package
+
+`npm run package` still builds the reconstructed Mac app with its in-process
+coordinator, Router, and optional local Docker VM. That path is independent of
+this Compose stack.

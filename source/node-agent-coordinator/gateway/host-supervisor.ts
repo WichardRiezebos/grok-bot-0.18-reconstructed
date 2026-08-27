@@ -46,13 +46,16 @@ export async function fetchHealth(
   const startMonotonicMs = timing.clock.monotonicNow();
   const report = (value: HealthReachabilityReport) => { try { onReachability?.(value, baseUrl); } catch { /* best effort */ } };
   try {
-    const response = await timing.healthProbeDeadline.run((signal) => fetch(`${baseUrl}/health`, { signal, ...(headers == null ? {} : { headers: { ...headers } }) }));
-    if (!response.ok) {
-      report({ outcome: outcomeForHttpStatus(response.status) ?? "network", method: "health", latencyMs: timing.clock.monotonicNow() - startMonotonicMs, baseUrlKind: classifyBaseUrlKind(baseUrl), httpStatus: response.status });
+    const outcome = await timing.healthProbeDeadline.run(async (signal) => {
+      const response = await fetch(`${baseUrl}/health`, { signal, ...(headers == null ? {} : { headers: { ...headers } }) });
+      if (!response.ok) return { kind: "http" as const, status: response.status };
+      return { kind: "json" as const, health: await response.json() as Record<string, unknown> };
+    });
+    if (outcome.kind === "http") {
+      report({ outcome: outcomeForHttpStatus(outcome.status) ?? "network", method: "health", latencyMs: timing.clock.monotonicNow() - startMonotonicMs, baseUrlKind: classifyBaseUrlKind(baseUrl), httpStatus: outcome.status });
       return null;
     }
-    const health = await response.json() as Record<string, unknown>;
-    return health.ok === true ? health : null;
+    return outcome.health.ok === true ? outcome.health : null;
   } catch (error) {
     const { outcome, causeSummary } = classifyGatewayFetchFailure(error);
     report({ outcome, method: "health", latencyMs: timing.clock.monotonicNow() - startMonotonicMs, baseUrlKind: classifyBaseUrlKind(baseUrl), causeSummary });

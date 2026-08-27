@@ -36,6 +36,40 @@ test("MCP discovery accepts both routed JSON and native generated values", async
       pageSize: 1,
       native: { retained: true },
     });
+    assert.deepEqual(loaded.module.toJsonArgs(undefined), {});
+    assert.deepEqual(loaded.module.toJsonArgs("undefined"), {});
+    assert.deepEqual(loaded.module.toJsonArgs(null), {});
+  } finally {
+    await loaded.dispose();
+  }
+});
+
+test("undefined routed MCP arguments become an empty protobuf Struct", async () => {
+  const loaded = await loadModule();
+  try {
+    for (const args of [undefined, "undefined", null]) {
+      let captured;
+      const backend = loaded.module.createDashboardSandBackendMcpExec({
+        getAccessToken: async () => "unused",
+        getMachineId: async () => "unused",
+        createClient: () => ({
+          executeSandMcpTool: async request => {
+            captured = request;
+            assert.deepEqual(request.args.toJson(), {});
+            return { result: { result: { case: "success", value: { content: [] } } } };
+          },
+        }),
+      });
+      const result = await backend.executeTool({
+        serverIdentifier: "user-Gmail",
+        toolName: "search_threads",
+        args,
+        toolCallId: "call-empty",
+        agentId: "agent-1",
+      });
+      assert.equal(result.result.case, "success");
+      assert.equal(typeof captured.args.toBinary, "function");
+    }
   } finally {
     await loaded.dispose();
   }

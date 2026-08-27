@@ -1,4 +1,5 @@
 import { Struct, type JsonValue } from "@bufbuild/protobuf";
+import { toJsonArgs } from "../mcp/mcp-validation.js";
 
 export const LIST_TOOLS_TIMEOUT_MS = 60_000;
 export const CONTROL_RPC_TIMEOUT_MS = 30_000;
@@ -53,7 +54,7 @@ export function createDashboardSandBackendMcpExec(deps: DashboardMcpExecDependen
         // receives raw values and fails while looking for `value.toJson()`.
         const requestArgs = args.args instanceof Struct
           ? args.args
-          : Struct.fromJson((args.args ?? {}) as JsonValue);
+          : Struct.fromJson(toJsonArgs(args.args) as JsonValue);
         const response = await client.executeSandMcpTool({ serverIdentifier: args.serverIdentifier, toolName: args.toolName, args: requestArgs, toolCallId: args.toolCallId, agentId: args.agentId ?? "" }, { timeoutMs: EXECUTE_TOOL_DIAL_DISCOVER_CALL_TIMEOUT_MS });
         return response.result ?? errorResult(`Backend MCP execution returned no result for "${args.toolName}".`);
       }

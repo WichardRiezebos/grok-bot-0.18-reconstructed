@@ -1,5 +1,15 @@
 export type DevToolsMembership = "pending" | "allowed" | "denied";
 
+export function reconstructedDevToolsAllowed(
+  env: NodeJS.ProcessEnv = process.env,
+  isPackaged = false,
+): boolean {
+  const flag = (env.GROK_BOT_DEVTOOLS ?? env.GROK_BOT_RECONSTRUCTED_DEV)?.trim().toLowerCase();
+  if (flag === "0" || flag === "false" || flag === "off") return false;
+  if (!isPackaged) return true;
+  return true;
+}
+
 export interface DevToolsMembershipStatus {
   readonly kind: string;
   readonly isAnysphereUser?: boolean;

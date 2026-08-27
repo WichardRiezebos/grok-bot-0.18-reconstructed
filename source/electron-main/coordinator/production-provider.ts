@@ -33,11 +33,16 @@ import {
   type DisabledToolsByServer,
 } from "./coordinator-resync.js";
 import {
+  attachCoordinatorStdio,
+  coordinatorInspectForkOptions,
+} from "./coordinator-inspect.js";
+import {
   COORDINATOR_PORT_CHANNEL,
   COORDINATOR_PORT_REQUEST_CHANNEL,
   createCoordinatorRuntime,
   resolveCoordinatorArtifactPath,
 } from "./coordinator-runtime.js";
+import { appendRoutedInferenceLog } from "../../shared/routed-inference-log.js";
 import {
   createCoordinatorRelaunchBackoff,
   createCoordinatorTelemetrySinks,
@@ -53,7 +58,11 @@ export interface ProductionCoordinatorUtilityProcess {
   fork(
     modulePath: string,
     args: readonly string[],
-    options: { readonly serviceName: string },
+    options: {
+      readonly serviceName: string;
+      readonly execArgv?: readonly string[];
+      readonly stdio?: "pipe" | "ignore" | readonly ("ignore" | "pipe")[];
+    },
   ): CoordinatorChildProcess;
 }
 
@@ -164,6 +173,13 @@ export interface ProductionCoordinatorPorts<Status extends ProductionCoordinator
     detectTimeZone(): string | null | undefined;
     getUserTimeZoneOverride(): string | null | undefined;
     getComputerUseModel(): unknown;
+    getInferenceRouterSettings(): {
+      readonly inferenceProvider: unknown;
+      readonly openRouterModel: unknown;
+      readonly openRouterComputerModel: unknown;
+      readonly openRouterReasoningEffort: unknown;
+      readonly openRouterComputerReasoningEffort: unknown;
+    };
     getAutoReviewInstructions(): unknown;
     getLocalToolPermission(): unknown;
     getWebauthnProxyEnabled(): unknown;
@@ -279,6 +295,7 @@ function validateProductionPorts<Status extends ProductionCoordinatorAuthStatus>
     "user time-zone override reader",
   );
   requiredFunction(ports.resync?.getComputerUseModel, "computer-use model reader");
+  requiredFunction(ports.resync?.getInferenceRouterSettings, "inference router settings reader");
   requiredFunction(
     ports.resync?.getAutoReviewInstructions,
     "auto-review instruction reader",
@@ -427,8 +444,18 @@ export function createProductionCoordinatorAdapter<
       });
       const createRuntime = () =>
         createCoordinatorRuntime({
-          fork: (path, options) =>
-            ports.utilityProcess.fork(path, [], { serviceName: options.serviceName }),
+          fork: (path, options) => {
+            const inspect = coordinatorInspectForkOptions(process.env);
+            const child = ports.utilityProcess.fork(path, [], {
+              serviceName: options.serviceName,
+              ...(inspect.execArgv == null ? {} : { execArgv: inspect.execArgv }),
+              ...(inspect.stdio == null ? {} : { stdio: inspect.stdio }),
+            });
+            if (inspect.inspectPort != null) {
+              attachCoordinatorStdio(child, line => appendRoutedInferenceLog(dataDir, line), inspect.inspectPort);
+            }
+            return child;
+          },
           createChannel: () => new ports.MessageChannelMain(),
           executors: executors as unknown as Record<
             string,

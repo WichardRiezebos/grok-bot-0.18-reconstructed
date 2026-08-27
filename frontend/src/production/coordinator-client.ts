@@ -50,6 +50,7 @@ function validateReply(method: string, value: unknown): unknown {
 
 export interface ProductionCoordinatorClient {
   readonly ready: Promise<void>;
+  getTransportState(): "connected" | "down";
   call(method: string, args?: unknown): Promise<unknown>;
   getAgentTranscriptWindow(args: CoordinatorTranscriptWindowRequest): Promise<CoordinatorTranscriptWindowResponse>;
   getAgentThread(args: CoordinatorAgentThreadRequest): Promise<CoordinatorAgentThreadResponse>;
@@ -67,6 +68,7 @@ export function createCoordinatorClient(portBridge: CoordinatorPortBridge): Prod
   let nextRequestId = 0;
   let disposed = false;
   let serving = false;
+  let transportState: "connected" | "down" = "down";
   let resolveReady = () => {};
   let rejectReady = (_reason: unknown) => {};
   const makeReady = () => new Promise<void>((resolve, reject) => {
@@ -87,6 +89,7 @@ export function createCoordinatorClient(portBridge: CoordinatorPortBridge): Prod
     if (disposed || port !== expectedPort) return;
     port = null;
     serving = false;
+    transportState = "down";
     rejectCalls(reason);
     for (const listener of transportListeners) listener("down");
     currentReady = makeReady();
@@ -103,6 +106,7 @@ export function createCoordinatorClient(portBridge: CoordinatorPortBridge): Prod
     if (value.kind === "lifecycle" && value.phase === "ready") {
       if (value.protocolVersion !== COORDINATOR_PROTOCOL_VERSION) return disconnect(expectedPort, "coordinator protocol version mismatch");
       serving = true;
+      transportState = "connected";
       resolveReady();
       for (const listener of transportListeners) listener("connected");
       return;
@@ -115,11 +119,11 @@ export function createCoordinatorClient(portBridge: CoordinatorPortBridge): Prod
       if (value.outcome.status === "ok") {
         try { waiting.resolve(validateReply(waiting.method, value.outcome.value)); }
         catch (error) { waiting.reject(error); }
-      } else if (value.outcome.status === "failed" && isRecord(value.outcome.failure)) {
+      } else {
         waiting.reject(new CoordinatorCallError(
-          typeof value.outcome.failure.code === "string" ? value.outcome.failure.code : "failed",
-          typeof value.outcome.failure.message === "string" ? value.outcome.failure.message : "Coordinator request failed",
-          typeof value.outcome.failure.transportKind === "string" ? value.outcome.failure.transportKind : undefined
+          isRecord(value.outcome.failure) && typeof value.outcome.failure.code === "string" ? value.outcome.failure.code : "failed",
+          isRecord(value.outcome.failure) && typeof value.outcome.failure.message === "string" ? value.outcome.failure.message : "Coordinator request failed",
+          isRecord(value.outcome.failure) && typeof value.outcome.failure.transportKind === "string" ? value.outcome.failure.transportKind : undefined
         ));
       }
       return;
@@ -165,6 +169,7 @@ export function createCoordinatorClient(portBridge: CoordinatorPortBridge): Prod
 
   return {
     ready,
+    getTransportState: () => transportState,
     call,
     getAgentTranscriptWindow: async (args) => await call("getAgentTranscriptWindow", args) as CoordinatorTranscriptWindowResponse,
     getAgentThread: async (args) => await call("getAgentThread", args) as CoordinatorAgentThreadResponse,
@@ -177,6 +182,7 @@ export function createCoordinatorClient(portBridge: CoordinatorPortBridge): Prod
     },
     subscribeTransport(listener) {
       transportListeners.add(listener);
+      listener(transportState);
       return () => transportListeners.delete(listener);
     },
     dispose() {

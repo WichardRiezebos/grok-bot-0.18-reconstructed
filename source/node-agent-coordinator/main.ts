@@ -10,7 +10,7 @@ import { createControlPortClient } from "./control-port-client.js";
 import { CoordinatorGatewayClient, HOST_ACCOUNT_SLOT, createCoordinatorGatewayClientTiming, type GatewayConnection } from "./gateway/gateway-client.js";
 import { createGatewayDnsDiagnosticReporter } from "./gateway/gateway-dns-diagnostics.js";
 import { coordinatorEventFamilyForSseChannel } from "./gateway/gateway-event-families.js";
-import { createGatewayRequestDispatch } from "./gateway/gateway-request-dispatcher.js";
+import { createGatewayRequestDispatch, failureFor } from "./gateway/gateway-request-dispatcher.js";
 import { SandHostSupervisor, createCoordinatorHostSupervisorTiming } from "./gateway/host-supervisor.js";
 import { createLocalExecDaemonRefreshPolicy, createLocalExecDaemonSupervisor } from "./local-exec/supervisor.js";
 import { McpOAuthForwarder } from "./oauth/mcp-oauth-forwarder.js";
@@ -20,6 +20,8 @@ import { createWebAuthnProvider } from "./webauthn/provider.js";
 import { createSpawnedWebAuthnSigner, resolveWebAuthnSignerPath } from "./webauthn/signer.js";
 import { ClientSideToolV2Relay } from "./client-side-tool-v2-relay.js";
 import { createCoordinatorInferenceRouter } from "./inference-router.js";
+import { setEnforceRedactionGate } from "../packages/redaction/privacy-context.js";
+import { setRedactionLogger } from "../packages/redaction/types.js";
 
 export interface McpOAuthPending {
   readonly serverName: string;
@@ -64,6 +66,8 @@ export interface ComposeCoordinatorDependencies {
 }
 
 export async function composeCoordinator(dependencies: ComposeCoordinatorDependencies = {}): Promise<void> {
+  setRedactionLogger({ info(attributes, message) { console.info(message, attributes); } });
+  setEnforceRedactionGate(() => process.env.NODE_ENV !== "development" && process.env.VITEST !== "true");
   const carrierIntake = await (dependencies.adoptCarrier ?? adoptCarrier)();
   if (!carrierIntake.adopted) {
     process.stderr.write(`node-agent-coordinator: ${carrierIntake.rejection.detail}\n`);
@@ -98,6 +102,7 @@ export async function composeCoordinator(dependencies: ComposeCoordinatorDepende
   let server: ReturnType<typeof createRendererPortServer>;
   let localExecSupervisor: ReturnType<typeof createLocalExecDaemonSupervisor>;
   const toolRelay = new ClientSideToolV2Relay((family, payload) => server.postEvent(family, payload));
+  let overlayAgentsEvent: (payload: unknown) => unknown = payload => payload;
 
   function handleGatewaySseEvent(event: { channel: string; payload: unknown }): void {
     if (event.channel === "mcp-oauth-pending") {
@@ -110,16 +115,17 @@ export async function composeCoordinator(dependencies: ComposeCoordinatorDepende
       toolRelay.accept(event.payload);
       return;
     }
-    if (event.channel === "agents") controlClient.postEvent("agents-event", { kind: "agents", event: event.payload });
+    const agentsPayload = event.channel === "agents" ? overlayAgentsEvent(event.payload) : event.payload;
+    if (event.channel === "agents") controlClient.postEvent("agents-event", { kind: "agents", event: agentsPayload });
     if (event.channel === "agent-upserted") controlClient.postEvent("agents-event", { kind: "agent-upserted", event: event.payload });
     const family = coordinatorEventFamilyForSseChannel(event.channel);
-    if (family != null) server.postEvent(family, event.payload);
+    if (family != null) server.postEvent(family, family === "agents" ? agentsPayload : event.payload);
   }
 
   async function seedAgentsRosterToMain(): Promise<void> {
     try {
-      const agents = await gatewayClient.dispatchCommand("listAgents", {});
-      controlClient.postEvent("agents-roster-seed", { agents });
+      const agents = overlayAgentsEvent({ agents: await gatewayClient.dispatchCommand("listAgents", {}) });
+      controlClient.postEvent("agents-roster-seed", { agents: (agents as { agents?: unknown }).agents ?? agents });
     } catch (error) {
       process.stderr.write(`node-agent-coordinator: agents roster seed skipped: ${String(error)}\n`);
     }
@@ -220,13 +226,18 @@ export async function composeCoordinator(dependencies: ComposeCoordinatorDepende
         ? command(commands, "executeRoutedMcpTool", args)
         : gatewayClient.dispatchCommand(method, args),
   });
+  overlayAgentsEvent = payload => inferenceRouter.overlayAgents(payload);
   const dispatchRequest = async (method: string, args: unknown, signal: AbortSignal) => {
     if (method === "sendPrompt" && typeof args === "object" && args != null) {
       const { clientNonce, traceparent } = args as Record<string, unknown>;
       recorder.beginSend({ accountSlot: HOST_ACCOUNT_SLOT, clientNonce: typeof clientNonce === "string" ? clientNonce : null, traceparent: typeof traceparent === "string" ? traceparent : null });
     }
-    const routed = await inferenceRouter.dispatch(method, args);
-    return routed.handled ? { status: "ok" as const, value: routed.value } : await gatewayDispatch(method, args, signal);
+    try {
+      const routed = await inferenceRouter.dispatch(method, args);
+      return routed.handled ? { status: "ok" as const, value: routed.value } : await gatewayDispatch(method, args, signal);
+    } catch (error) {
+      return { status: "failed" as const, failure: failureFor(error) };
+    }
   };
   server = createRendererPortServer(
     { post: (frame) => carrier.data.post(frame), close: () => carrier.data.close() },

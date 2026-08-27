@@ -3,6 +3,10 @@ import {
   parseCoordinatorAgentThreadRequest,
   parseCoordinatorTranscriptWindowRequest,
 } from "../shared/rpc/coordinator.js";
+import {
+  executeRoutedComputerTool,
+  listRoutedComputerToolDefinitions,
+} from "./routed-computer-exec.js";
 
 export const HOST_CAPABILITIES = [
   "orderedReplicasV1",
@@ -24,6 +28,7 @@ export interface HostGatewayDependencies {
   readonly hostEvents: {
     emit(event: unknown): unknown;
   };
+  emitSseEvent?(event: { readonly channel: string; readonly payload: unknown }): void;
   readonly rosterBookkeeping?: {
     readonly latestActiveAgentId: string | null;
   };
@@ -154,8 +159,8 @@ export function createHostGatewayApi(
     const mcp = deps.extensions.api("mcp").mcp;
     const executor = method(mcp, "createExecutor")(undefined, undefined, { agentId: args.agentId });
     return await method(executor, "execute")({}, {
-      name: args.toolName,
-      toolName: args.name,
+      name: args.name,
+      toolName: args.toolName,
       providerIdentifier: args.providerIdentifier,
       args: args.args,
       toolCallId: args.toolCallId,
@@ -303,13 +308,13 @@ export function createHostGatewayApi(
     updateAgent: (args: any) =>
       method(manager, "updateAgent")(args.id, args.profile),
     deleteAgent: async (args: any) => {
-      await method(sharing, "noteAgentDeleted")(args.id);
+      void method(sharing, "noteAgentDeleted")(args.id).catch(() => undefined);
       const result = await method(manager, "deleteAgent")(args.id);
       method(deps.extensions.api("session"), "forgetHandoff")(args.id);
-      await method(automations, "deleteAgentSchedules")(args.id).catch(
+      void method(automations, "deleteAgentSchedules")(args.id).catch(
         () => undefined
       );
-      await deps.releaseAgentBox(args.id);
+      void deps.releaseAgentBox(args.id).catch(() => undefined);
       deps.hostEvents.emit({
         kind: "notification-agent-forgotten",
         agentId: args.id
@@ -319,15 +324,15 @@ export function createHostGatewayApi(
     },
     deleteAgents: async (args: any) => {
       for (const id of args.ids) {
-        await method(sharing, "noteAgentDeleted")(id);
+        void method(sharing, "noteAgentDeleted")(id).catch(() => undefined);
       }
       const result = await method(manager, "deleteAgents")(args.ids);
       for (const id of args.ids) {
         method(deps.extensions.api("session"), "forgetHandoff")(id);
-        await method(automations, "deleteAgentSchedules")(id).catch(
+        void method(automations, "deleteAgentSchedules")(id).catch(
           () => undefined
         );
-        await deps.releaseAgentBox(id);
+        void deps.releaseAgentBox(id).catch(() => undefined);
         deps.hostEvents.emit({
           kind: "notification-agent-forgotten",
           agentId: id
@@ -512,7 +517,8 @@ export function createHostGatewayApi(
     getAgentChannels: (args: any) =>
       method(automations, "getAgentChannels")(args.id),
     connectChannel: async (args: any) => {
-      method(manager, "connectChannel")(args.id, args.platform, args.token);
+      const connected = method(manager, "connectChannel")(args.id, args.platform, args.token);
+      if (connected === false) throw new Error(`Failed to connect the ${String(args.platform)} channel.`);
       return method(automations, "getAgentChannels")(args.id);
     },
     disconnectChannel: async (args: any) => {
@@ -639,6 +645,22 @@ export function createHostGatewayApi(
     },
     listRoutedMcpTools,
     executeRoutedMcpTool,
+    listRoutedComputerTools: () => [...listRoutedComputerToolDefinitions()],
+    executeRoutedComputerTool: async (args: any) => {
+      const foreverBox = deps.extensions.api("forever-box");
+      const session = deps.extensions.api("session");
+      return await executeRoutedComputerTool({
+        box: {
+          ensureReady: (context: any, agentId: string) => foreverBox.box.ensureReady(context, agentId),
+          // Shared-desktop assignment lives on the inner box; window N is DISPLAY :N.
+          getAgentWindowIndex: (agentId: string) => foreverBox.box.inner?.getAgentWindowIndex?.(agentId),
+        },
+        startHandoff: request => method(session, "startHandoff")(request),
+        emitComputerAction: payload => {
+          deps.emitSseEvent?.({ channel: "computer-action", payload });
+        },
+      }, args);
+    },
     listBoxMcpServers: async ({ serverIdentifiers }: any) => {
       const servers = await method(
         deps.extensions.api("mcp"),

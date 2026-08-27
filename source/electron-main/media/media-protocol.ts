@@ -1,6 +1,7 @@
 import { createReadStream, promises as fs } from "node:fs";
 import { Readable } from "node:stream";
-import { reanchorSandPath } from "../../host/host-paths.js";
+import { reanchorSandPath, getSandRootDir } from "../../host/host-paths.js";
+import { isPathWithin } from "../../shared/node/paths.js";
 import { audioMimeFromPath, videoMimeFromPath } from "../../shared/media/image-mime.js";
 
 export const SAND_MEDIA_SCHEME = "sand-media";
@@ -52,7 +53,7 @@ export async function handleRemoteMediaRequest(reader: SandMediaRemoteReader, ra
   return new Response(new Uint8Array(chunk.data), { status: partial ? 206 : 200, headers });
 }
 export async function serveLocalMedia(rawPath: string, request: Request, reanchor: (path: string) => string = reanchorSandPath): Promise<Response | null> {
-  const filePath = reanchor(rawPath); const mime = videoMimeFromPath(filePath) ?? audioMimeFromPath(filePath); if (mime == null) return null;
+  const filePath = reanchor(rawPath); if (!isPathWithin(getSandRootDir(), filePath, { isInclusive: true })) return null; const mime = videoMimeFromPath(filePath) ?? audioMimeFromPath(filePath); if (mime == null) return null;
   let size: number; try { const stat = await fs.stat(filePath); if (!stat.isFile()) return null; size = stat.size; } catch { return null; }
   const range = parseRangeHeader(request.headers.get("range"), size); const start = range?.start ?? 0; const end = range?.end ?? size - 1;
   const headers = new Headers({ "content-type": mime, "content-length": String(end - start + 1), "accept-ranges": "bytes", "cache-control": "no-cache" });

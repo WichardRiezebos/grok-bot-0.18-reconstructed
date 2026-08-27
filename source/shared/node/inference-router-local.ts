@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -27,6 +28,14 @@ export function resolveClaudeCodeCliPath(): string | null {
   return firstExecutable([process.env.CLAUDE_CODE_PATH, join(home, ".local", "bin", "claude"), join(home, ".claude", "local", "claude"), ...pathCandidates("claude"), "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]);
 }
 
+function hasClaudeCodeKeychainLogin(): boolean {
+  if (process.platform !== "darwin") return false;
+  for (const service of ["Claude Code-credentials", "Claude Code"]) {
+    const result = spawnSync("security", ["find-generic-password", "-s", service], { stdio: "ignore" });
+    if (result.status === 0) return true;
+  }
+  return false;
+}
 function hasUsableCodexLogin(path: string): boolean {
   try {
     const stat = lstatSync(path);
@@ -51,6 +60,6 @@ export function getLocalInferenceCliStatus(): { readonly codex: LocalInferenceCl
     // Codex inference is a Grok Bot-owned HTTP transport authenticated by the
     // existing Codex login. The CLI binary is not in the request path.
     codex: { installed: hasCodexAuthFile, authenticated: hasCodexLogin, executablePath: codexPath },
-    "claude-code": { installed: claudePath != null, authenticated: existsSync(join(home, ".claude", ".credentials.json")) || (process.env.ANTHROPIC_API_KEY?.length ?? 0) > 0, executablePath: claudePath },
+    "claude-code": { installed: claudePath != null, authenticated: existsSync(join(home, ".claude", ".credentials.json")) || hasClaudeCodeKeychainLogin() || (process.env.ANTHROPIC_API_KEY?.length ?? 0) > 0, executablePath: claudePath },
   };
 }

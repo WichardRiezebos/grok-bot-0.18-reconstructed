@@ -10,6 +10,7 @@ import { buildFidelityReconstructedAsar } from "./clean-build.mjs";
 import { signAppBundleAdHoc } from "./lib/codesign.mjs";
 import { verifyOfficialMacReference, verifyReconstructedMacPackage } from "./lib/macos-package-verification.mjs";
 import { run } from "./lib/process.mjs";
+import { applyReconstructedDockIcon } from "./lib/reconstructed-dock-icon.mjs";
 import { SYSTEM_TOOLS } from "./lib/system-tools.mjs";
 
 if (process.platform !== "darwin") {
@@ -55,6 +56,7 @@ await run(SYSTEM_TOOLS.plutil, ["-insert", "CFBundleURLTypes", "-xml", "<array><
 // Keep CFBundleName/CFBundleExecutable as "Grok Bot": Electron derives the
 // expected nested helper names from it, and this build intentionally reuses the
 // exact ABI-matched 0.18 runtime. CFBundleDisplayName provides the fork's name.
+await applyReconstructedDockIcon(outputApp);
 
 await rm(path.join(outputApp, "Contents", "_CodeSignature"), { recursive: true, force: true });
 try {

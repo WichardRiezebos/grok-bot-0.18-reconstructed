@@ -74,6 +74,8 @@ export class ReadOnlySqliteBlobStore {
           | undefined;
         if (row?.data instanceof Uint8Array) return row.data;
       } catch (error) {
+        try { connection.db.close(); } catch {}
+        readConnections.delete(dbPath);
         console.error(
           `[transcript-mirror-worker] blob read failed in ${dbPath}:`,
           error

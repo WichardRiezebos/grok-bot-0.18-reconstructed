@@ -1,4 +1,5 @@
 import { Struct, Value, type JsonValue } from "@bufbuild/protobuf";
+import { sanitizeToolInputForStruct } from "../../shared/struct-json.js";
 import {
   InferenceAgentTool,
   InferenceAnthropicOptions,
@@ -33,14 +34,19 @@ type Loose = Record<string, any>;
 const DEFAULT_IMAGE_MIME_TYPE = "image/png";
 
 export function applyToolCallArgs(toolCall: InferenceToolCall, args: unknown, explicitRawToolCallArgs?: string): void {
+  const sanitized = sanitizeToolInputForStruct(args);
   const isJsonObject = typeof args === "object" && args !== null && !Array.isArray(args);
-  if (isJsonObject) {
-    toolCall.args = Struct.fromJson(args as JsonValue);
+  const emptyish = args == null || args === "" || args === "undefined" || args === "null" || (typeof args === "string" && ["", "undefined", "null"].includes(args.trim()));
+  if (isJsonObject || emptyish || Object.keys(sanitized).length > 0) {
+    toolCall.args = Struct.fromJson(sanitized as JsonValue);
     if (explicitRawToolCallArgs !== undefined) toolCall.rawToolCallArgs = explicitRawToolCallArgs;
     return;
   }
   const rawText = typeof args === "string" ? args : JSON.stringify(args);
-  if (rawText === undefined) throw new Error(`cannot represent tool call arguments of type ${typeof args} as a JSON object or raw text`);
+  if (rawText === undefined) {
+    toolCall.args = Struct.fromJson({} as JsonValue);
+    return;
+  }
   toolCall.rawToolCallArgs = explicitRawToolCallArgs ?? rawText;
 }
 

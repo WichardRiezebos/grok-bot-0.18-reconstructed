@@ -164,7 +164,7 @@ function thrown(id: number, error: unknown, errorCode = "BOX_EXEC_DAEMON_ERROR")
   });
 }
 
-class BoxExecRuntime {
+export class BoxExecRuntime {
   readonly #environment: NodeJS.ProcessEnv;
   readonly #foreground = new Set<ChildProcessWithoutNullStreams>();
   readonly #background = new Map<number, BackgroundProcess>();
@@ -327,6 +327,12 @@ class BoxExecRuntime {
     const notify = () => { wake?.(); wake = undefined; };
     child.stdout.on("data", data => { events.push({ case: "stdout", data: String(data) }); notify(); });
     child.stderr.on("data", data => { events.push({ case: "stderr", data: String(data) }); notify(); });
+    child.once("error", error => {
+      events.push({ case: "stderr", data: errorText(error) });
+      exitCode = 1;
+      done = true;
+      notify();
+    });
     child.once("close", (code, childSignal) => { exitCode = code ?? 1; exitSignal = childSignal ?? ""; done = true; notify(); });
     const abort = () => this.kill(child);
     signal.addEventListener("abort", abort, { once: true });
@@ -376,10 +382,15 @@ class BoxExecRuntime {
       };
       this.#background.set(shellId, process);
       const queueWrite = (data: string | Uint8Array) => {
-        process.writeQueue = process.writeQueue.then(() => appendFile(terminalPath, data));
+        process.writeQueue = process.writeQueue.then(() => appendFile(terminalPath, data)).catch(() => {});
       };
       child.stdout.on("data", data => { queueWrite(data); });
       child.stderr.on("data", data => { queueWrite(data); });
+      child.once("error", error => {
+        this.#background.delete(shellId);
+        queueWrite(`${errorText(error)}\n`);
+        queueWrite(terminalFooter(1, startedAt));
+      });
       child.once("close", code => {
         this.#background.delete(shellId);
         queueWrite(terminalFooter(code ?? 1, startedAt));

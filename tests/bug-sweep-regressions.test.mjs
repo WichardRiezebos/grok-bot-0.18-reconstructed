@@ -1,0 +1,99 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+test("routed MCP execute preserves name and toolName without swapping them", async () => {
+  const source = await readFile(path.join(repoRoot, "source/host/host-gateway-api.ts"), "utf8");
+  assert.match(source, /name:\s*args\.name,\s*\n\s*toolName:\s*args\.toolName,/);
+  assert.doesNotMatch(source, /name:\s*args\.toolName/);
+  assert.doesNotMatch(source, /toolName:\s*args\.name/);
+});
+
+test("coordinator dispatchRequest converts routed failures into failed outcomes", async () => {
+  const source = await readFile(path.join(repoRoot, "source/node-agent-coordinator/main.ts"), "utf8");
+  assert.match(source, /const routed = await inferenceRouter\.dispatch\(method, args\);/);
+  assert.match(source, /return \{ status: "failed" as const, failure: failureFor\(error\) \}/);
+});
+
+test("provider deferreds attach no-op rejection handlers", async () => {
+  const source = await readFile(path.join(repoRoot, "source/host/extensions/inference/provider-session.ts"), "utf8");
+  assert.match(source, /void resolvers\.promise\.catch\(\(\) => \{\}\)/);
+  assert.match(source, /void result\.response\.catch\(\(\) => \{\}\)/);
+});
+
+test("verify.mjs reconciles router-patched renderer checksums", async () => {
+  const source = await readFile(path.join(repoRoot, "scripts/verify.mjs"), "utf8");
+  assert.match(source, /renderer-router-extension\.json/);
+  assert.match(source, /extensionByPath\.get\(file\.path\) \?\? file/);
+});
+
+test("gateway send-post deadline applies to delete, not Computer tools", async () => {
+  const source = await readFile(path.join(repoRoot, "source/node-agent-coordinator/gateway/gateway-client.ts"), "utf8");
+  assert.match(source, /method === "deleteAgent" \|\| method === "deleteAgents"/);
+  assert.match(source, /async command\(method: string, args: unknown, init\?: RequestInit\): Promise<unknown> \{ return \(await this\.request\(method, args, init\)\)\.result; \}/);
+});
+
+test("box-exec daemon attaches spawn error listeners instead of crashing", async () => {
+  const source = await readFile(path.join(repoRoot, "source/box-exec-daemon/server.ts"), "utf8");
+  assert.match(source, /async \*shellStream[\s\S]*child\.once\("error"/);
+  assert.match(source, /async spawnBackground[\s\S]*child\.once\("error"/);
+  assert.match(source, /process\.writeQueue = process\.writeQueue\.then\(\(\) => appendFile\(terminalPath, data\)\)\.catch\(\(\) => \{\}\)/);
+});
+
+test("box Chrome converge disables GPU and waits for fork VNC", async () => {
+  const source = await readFile(path.join(repoRoot, "source/electron-main/box/local-docker-host-connector.ts"), "utf8");
+  assert.match(source, /installLocalDockerChromeConverge/);
+  assert.match(source, /--disable-gpu --disable-software-rasterizer/);
+  assert.match(source, /RESTART_CHROME/);
+  assert.match(source, /sand-chrome-keep/);
+  assert.match(source, /timeout 60 bash \/tmp\/sand-chrome-converge\.sh/);
+  assert.match(source, /sand-data\/chrome-profiles/);
+  assert.match(source, /setsid \/usr\/local\/bin\/sand-chrome-keep.*&/);
+  assert.match(source, /start-window\.sand-orig/);
+  assert.match(source, /VNC_PORT=\$\(\(5900 \+ DISPLAY_NUM\)\)/);
+});
+
+test("local VM suppresses the backend image-update signal so idle updates cannot docker-restart it", async () => {
+  const source = await readFile(path.join(repoRoot, "source/host/extensions/forever-box/extension.ts"), "utf8");
+  assert.match(source, /hostBundleAutoUpdate = isHostBundleAutoUpdateEnabled\(\)/);
+  assert.match(source, /hostBundleAutoUpdate \? backendLifecycleClient : \{ recreateInBox: backendLifecycleClient\.recreateInBox\.bind\(backendLifecycleClient\), fetchImageUpdateAvailable: async \(\) => false \}/);
+});
+
+test("live view prefers the agent's fork VNC URL", async () => {
+  const hostBox = await readFile(path.join(repoRoot, "source/host/extensions/forever-box/host-box.ts"), "utf8");
+  const recovered = await readFile(path.join(repoRoot, "frontend/src/recovered/features/computer/shell/model.ts"), "utf8");
+  const production = await readFile(path.join(repoRoot, "frontend/src/production/model.ts"), "utf8");
+  assert.match(hostBox, /export function preferredBoxVncUrl/);
+  assert.match(hostBox, /window\.windowIndex > best\.index/);
+  assert.match(recovered, /function preferredStatusVncUrl/);
+  assert.match(production, /index >= bestIndex/);
+});
+
+test("OpenRouter reasoning streams into the Thinking row instead of a blank gap", async () => {
+  const source = await readFile(path.join(repoRoot, "source/shared/openrouter-models.ts"), "utf8");
+  assert.match(source, /exclude: false/);
+  assert.doesNotMatch(source, /exclude: true/);
+});
+
+test("coordinator resync pushes OpenRouter model and effort at startup", async () => {
+  const source = await readFile(path.join(repoRoot, "source/electron-main/coordinator/coordinator-resync.ts"), "utf8");
+  assert.match(source, /getInferenceRouterSettings/);
+  assert.match(source, /await step\("inference_router"/);
+});
+
+test("coordinator hello on a live session re-sends ready instead of exiting", async () => {
+  const source = await readFile(path.join(repoRoot, "source/node-agent-coordinator/renderer-port-server.ts"), "utf8");
+  assert.doesNotMatch(source, /hello repeated on a live session/);
+  assert.match(source, /phase === "serving"/);
+  assert.match(source, /inFlight.clear\(\)/);
+});
+
+test("routed Computer JSON schema lists every property in required", async () => {
+  const source = await readFile(path.join(repoRoot, "source/shared/routed-computer-tools.ts"), "utf8");
+  assert.match(source, /function strictObject/);
+  assert.match(source, /openAiStrictSchemaGap/);
+});

@@ -19,6 +19,8 @@ export interface CoordinatorChildProcess {
   postMessage(value: unknown, ports: CoordinatorMessagePort[]): void;
   on(event: "exit", listener: (code: number | null) => void): void;
   kill(): void;
+  readonly stdout?: { on(event: "data", listener: (chunk: Buffer | string) => void): unknown } | null;
+  readonly stderr?: { on(event: "data", listener: (chunk: Buffer | string) => void): unknown } | null;
 }
 
 export interface CoordinatorLaunchHandle {

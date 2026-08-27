@@ -517,6 +517,7 @@ const TELEMETRY_DOMAIN_BY_METHOD: Record<CoordinatorMethod, string> = {
   getAgentTranscriptWindow: "transcript", getAgentThread: "transcript", getAgentTranscriptTail: "transcript", openAgentTail: "transcript", getConversationOutline: "transcript",
   sendPrompt: "send", promptAcceptanceStatus: "send", reactToMessage: "send",
   listRoutedMcpTools: "plugins", executeRoutedMcpTool: "plugins",
+  listRoutedComputerTools: "computer", executeRoutedComputerTool: "computer",
   respondToWidget: "widgets", dismissWidget: "widgets", submitSecret: "widgets",
   resolveAutoReviewApproval: "approvals", resolveLocalToolPermission: "approvals",
   listAgents: "roster", countAgents: "roster", searchAgents: "roster", createAgent: "roster",

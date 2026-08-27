@@ -48,38 +48,48 @@ export function createMcpRuntime<
   },
 >(deps: McpRuntimeDependencies<TManager>) {
   let mcpManager: TManager | undefined;
+  let managerPromise: Promise<TManager> | undefined;
 
   async function ensureMcpManager(): Promise<TManager> {
     if (mcpManager != null) return mcpManager;
-    const manager = await deps.createManager({
-      settingsStore: deps.settingsStore,
-      onAccountScopeApplied: () => void deps.pushBoxSecrets(),
-      getAccessToken: async ({ backendUrl }) => {
-        const service = await deps.ensureCursorAuthService();
-        return await service.getValidAccessToken({ backendUrl });
-      },
-      getMachineId: deps.getMachineId,
-      listBoxMcpServers: deps.listBoxMcpServers,
-      onConnectorAuth: (report) => deps.reportConnectorAuth(report),
-      onMcpDiagnostic: (failure) =>
-        deps.reportDiagnostic(failure.leg, failure.errorClass),
-    });
-    mcpManager = manager;
-    void deps
-      .cleanupLegacyAuth(deps.sandRootDir())
-      .catch((error: unknown) =>
-        deps.reportFailure("mcp-auth-cleanup", "startup-scrub", error),
-      );
-    manager.setAuthCompletionObserver((completion) => {
-      deps.broadcast("sand:mcp-auth-event", completion);
-      deps.refreshHostMcp(completion);
-    });
-    return manager;
+    managerPromise ??= (async () => {
+      const manager = await deps.createManager({
+        settingsStore: deps.settingsStore,
+        onAccountScopeApplied: () => void deps.pushBoxSecrets(),
+        getAccessToken: async ({ backendUrl }) => {
+          const service = await deps.ensureCursorAuthService();
+          return await service.getValidAccessToken({ backendUrl });
+        },
+        getMachineId: deps.getMachineId,
+        listBoxMcpServers: deps.listBoxMcpServers,
+        onConnectorAuth: (report) => deps.reportConnectorAuth(report),
+        onMcpDiagnostic: (failure) =>
+          deps.reportDiagnostic(failure.leg, failure.errorClass),
+      });
+      mcpManager = manager;
+      void deps
+        .cleanupLegacyAuth(deps.sandRootDir())
+        .catch((error: unknown) =>
+          deps.reportFailure("mcp-auth-cleanup", "startup-scrub", error),
+        );
+      manager.setAuthCompletionObserver((completion) => {
+        deps.broadcast("sand:mcp-auth-event", completion);
+        deps.refreshHostMcp(completion);
+      });
+      return manager;
+    })();
+    try {
+      return await managerPromise;
+    } catch (error) {
+      managerPromise = undefined;
+      throw error;
+    }
   }
 
   async function resetMcpManager(): Promise<void> {
     const manager = mcpManager;
     mcpManager = undefined;
+    managerPromise = undefined;
     await manager?.dispose();
   }
 
@@ -89,6 +99,7 @@ export function createMcpRuntime<
     dispose: (): void => {
       void mcpManager?.dispose();
       mcpManager = undefined;
+      managerPromise = undefined;
     },
   };
 }

@@ -32,7 +32,7 @@ import { LocalLsExecutor } from "../packages/local-exec/ls.js";
 import { LocalReadExecutor } from "../packages/local-exec/read.js";
 import { BaseShellCoreExecutor } from "../packages/local-exec/shell-core.js";
 import { LocalShellStreamExecutor } from "../packages/local-exec/shell-stream.js";
-import { MockIgnoreService, MockPermissionsService } from "../packages/local-exec/tests/common.js";
+import { ProductionIgnoreService, ProductionPermissionsService } from "../packages/local-exec/production-services.js";
 import { ReadError, ReadResult } from "../packages/proto/generated/agent/v1/read_exec_pb.js";
 import { ShellStream, ShellStreamStderr } from "../packages/proto/generated/agent/v1/shell_exec_pb.js";
 import type { SandboxPolicy as ProtoSandboxPolicy } from "../packages/proto/generated/agent/v1/sandbox_pb.js";
@@ -250,8 +250,8 @@ export function createDefaultProductionLocalExecExecutor(options: {
 } = {}): LocalExecExecutor {
   const managerRuntime: LocalExecManagerRuntime<SimpleControlledExecManager> = {
     build(root, maxFileBytes, guards) {
-      const permissionsService = new MockPermissionsService();
-      const ignoreService = new MockIgnoreService();
+      const ignoreService = new ProductionIgnoreService(root);
+      const permissionsService = new ProductionPermissionsService(ignoreService);
       const terminalExecutor = createDefaultTerminalExecutor({
         env: { CURSOR_AGENT: "1", SAND_AGENT: "1" },
       }).clone(root);

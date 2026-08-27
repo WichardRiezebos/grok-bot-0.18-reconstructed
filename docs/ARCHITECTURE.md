@@ -3,7 +3,7 @@
 The repository keeps two editable source roots:
 
 - `source/` contains the Electron main, host, coordinator, local-exec, shared,
-  and protocol reconstruction.
+  protocol reconstruction, and the Docker web control plane (`source/server-main/`).
 - `frontend/` contains the React renderer reconstruction.
 
 The upstream 0.18.0 application is an external, checksum-pinned build input.

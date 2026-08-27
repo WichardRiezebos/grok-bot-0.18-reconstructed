@@ -22,6 +22,10 @@ export function resolveEnforceRedaction(
   return context.privacyMode !== PrivacyMode.UNSPECIFIED && isGlobalEnforcementEnabled();
 }
 
+export function setEnforceRedactionGate(gate: (() => boolean | undefined) | undefined): void {
+  enforceRedactionGate = gate;
+}
+
 export function privacyContextFromMode(
   privacyMode: PrivacyModeValue,
   enforceRedaction?: boolean,

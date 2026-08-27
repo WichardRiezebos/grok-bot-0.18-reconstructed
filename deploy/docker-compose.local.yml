@@ -1,0 +1,7 @@
+services:
+  control:
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:-http://127.0.0.1:8080}
+      RUNTIME_DEBUG: ${RUNTIME_DEBUG:-1}

@@ -1,5 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
+import { setEnforceRedactionGate } from "../packages/redaction/privacy-context.js";
+import { setRedactionLogger } from "../packages/redaction/types.js";
 import {
   commandErrorReportToTelemetry,
   commandSuccessReportToTelemetry
@@ -142,6 +144,8 @@ export interface ProductionExtensionHostAdapters {
  * MCP completion, request context, auditing, and runner construction are concrete.
  */
 export function createProductionSandHost(ports: ProductionSandHostPorts): SandHost {
+  setRedactionLogger({ info(attributes, message) { console.info(message, attributes); } });
+  setEnforceRedactionGate(() => process.env.NODE_ENV !== "development" && process.env.VITEST !== "true");
   let extensions: HostExtensionRegistry | undefined;
   const requireExtensions = (): HostExtensionRegistry => {
     if (extensions == null) throw new Error("production host extensions are not started");
@@ -645,17 +649,20 @@ export class SandHost {
   getApi(): Record<string, DynamicMethod> {
     const extensions = this.requireHostExtensions();
     const rosterBookkeeping = this.requireRosterBookkeeping();
-    return createHostGatewayApi(this.runtime.createGatewayDependencies({
-      extensions,
-      hostEvents: this.hostEvents,
-      rosterBookkeeping,
-      getHealth: () => this.getHealth(),
-      decorateForeverBoxStatus: status => this.decorateForeverBoxStatus(status),
-      kickstartIfPending: agentId => this.kickstartIfPending(agentId),
-      requestDiskSaverAudit: agentId => this.requestDiskSaverAudit(agentId),
-      releaseAgentBox: agentId => this.releaseAgentBox(agentId),
-      forgetLocalToolPermission: agentId => this.forgetLocalToolPermission(agentId)
-    }));
+    return createHostGatewayApi({
+      ...this.runtime.createGatewayDependencies({
+        extensions,
+        hostEvents: this.hostEvents,
+        rosterBookkeeping,
+        getHealth: () => this.getHealth(),
+        decorateForeverBoxStatus: status => this.decorateForeverBoxStatus(status),
+        kickstartIfPending: agentId => this.kickstartIfPending(agentId),
+        requestDiskSaverAudit: agentId => this.requestDiskSaverAudit(agentId),
+        releaseAgentBox: agentId => this.releaseAgentBox(agentId),
+        forgetLocalToolPermission: agentId => this.forgetLocalToolPermission(agentId)
+      }),
+      emitSseEvent: event => this.emit(event),
+    });
   }
 
   forgetLocalToolPermission(agentId: string): void {
@@ -953,6 +960,9 @@ export class SandHost {
   }
 
   private emit(event: unknown): void {
-    for (const listener of this.listeners) listener(event);
+    for (const listener of this.listeners) {
+      try { listener(event); }
+      catch (error) { console.error("[sand-host] event listener failed", error); }
+    }
   }
 }

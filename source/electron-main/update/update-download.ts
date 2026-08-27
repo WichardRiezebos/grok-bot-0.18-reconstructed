@@ -27,15 +27,28 @@ export async function downloadAndVerify(options: DownloadAndVerifyOptions): Prom
     const file = createWriteStream(options.destinationPath);
     try {
       const reader = response.body.getReader();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        hash?.update(value);
-        receivedBytes += value.byteLength;
-        options.onProgress?.({ receivedBytes, totalBytes });
-        if (!file.write(value)) await new Promise<void>((resolve, reject) => { file.once("drain", resolve); file.once("error", reject); });
-      }
-      await new Promise<void>((resolve, reject) => { file.end((error?: Error | null) => error == null ? resolve() : reject(error)); });
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => { file.off("error", onError); reject(error); };
+        file.on("error", onError);
+        const pump = async () => {
+          try {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              hash?.update(value);
+              receivedBytes += value.byteLength;
+              options.onProgress?.({ receivedBytes, totalBytes });
+              if (!file.write(value)) await new Promise<void>((drainResolve, drainReject) => {
+                const onDrain = () => { file.off("error", drainReject); drainResolve(); };
+                file.once("drain", onDrain);
+                file.once("error", drainReject);
+              });
+            }
+            file.end((error?: Error | null) => error == null ? resolve() : reject(error));
+          } catch (error) { reject(error); }
+        };
+        void pump();
+      });
     } catch (error) { file.destroy(); throw error; }
     if (hash != null && options.sha256 != null) {
       const digest = hash.digest("hex");

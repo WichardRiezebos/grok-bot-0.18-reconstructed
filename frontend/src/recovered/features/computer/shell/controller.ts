@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { DesktopBridge } from "../../../contracts/desktop-bridge";
 import type { TranscriptComputerHandoff } from "../../conversation/workspace/model";
 import type { ProductionCoordinatorClient } from "../../../../production/coordinator-client";
+import { createStrictModeDisposalGuard } from "../../../../production/strict-mode-disposal";
 import {
   projectComputerMonitors,
   projectComputerCursor,
@@ -79,6 +80,9 @@ export function useComputerExperience(input: {
       handBackForeverBox: ({ id, trigger }) => client.call("handBackForeverBox", { id, trigger })
     }
   }), [client]);
+  const statusDisposalGuard = useRef<ReturnType<typeof createStrictModeDisposalGuard> | null>(null);
+  if (statusDisposalGuard.current == null) statusDisposalGuard.current = createStrictModeDisposalGuard();
+  useEffect(() => statusDisposalGuard.current!.attach(statusStore), [statusStore]);
   const statusSnapshots = useMemo(
     () => activeAgentId == null || statusStore == null ? null : statusStore.statusSnapshotsFor(activeAgentId),
     [activeAgentId, statusStore]
@@ -190,7 +194,6 @@ export function useComputerExperience(input: {
       if (didConnect) statusStore.noteReconnect();
       else connect();
     });
-    void client.ready.then(connect, () => {});
     const onFocus = () => statusStore.noteWindowFocus();
     window.addEventListener("focus", onFocus);
     return () => {
@@ -200,7 +203,6 @@ export function useComputerExperience(input: {
       stopComputerActions();
       stopTransport();
       window.removeEventListener("focus", onFocus);
-      statusStore.dispose();
     };
   }, [client, statusStore]);
 

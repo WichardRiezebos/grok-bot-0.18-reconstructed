@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { Struct } from "@bufbuild/protobuf";
+import { Struct, type JsonValue } from "@bufbuild/protobuf";
+import { sanitizeToolInputForStruct } from "../../shared/struct-json.js";
 import type { Context } from "../../packages/context/core.js";
 import type { RemoteExecManager } from "../../packages/agent-exec/remote.js";
 import type { ResourceAccessor } from "../../packages/agent-exec/resource-provider.js";
@@ -75,7 +76,7 @@ export function buildSandComputerClassifierRiskTarget(args: { canonicalTarget: R
   }));
   return new SmartModeRiskTarget({
     action: SAND_COMPUTER_CLASSIFIER_TARGET_ACTION,
-    arguments: Struct.fromJson(argumentsJson),
+    arguments: Struct.fromJson(sanitizeToolInputForStruct(argumentsJson) as JsonValue),
   });
 }
 export function summarizeBlockedAction(target: ReturnType<typeof buildSandComputerAutoReviewCanonicalTarget>, fingerprint: string, reason: string) {

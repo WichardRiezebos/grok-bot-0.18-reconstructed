@@ -3,6 +3,7 @@ import type { ProductionDisposable, ProductionServiceContext } from "../main-pro
 import { registerExperimentsIpc } from "../experiments/experiments-ipc.js";
 import { registerSettingsIpc } from "../prefs/settings-ipc.js";
 import { createTrustedSenderGuards, registerSecretsIpc } from "../secrets/secrets-ipc.js";
+import { installLocalDockerBoxSecrets, writeLocalDockerBoxSecrets } from "../box/local-docker-host-connector.js";
 import { reportDesktopEdgeFailure } from "../desktop-edge-failures.js";
 import { requireDisposable, requireFunction, requireObject } from "./provider-guards.js";
 
@@ -44,6 +45,16 @@ export function createProductionSecretsIpcRegistrar(): ProductionIpcRegistrar {
       guards: createTrustedSenderGuards(context.getTrustedContents),
       stores: context.secretsStores,
       pushBoxSecrets: () => context.secretsStores.pushBoxSecrets.push("edit"),
+      afterSecretsMutation: async () => {
+        const settings = context.settings.settingsStore;
+        try {
+          await writeLocalDockerBoxSecrets(settings.settingsPath, (await context.secretsStores.userSecretsStore.exportSnapshot()).secrets);
+        } catch {
+          return false;
+        }
+        if (settings.getBoxRuntime() !== "local-docker") return undefined;
+        return await installLocalDockerBoxSecrets(settings.settingsPath);
+      },
     });
   };
 }

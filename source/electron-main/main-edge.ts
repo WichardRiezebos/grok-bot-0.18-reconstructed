@@ -7,6 +7,8 @@ import { isValidIanaTimeZone } from "../shared/timezone.js";
 import { sandWebauthnProxyMirroredEnablement } from "../shared/webauthn-proxy-availability.js";
 import { reportDesktopEdgeFailure } from "./desktop-edge-failures.js";
 import { isSandInferenceProvider } from "../shared/inference-router.js";
+import { DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENROUTER_REASONING_EFFORT, normalizeOpenRouterModelId, normalizeOpenRouterReasoningEffort, resolveOpenRouterComputerModel, resolveOpenRouterModel, resolveOpenRouterReasoningEffort } from "../shared/openrouter-models.js";
+import { fetchOpenRouterCatalog, readOpenRouterApiKey } from "../shared/node/openrouter-models.js";
 import { getLocalInferenceCliStatus } from "../shared/node/inference-router-local.js";
 import { isSandBoxRuntime } from "../shared/box-runtime.js";
 import { getLocalDockerStatus, startLocalDockerBox, stopLocalDockerBox } from "./box/local-docker-host-connector.js";
@@ -74,6 +76,39 @@ function themeController(deps: MainEdgeDeps) { return required(deps.readThemeCon
 function egressController(deps: MainEdgeDeps) { return required(deps.readEgressTunnelController, MAIN_EDGE_EGRESS_TUNNEL_UNAVAILABLE, "The egress tunnel controller is not running."); }
 async function echo(deps: MainEdgeDeps, field: string, value: unknown, label: string): Promise<unknown> { const result = await deps.syncHostSettingsToBox({ [field]: value }); if (result == null) throw new SandHostSettingsUnreachableError(`Couldn't reach the computer to save ${label}.`); return result[field] ?? null; }
 function computerUseModel(deps: MainEdgeDeps): unknown { const stored = invoke(deps.agentPrefsStore, "getComputerUseModel"); const override = deps.getComputerUseModelOverride(); return resolveComputerUseModelSelection({ ...(isSandAgentModelSelection(stored) ? { storedModel: stored } : {}), ...(isSandAgentModelSelection(override) ? { overrideModel: override } : {}) }) ?? null; }
+function openRouterModel(deps: MainEdgeDeps): string {
+  try { return resolveOpenRouterModel(invoke(deps.settingsStore, "getOpenRouterModel")); }
+  catch { return resolveOpenRouterModel(undefined); }
+}
+function storedOpenRouterComputerModel(deps: MainEdgeDeps): string | null {
+  try {
+    const stored = invoke(deps.settingsStore, "getOpenRouterComputerModel");
+    return normalizeOpenRouterModelId(stored) ?? null;
+  } catch { return null; }
+}
+function openRouterComputerModel(deps: MainEdgeDeps): string {
+  return resolveOpenRouterComputerModel(storedOpenRouterComputerModel(deps), openRouterModel(deps));
+}
+function storedOpenRouterReasoningEffort(deps: MainEdgeDeps): string {
+  try { return resolveOpenRouterReasoningEffort(invoke(deps.settingsStore, "getOpenRouterReasoningEffort"), DEFAULT_OPENROUTER_REASONING_EFFORT); }
+  catch { return DEFAULT_OPENROUTER_REASONING_EFFORT; }
+}
+function storedOpenRouterComputerReasoningEffort(deps: MainEdgeDeps): string {
+  try { return resolveOpenRouterReasoningEffort(invoke(deps.settingsStore, "getOpenRouterComputerReasoningEffort"), DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT); }
+  catch { return DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT; }
+}
+function inferenceRouterSnapshot(deps: MainEdgeDeps, extra: UnknownRecord = {}): UnknownRecord {
+  const provider = invoke(deps.settingsStore, "getInferenceProvider");
+  return {
+    provider: isSandInferenceProvider(provider) ? provider : "cursor",
+    model: openRouterModel(deps),
+    computerModel: storedOpenRouterComputerModel(deps),
+    reasoningEffort: storedOpenRouterReasoningEffort(deps),
+    computerReasoningEffort: storedOpenRouterComputerReasoningEffort(deps),
+    ...extra,
+    local: extra.local ?? getLocalInferenceCliStatus(),
+  };
+}
 function parseAgentModel(value: unknown, requireNonWhitespaceId: boolean): { modelId: string; maxMode: boolean; parameters: { id: string; value: string }[] } | null {
   if (typeof value !== "object" || value == null || Array.isArray(value)) return null;
   const record = value as UnknownRecord;
@@ -112,10 +147,58 @@ export function createMainEdgeHandlers(deps: MainEdgeDeps): HandlerMap {
     getHostSidebarSections: async () => (await deps.readHostSettingsFromBox()).sidebarSections ?? null,
     setHostSidebarSections: (raw) => echo(deps, "sidebarSections", req(raw).sections, "sidebar sections"),
     getAvailableModels: () => deps.fetchAvailableModels(),
-    getInferenceRouter: async () => { const settings = await deps.readHostSettingsFromBox().catch(() => ({} as UnknownRecord)); const provider = invoke(deps.settingsStore, "getInferenceProvider"); return { provider: isSandInferenceProvider(provider) ? provider : "cursor", usage: settings.inferenceRouterUsage ?? invoke(deps.settingsStore, "getInferenceRouterUsage") ?? null, local: getLocalInferenceCliStatus() }; },
-    setInferenceRouter: async (raw) => { const provider = req(raw).provider; invariant(isSandInferenceProvider(provider), "Unknown inference provider."); invoke(deps.settingsStore, "setInferenceProvider", provider); const settings = await deps.syncHostSettingsToBox({ inferenceProvider: provider }).catch(() => null); return { provider, usage: settings?.inferenceRouterUsage ?? invoke(deps.settingsStore, "getInferenceRouterUsage") ?? null, local: getLocalInferenceCliStatus() }; },
+    getInferenceRouter: async () => { const settings = await deps.readHostSettingsFromBox().catch(() => ({} as UnknownRecord)); return inferenceRouterSnapshot(deps, { usage: settings.inferenceRouterUsage ?? invoke(deps.settingsStore, "getInferenceRouterUsage") ?? null }); },
+    setInferenceRouter: async (raw) => {
+      const record = req(raw);
+      const provider = record.provider;
+      invariant(isSandInferenceProvider(provider), "Unknown inference provider.");
+      invoke(deps.settingsStore, "setInferenceProvider", provider);
+      const requested = normalizeOpenRouterModelId(record.model);
+      if (requested !== undefined) invoke(deps.settingsStore, "setOpenRouterModel", requested);
+      if (Object.prototype.hasOwnProperty.call(record, "computerModel")) {
+        const computer = record.computerModel;
+        if (computer == null || computer === "" || computer === "__inherit__") invoke(deps.settingsStore, "setOpenRouterComputerModel", undefined);
+        else {
+          const computerId = normalizeOpenRouterModelId(computer);
+          if (computerId !== undefined) invoke(deps.settingsStore, "setOpenRouterComputerModel", computerId);
+        }
+      }
+      const reasoningEffort = normalizeOpenRouterReasoningEffort(record.reasoningEffort);
+      if (reasoningEffort !== undefined) invoke(deps.settingsStore, "setOpenRouterReasoningEffort", reasoningEffort);
+      const computerReasoningEffort = normalizeOpenRouterReasoningEffort(record.computerReasoningEffort);
+      if (computerReasoningEffort !== undefined) invoke(deps.settingsStore, "setOpenRouterComputerReasoningEffort", computerReasoningEffort);
+      const model = openRouterModel(deps);
+      const settings = await deps.syncHostSettingsToBox({
+        inferenceProvider: provider,
+        openRouterModel: model,
+        openRouterComputerModel: storedOpenRouterComputerModel(deps),
+        openRouterReasoningEffort: storedOpenRouterReasoningEffort(deps),
+        openRouterComputerReasoningEffort: storedOpenRouterComputerReasoningEffort(deps),
+      }).catch(() => null);
+      return inferenceRouterSnapshot(deps, { usage: settings?.inferenceRouterUsage ?? invoke(deps.settingsStore, "getInferenceRouterUsage") ?? null });
+    },
+    listOpenRouterModels: async () => {
+      const model = openRouterModel(deps);
+      const computerModel = openRouterComputerModel(deps);
+      const settingsPath = typeof Reflect.get(deps.settingsStore, "settingsPath") === "string" ? String(Reflect.get(deps.settingsStore, "settingsPath")) : undefined;
+      const apiKey = readOpenRouterApiKey(settingsPath);
+      try {
+        const models = await fetchOpenRouterCatalog({ ...(apiKey === undefined ? {} : { apiKey }), currentId: [model, computerModel] });
+        return { model, computerModel, models };
+      } catch (error) {
+        return {
+          model,
+          computerModel,
+          models: [
+            { id: model, name: model, recommended: model === DEFAULT_OPENROUTER_MODEL },
+            ...(computerModel === model ? [] : [{ id: computerModel, name: computerModel, recommended: false }]),
+          ],
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
     getBoxRuntime: async () => { const mode = invoke(deps.settingsStore, "getBoxRuntime"); invariant(isSandBoxRuntime(mode), "Unknown box runtime."); return { mode, status: await getLocalDockerStatus(String(Reflect.get(deps.settingsStore, "settingsPath"))) }; },
-    setBoxRuntime: async (raw) => { const mode = req(raw).mode; invariant(isSandBoxRuntime(mode), "Unknown box runtime."); const settingsPath = String(Reflect.get(deps.settingsStore, "settingsPath")); invoke(deps.settingsStore, "setBoxRuntime", mode); try { if (mode === "local-docker") await startLocalDockerBox(settingsPath); else await stopLocalDockerBox(); } catch (error) { invoke(deps.settingsStore, "setBoxRuntime", mode === "local-docker" ? "remote" : "local-docker"); throw error; } invoke(deps.boxRecovery, "restartCoordinator"); return { mode, status: await getLocalDockerStatus(settingsPath) }; },
+    setBoxRuntime: async (raw) => { const mode = req(raw).mode; invariant(isSandBoxRuntime(mode), "Unknown box runtime."); const settingsPath = String(Reflect.get(deps.settingsStore, "settingsPath")); const previous = invoke(deps.settingsStore, "getBoxRuntime"); invoke(deps.settingsStore, "setBoxRuntime", mode); try { if (mode === "local-docker") await startLocalDockerBox(settingsPath); else await stopLocalDockerBox(); } catch (error) { if (isSandBoxRuntime(previous)) invoke(deps.settingsStore, "setBoxRuntime", previous); throw error; } invoke(deps.boxRecovery, "restartCoordinator"); return { mode, status: await getLocalDockerStatus(settingsPath) }; },
 
     getEgressTunnelEnabled: () => invoke(deps.boxToggleStore, "getEgressTunnelEnabled"),
     setEgressTunnelEnabled: (raw) => { const enabled = req(raw).enabled === true; invoke(deps.boxToggleStore, "setEgressTunnelEnabled", enabled); invoke(egressController(deps), "setEnabled", enabled); deps.emitEgressTunnelChanged(enabled); return enabled; },

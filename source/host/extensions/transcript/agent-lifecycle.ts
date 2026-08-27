@@ -491,9 +491,23 @@ export class AgentLifecycle {
       runner?.cancelBackgroundShellRewatches();
       groupRunner?.cancelBackgroundShellRewatches();
     }
-    await this.tm.runLifecycle.drainExclusiveRuns(agentId);
-    await runner?.drainBackgroundSubagents();
-    await groupRunner?.drainBackgroundSubagents();
+    const DELETION_DRAIN_TIMEOUT_MS = 5_000;
+    const withDeadline = async (work: Promise<unknown> | undefined): Promise<void> => {
+      if (work == null) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          work,
+          new Promise<void>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("deletion drain timed out")), DELETION_DRAIN_TIMEOUT_MS);
+          }),
+        ]);
+      } catch {}
+      finally { if (timer != null) clearTimeout(timer); }
+    };
+    await withDeadline(this.tm.runLifecycle.drainExclusiveRuns(agentId));
+    await withDeadline(runner?.drainBackgroundSubagents());
+    await withDeadline(groupRunner?.drainBackgroundSubagents());
   }
 
   async updateAgent(agentId: string, profile: any): Promise<unknown> {

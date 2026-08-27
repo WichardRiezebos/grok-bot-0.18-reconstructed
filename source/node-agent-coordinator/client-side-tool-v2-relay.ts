@@ -33,6 +33,10 @@ export class ClientSideToolV2Relay {
     } else if (event.epoch !== fence.epoch) {
       if (fence.retiredEpochs.has(event.epoch)) return false;
       fence.retiredEpochs.add(fence.epoch);
+      if (fence.retiredEpochs.size > 32) {
+        const oldest = fence.retiredEpochs.values().next().value;
+        if (oldest != null) fence.retiredEpochs.delete(oldest);
+      }
       fence.epoch = event.epoch;
       fence.sequence = 0;
       fence.updatesByToolCallId.clear();

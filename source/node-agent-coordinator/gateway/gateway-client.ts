@@ -295,6 +295,12 @@ export class CoordinatorGatewayClient {
     if (method === "createAgent") return this.createAgentWithRetry(record, init);
     if (method === "setDevGatewayOffline") return Promise.resolve(this.setDevInducedOffline(record.induced === true));
     if (method === "setGatewayPaused") return Promise.resolve(this.setClientPaused(record.paused === true));
+    if (method === "deleteAgent" || method === "deleteAgents") {
+      return this.options.timing.sendPostDeadline.run(
+        (signal) => this.command(method, args, { ...init, signal }),
+        init?.signal,
+      );
+    }
     return this.command(method, args, init);
   }
 

@@ -1,0 +1,13 @@
+.git
+.cache
+.build
+dist
+node_modules
+recovered
+recovery
+reports
+work
+**/*.log
+.DS_Store
+research-archives
+frontend/node_modules

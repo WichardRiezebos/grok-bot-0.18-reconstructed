@@ -97,13 +97,26 @@ export function projectHandoff(value: unknown): ComputerHandoff | null {
   };
 }
 
+function preferredStatusVncUrl(status: Record<string, unknown> | null): string | null {
+  if (status?.state !== "running") return null;
+  const windows = Array.isArray(status.windows) ? status.windows : [];
+  let best: { index: number; url: string } | null = null;
+  for (const value of windows) {
+    if (!isRecord(value) || typeof value.vncUrl !== "string" || value.vncUrl.length === 0) continue;
+    const index = typeof value.windowIndex === "number" ? value.windowIndex : 0;
+    if (best == null || index > best.index) best = { index, url: value.vncUrl };
+  }
+  if (best != null) return best.url;
+  return typeof status.vncUrl === "string" && status.vncUrl.length > 0 ? status.vncUrl : null;
+}
+
 export function projectComputerStatus(
   value: unknown,
   readState: ComputerReadState,
   isEnsureStarting = false
 ): ComputerStatusProjection {
   const status = isRecord(value) ? value : null;
-  const vncUrl = status?.state === "running" && typeof status.vncUrl === "string" && status.vncUrl.length > 0 ? status.vncUrl : null;
+  const vncUrl = preferredStatusVncUrl(status);
   const pull = status != null && isRecord(status.pull) ? status.pull : null;
   const phase: ComputerPhase = pull != null
     ? "pulling"

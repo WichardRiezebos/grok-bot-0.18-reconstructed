@@ -140,7 +140,7 @@ export function createFindInChatController(options: FindInChatControllerOptions 
     step(delta) {
       if (disposed || matches.length === 0) return null;
       const currentIndex = current == null
-        ? matches.length - 1
+        ? (delta < 0 ? 0 : matches.length - 1)
         : Math.max(0, matches.findIndex((match) => sameMatch(match, current)));
       const index = (currentIndex + delta + matches.length) % matches.length;
       const next = matches[index] ?? null;

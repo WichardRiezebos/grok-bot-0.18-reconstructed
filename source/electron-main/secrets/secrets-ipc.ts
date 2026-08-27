@@ -117,9 +117,15 @@ export function registerSecretsIpc(deps: {
     readonly clientPersistenceStore: Pick<SandClientPersistenceStore, "read" | "write" | "remove" | "listKeys" | "migrateFromLocalStorage">;
   };
   readonly pushBoxSecrets: () => Promise<boolean>;
+  readonly afterSecretsMutation?: () => Promise<boolean | undefined>;
 }): void {
   const { ipcMain, guards, pushBoxSecrets } = deps;
   const { userSecretsStore, clientPersistenceStore } = deps.stores;
+  const syncedAfterMutation = async (): Promise<{ synced: boolean }> => {
+    const local = deps.afterSecretsMutation == null ? undefined : await deps.afterSecretsMutation();
+    const pushed = await pushBoxSecrets();
+    return { synced: local === undefined ? pushed : local || pushed };
+  };
   ipcMain.handle("sand:secrets-list", async (event) => {
     guards.assertTrustedSecretsSender(event);
     return { keys: await userSecretsStore.listKeys(), isPersistent: userSecretsStore.isPersistent() };
@@ -132,13 +138,13 @@ export function registerSecretsIpc(deps: {
   ipcMain.handle("sand:secrets-upsert", async (event, request) => {
     guards.assertTrustedSecretsSender(event);
     await userSecretsStore.upsert(parseSecretEntries(request.entries));
-    return { synced: await pushBoxSecrets() };
+    return await syncedAfterMutation();
   });
   ipcMain.handle("sand:secrets-delete", async (event, request) => {
     guards.assertTrustedSecretsSender(event);
     const keys = Array.isArray(request.keys) ? request.keys.filter((key: unknown): key is string => typeof key === "string") : [];
     await userSecretsStore.remove(keys);
-    return { synced: await pushBoxSecrets() };
+    return await syncedAfterMutation();
   });
   ipcMain.handle(CLIENT_PERSISTENCE_CHANNELS.read, async (event, request) => {
     guards.assertTrustedClientPersistenceSender(event);

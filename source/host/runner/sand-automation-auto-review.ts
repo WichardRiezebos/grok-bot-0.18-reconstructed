@@ -1,4 +1,5 @@
-import { Struct } from "@bufbuild/protobuf";
+import { Struct, type JsonValue } from "@bufbuild/protobuf";
+import { sanitizeToolInputForStruct } from "../../shared/struct-json.js";
 import { describeTrigger } from "../../shared/automation-schedule.js";
 import { triggerSchedule, type AutomationTrigger } from "../../shared/automations.js";
 import { serializeStoredTrigger } from "../automations/automation-trigger.js";
@@ -69,7 +70,7 @@ export function buildSandAutomationWriteRiskTarget(args: {
     }));
   return new SmartModeRiskTarget({
     action: SAND_AUTOMATION_WRITE_CLASSIFIER_TARGET_ACTION,
-    arguments: Struct.fromJson(argumentsJson),
+    arguments: Struct.fromJson(sanitizeToolInputForStruct(argumentsJson) as JsonValue),
   });
 }
 

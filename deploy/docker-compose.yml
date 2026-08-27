@@ -1,0 +1,75 @@
+services:
+  box:
+    build:
+      context: ..
+      dockerfile: deploy/box/Dockerfile
+    platform: linux/amd64
+    restart: unless-stopped
+    expose:
+      - "1340"
+      - "6080"
+    environment:
+      SAND_SUPERVISOR_ENABLED: "1"
+      SAND_BOX_AUTO_UPDATE: "0"
+      SAND_USE_EXISTING_BOX_EXEC_DAEMON: "1"
+      SAND_TREE_SITTER_NODE_DEPS: /home/box/deps
+      NODE_PATH: /home/box/deps
+      SAND_GATEWAY_BIND_HOST: 0.0.0.0
+      SAND_HOST_PORT: "1340"
+      SAND_GATEWAY_TOKEN: ${SAND_GATEWAY_TOKEN}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      SAND_DATA_ROOT: /home/box/sand-data
+    volumes:
+      - box-workspace:/workspace
+      - box-data:/home/box/sand-data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS -H \"Authorization: Bearer $$SAND_GATEWAY_TOKEN\" http://127.0.0.1:1340/health || wget -q -O- --header=\"Authorization: Bearer $$SAND_GATEWAY_TOKEN\" http://127.0.0.1:1340/health",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 120s
+
+  control:
+    build:
+      context: ..
+      dockerfile: deploy/control/Dockerfile
+    restart: unless-stopped
+    expose:
+      - "8080"
+    environment:
+      GROK_BOT_LISTEN_HOST: 0.0.0.0
+      GROK_BOT_LISTEN_PORT: "8080"
+      GROK_BOT_DATA_DIR: /var/lib/grok-bot
+      PUBLIC_URL: ${PUBLIC_URL}
+      RUNTIME_ACCESS_TOKEN: ${RUNTIME_ACCESS_TOKEN}
+      RUNTIME_DEBUG: ${RUNTIME_DEBUG:-0}
+      SAND_HOST_GATEWAY_URL: http://box:1340
+      SAND_HOST_GATEWAY_TOKEN: ${SAND_GATEWAY_TOKEN}
+      SAND_GATEWAY_TOKEN: ${SAND_GATEWAY_TOKEN}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+    volumes:
+      - control-data:/var/lib/grok-bot
+    depends_on:
+      box:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+volumes:
+  box-workspace:
+  box-data:
+  control-data:

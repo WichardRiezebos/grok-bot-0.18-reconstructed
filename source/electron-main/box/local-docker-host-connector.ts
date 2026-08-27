@@ -1,10 +1,21 @@
 import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  DOCKER_ENGINE_UNAVAILABLE,
+  dockerHostFromSocket,
+  dockerSpawnEnvironment,
+  existingDockerSockets,
+  formatDockerUnavailable,
+  isDockerCliMissingOutput,
+  isDockerDaemonUnreachableOutput,
+  isDockerUnavailableOutput,
+  resolveDockerCliPath,
+} from "../../shared/node/docker-cli.js";
 import type { SandSettingsStore } from "../../shared/node/settings/sand-settings-store.js";
 import type { RecreateResult } from "./box-recreate-commands.js";
 import type { SandRemoteHostConnector } from "./box-host-connector.js";
@@ -14,9 +25,120 @@ export const LOCAL_DOCKER_BOX_IMAGE = "public.ecr.aws/k0i0n2g5/cursorenvironment
 export const LOCAL_DOCKER_BOX_CONTAINER = "grok-bot-local-vm";
 export const LOCAL_DOCKER_GATEWAY_URL = "http://127.0.0.1:1340";
 export const LOCAL_DOCKER_OWNER_LABEL = "com.grok-bot.local-vm=1";
-export const LOCAL_DOCKER_SCHEMA_VERSION = "6";
+export const LOCAL_DOCKER_SCHEMA_VERSION = "7";
+export const LOCAL_DOCKER_CHROME_CONVERGE_SCRIPT = [
+  "#!/usr/bin/env bash",
+  "set -uo pipefail",
+  "RESTART_CHROME=0",
+  'REAL="/opt/google/chrome/google-chrome.real"',
+  'CURRENT="/opt/google/chrome/google-chrome"',
+  'if [ -e "$CURRENT" ] && [ ! -e "$REAL" ]; then',
+  '  mv "$CURRENT" "$REAL"',
+  "  cat > \"$CURRENT\" << 'EOF'",
+  "#!/usr/bin/env bash",
+  'exec /opt/google/chrome/google-chrome.real --disable-gpu --disable-software-rasterizer "$@"',
+  "EOF",
+  '  chmod 0755 "$CURRENT"',
+  "  RESTART_CHROME=1",
+  "fi",
+  'ORIG="/usr/local/bin/start-window.sand-orig"',
+  "if [ -x /usr/local/bin/start-window ] && [ ! -e \"$ORIG\" ]; then",
+  "  cp /usr/local/bin/start-window \"$ORIG\"",
+  "  cat > /usr/local/bin/start-window << 'EOF'",
+  "#!/usr/bin/env bash",
+  "set -uo pipefail",
+  '/usr/local/bin/start-window.sand-orig "$@"',
+  "status=$?",
+  'DISPLAY_NUM="${1:-}"',
+  'if [ "$status" -ne 0 ] || ! [ "${DISPLAY_NUM}" -ge 2 ] 2>/dev/null; then',
+  '  exit "$status"',
+  "fi",
+  "VNC_PORT=$((5900 + DISPLAY_NUM))",
+  "for _ in $(seq 1 150); do",
+  '  if (echo >/dev/tcp/127.0.0.1/${VNC_PORT}) >/dev/null 2>&1; then',
+  "    exit 0",
+  "  fi",
+  "  sleep 0.2",
+  "done",
+  'echo "start-window: VNC :${VNC_PORT} did not become ready" >&2',
+  'exit "$status"',
+  "EOF",
+  "  chmod 0755 /usr/local/bin/start-window",
+  "fi",
+  'PROFILE_ROOT="/home/box/sand-data/chrome-profiles"',
+  'mkdir -p "$PROFILE_ROOT"',
+  "for n in $(seq 2 12); do",
+  '  LIVE="/home/box/chrome-profile-$n"',
+  '  STORE="$PROFILE_ROOT/$n"',
+  '  mkdir -p "$STORE"',
+  '  if [ -L "$LIVE" ]; then',
+  '    current=$(readlink -f "$LIVE" 2>/dev/null || true)',
+  '    wanted=$(readlink -f "$STORE" 2>/dev/null || true)',
+  '    if [ "$current" != "$wanted" ]; then',
+  '      pkill -f "chrome-profile-$n" >/dev/null 2>&1 || true',
+  '      rm -f "$LIVE"',
+  '      ln -sfn "$STORE" "$LIVE"',
+  "      RESTART_CHROME=1",
+  "    fi",
+  '  elif [ -d "$LIVE" ]; then',
+  '    pkill -f "chrome-profile-$n" >/dev/null 2>&1 || true',
+  '    if [ -z "$(ls -A "$STORE" 2>/dev/null)" ]; then',
+  '      rm -rf "$STORE"',
+  '      mv "$LIVE" "$STORE"',
+  "    else",
+  '      rm -rf "$LIVE"',
+  "    fi",
+  '    ln -sfn "$STORE" "$LIVE"',
+  "    RESTART_CHROME=1",
+  '  elif [ -e "$LIVE" ]; then',
+  '    pkill -f "chrome-profile-$n" >/dev/null 2>&1 || true',
+  '    rm -rf "$LIVE"',
+  '    ln -sfn "$STORE" "$LIVE"',
+  "    RESTART_CHROME=1",
+  "  else",
+  '    ln -sfn "$STORE" "$LIVE"',
+  "  fi",
+  '  chown -h box:box "$LIVE" 2>/dev/null || true',
+  '  chown -R box:box "$STORE" 2>/dev/null || true',
+  "done",
+  "if [ ! -x /usr/local/bin/sand-chrome-keep ]; then",
+  "  cat > /usr/local/bin/sand-chrome-keep << 'EOF'",
+  "#!/usr/bin/env bash",
+  "set -uo pipefail",
+  "exec 9>/tmp/sand-chrome-keep.lock",
+  "flock -n 9 || exit 0",
+  "while true; do",
+  "  for n in $(seq 2 12); do",
+  "    if xdpyinfo -display \":$n\" >/dev/null 2>&1; then",
+  "      port=$((9222 + n))",
+  "      if ! curl -fsS --max-time 0.3 \"http://127.0.0.1:${port}/json/version\" >/dev/null 2>&1; then",
+  "        DISPLAY=\":$n\" HOME=/home/box /usr/local/bin/box-chrome >/dev/null 2>&1 || true",
+  "      fi",
+  "    fi",
+  "  done",
+  "  sleep 4",
+  "done",
+  "EOF",
+  "  chmod 0755 /usr/local/bin/sand-chrome-keep",
+  "fi",
+  "setsid /usr/local/bin/sand-chrome-keep >/dev/null 2>&1 < /dev/null &",
+  'if [ "${RESTART_CHROME:-0}" = "1" ]; then',
+  '  pkill -f "/opt/google/chrome/google-chrome" >/dev/null 2>&1 || true',
+  "fi",
+  "exit 0",
+  "",
+].join("\n");
+export const LOCAL_DOCKER_BOX_SECRETS_FILENAME = "box-secrets.json";
+export const LOCAL_DOCKER_BOX_SECRETS_CONTAINER_PATHS = [
+  "/home/box/sand-data/box-secrets.json",
+  "/home/box/.cursor/sand-dev/box-secrets.json",
+] as const;
 const READY_TIMEOUT_MS = 180_000;
 const OPTIONAL_CREDENTIAL_TIMEOUT_MS = 3_000;
+
+export interface LocalDockerSecretsSource {
+  readonly exportBoxSecrets?: () => Promise<Readonly<Record<string, string>>>;
+}
 
 export interface LocalDockerStatus {
   readonly available: boolean;
@@ -31,16 +153,50 @@ interface CommandResult { readonly ok: boolean; readonly output: string }
 interface InferenceCredential { readonly accessToken: string; readonly backendUrl: string; readonly expiresAtMs: number }
 interface LocalHostBundle { readonly path: string; readonly sha256: string; readonly boxExecDaemonPath: string; readonly boxExecDaemonSha256: string }
 
-function runDocker(args: readonly string[]): Promise<CommandResult> {
-  return new Promise((resolve) => {
-    const child = spawn("docker", [...args], { stdio: ["ignore", "pipe", "pipe"] });
+let cachedDockerCli: string | null | undefined;
+let cachedDockerHost: string | undefined;
+
+function dockerCliPath(): string | null {
+  if (cachedDockerCli === undefined) cachedDockerCli = resolveDockerCliPath();
+  return cachedDockerCli;
+}
+
+function spawnDocker(cliPath: string, args: readonly string[], dockerHost?: string): Promise<CommandResult> {
+  return new Promise((resolvePromise) => {
+    const env = dockerHost == null ? dockerSpawnEnvironment(cliPath) : dockerSpawnEnvironment(cliPath, { dockerHost });
+    const child = spawn(cliPath, [...args], { stdio: ["ignore", "pipe", "pipe"], env });
     let output = "";
     const append = (chunk: Buffer): void => { output += chunk.toString(); if (output.length > 200_000) output = output.slice(-200_000); };
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
-    child.once("error", (error) => resolve({ ok: false, output: `${output}\n${error.message}`.trim() }));
-    child.once("close", (code) => resolve({ ok: code === 0, output: output.trim() }));
+    child.once("error", (error) => resolvePromise({ ok: false, output: `${output}\n${error.message}`.trim() }));
+    child.once("close", (code) => resolvePromise({ ok: code === 0, output: output.trim() }));
   });
+}
+
+async function runDocker(args: readonly string[], dockerHost?: string): Promise<CommandResult> {
+  const cliPath = dockerCliPath();
+  if (cliPath == null) return { ok: false, output: DOCKER_ENGINE_UNAVAILABLE };
+  const host = dockerHost ?? cachedDockerHost;
+  return host == null ? await spawnDocker(cliPath, args) : await spawnDocker(cliPath, args, host);
+}
+
+async function dockerInfo(): Promise<CommandResult> {
+  const first = await runDocker(["info", "--format", "{{.ServerVersion}}"]);
+  if (first.ok) return first;
+  const formatted = { ok: false as const, output: formatDockerUnavailable(first.output) };
+  if ((process.env.DOCKER_HOST?.trim().length ?? 0) > 0) return formatted;
+  if (isDockerCliMissingOutput(first.output) || first.output === DOCKER_ENGINE_UNAVAILABLE) return formatted;
+  if (!isDockerDaemonUnreachableOutput(first.output)) return first;
+  for (const socket of existingDockerSockets()) {
+    const dockerHost = dockerHostFromSocket(socket);
+    const retried = await runDocker(["info", "--format", "{{.ServerVersion}}"], dockerHost);
+    if (retried.ok) {
+      cachedDockerHost = dockerHost;
+      return retried;
+    }
+  }
+  return formatted;
 }
 
 function credentialPath(settingsPath: string): string {
@@ -49,6 +205,54 @@ function credentialPath(settingsPath: string): string {
 
 function inferenceCredentialPath(settingsPath: string): string {
   return join(dirname(settingsPath), "local-docker-credential", "inference.json");
+}
+
+export function localDockerBoxSecretsPath(settingsPath: string): string {
+  return join(dirname(settingsPath), "local-docker-credential", LOCAL_DOCKER_BOX_SECRETS_FILENAME);
+}
+
+export function hostBoxSecretsPath(settingsPath: string): string {
+  return join(dirname(settingsPath), LOCAL_DOCKER_BOX_SECRETS_FILENAME);
+}
+
+async function writeSecretsFile(target: string, secrets: Readonly<Record<string, string>>): Promise<string> {
+  const temporary = `${target}.${process.pid}.tmp`;
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(temporary, `${JSON.stringify({ version: 1, secrets }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await rename(temporary, target);
+  await chmod(target, 0o600);
+  return target;
+}
+
+export async function writeLocalDockerBoxSecrets(settingsPath: string, secrets: Readonly<Record<string, string>>): Promise<string> {
+  await writeSecretsFile(hostBoxSecretsPath(settingsPath), secrets);
+  return await writeSecretsFile(localDockerBoxSecretsPath(settingsPath), secrets);
+}
+
+export async function installLocalDockerBoxSecrets(settingsPath: string): Promise<boolean> {
+  const target = localDockerBoxSecretsPath(settingsPath);
+  try { await access(target); } catch { return true; }
+  const inspected = await inspectContainer();
+  if (!inspected.exists || !inspected.running) return true;
+  const prepared = await runDocker(["exec", LOCAL_DOCKER_BOX_CONTAINER, "mkdir", "-p", "/home/box/sand-data", "/home/box/.cursor/sand-dev"]);
+  if (!prepared.ok) return false;
+  for (const destination of LOCAL_DOCKER_BOX_SECRETS_CONTAINER_PATHS) {
+    const copied = await runDocker(["cp", target, `${LOCAL_DOCKER_BOX_CONTAINER}:${destination}`]);
+    if (!copied.ok) return false;
+  }
+  return true;
+}
+
+export async function installLocalDockerChromeConverge(): Promise<boolean> {
+  const inspected = await inspectContainer();
+  if (!inspected.exists || !inspected.running) return true;
+  const script = LOCAL_DOCKER_CHROME_CONVERGE_SCRIPT;
+  const encoded = Buffer.from(script, "utf8").toString("base64");
+  const installed = await runDocker([
+    "exec", "-u", "root", LOCAL_DOCKER_BOX_CONTAINER,
+    "bash", "-lc", `printf '%s' '${encoded}' | base64 -d > /tmp/sand-chrome-converge.sh && chmod 0755 /tmp/sand-chrome-converge.sh && timeout 60 bash /tmp/sand-chrome-converge.sh`,
+  ]);
+  return installed.ok;
 }
 
 async function persistInferenceCredential(settingsPath: string, credential: InferenceCredential): Promise<string> {
@@ -102,8 +306,8 @@ async function inspectContainer(): Promise<{ exists: boolean; running: boolean; 
 }
 
 export async function getLocalDockerStatus(settingsPath: string): Promise<LocalDockerStatus> {
-  const daemon = await runDocker(["info", "--format", "{{.ServerVersion}}"]).catch(() => ({ ok: false, output: "Docker is not installed." }));
-  if (!daemon.ok) return { available: false, running: false, ready: false, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: LOCAL_DOCKER_BOX_IMAGE, detail: daemon.output || "Docker is not running." };
+  const daemon = await dockerInfo().catch(() => ({ ok: false, output: DOCKER_ENGINE_UNAVAILABLE }));
+  if (!daemon.ok) return { available: false, running: false, ready: false, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: LOCAL_DOCKER_BOX_IMAGE, detail: formatDockerUnavailable(daemon.output) };
   const inspected = await inspectContainer();
   if (!inspected.exists) return { available: true, running: false, ready: false, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: LOCAL_DOCKER_BOX_IMAGE, detail: "Ready to create the local VM." };
   if (!inspected.owned) return { available: true, running: inspected.running, ready: false, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: inspected.image, detail: `Container ${LOCAL_DOCKER_BOX_CONTAINER} exists but is not owned by Grok Bot.` };
@@ -162,12 +366,22 @@ async function localAuthMountArguments(): Promise<string[]> {
   return mounts;
 }
 
-async function ensureLocalDockerBox(settingsPath: string, inferenceCredential?: InferenceCredential): Promise<GatewayConnection> {
+async function persistLocalDockerBoxSecrets(settingsPath: string, exportBoxSecrets?: () => Promise<Readonly<Record<string, string>>>): Promise<void> {
+  if (exportBoxSecrets != null) {
+    try {
+      const secrets = { ...await exportBoxSecrets() };
+      if (Object.keys(secrets).length > 0) await writeLocalDockerBoxSecrets(settingsPath, secrets);
+    } catch {}
+  }
+  await installLocalDockerBoxSecrets(settingsPath);
+}
+
+async function ensureLocalDockerBox(settingsPath: string, inferenceCredential?: InferenceCredential, exportBoxSecrets?: () => Promise<Readonly<Record<string, string>>>): Promise<GatewayConnection> {
   const token = await readOrCreateToken(settingsPath);
   const hostBundle = await stageCurrentHostBundle(settingsPath);
   const inferenceFile = inferenceCredential == null ? undefined : await persistInferenceCredential(settingsPath, inferenceCredential);
-  const daemon = await runDocker(["info", "--format", "{{.ServerVersion}}"]).catch(() => ({ ok: false, output: "Docker is not installed." }));
-  if (!daemon.ok) throw new Error(`Local Docker VM is selected, but Docker is unavailable: ${daemon.output || "start Docker and try again"}`);
+  const daemon = await dockerInfo().catch(() => ({ ok: false, output: DOCKER_ENGINE_UNAVAILABLE }));
+  if (!daemon.ok) throw new Error(formatDockerUnavailable(daemon.output));
   const inspected = await inspectContainer();
   if (inspected.exists && !inspected.owned) throw new Error(`Local Docker VM cannot use ${LOCAL_DOCKER_BOX_CONTAINER}: an unowned container already has that name.`);
   if (inspected.exists && inspected.image !== LOCAL_DOCKER_BOX_IMAGE) throw new Error(`Local Docker VM container uses unexpected image ${inspected.image}. Remove it explicitly before changing images.`);
@@ -189,7 +403,7 @@ async function ensureLocalDockerBox(settingsPath: string, inferenceCredential?: 
       "--label", `com.grok-bot.local-vm.inference-credential=${inferenceCredential == null ? "0" : "1"}`,
       "--label", `com.grok-bot.local-vm.schema-version=${LOCAL_DOCKER_SCHEMA_VERSION}`,
       "--platform", "linux/amd64", "--restart", "unless-stopped",
-      "--env", "SAND_SUPERVISOR_ENABLED=1", "--env", "SAND_BOX_AUTO_UPDATE=0", "--env", "SAND_USE_EXISTING_BOX_EXEC_DAEMON=1", "--env", "SAND_TREE_SITTER_NODE_DEPS=/home/box/deps", "--env", "NODE_PATH=/home/box/deps", "--env", "SAND_GATEWAY_BIND_HOST=0.0.0.0", "--env", "SAND_HOST_PORT=1340", "--env", `SAND_GATEWAY_TOKEN=${token}`,
+      "--env", "SAND_SUPERVISOR_ENABLED=1", "--env", "SAND_BOX_AUTO_UPDATE=0", "--env", "SAND_USE_EXISTING_BOX_EXEC_DAEMON=1", "--env", "SAND_TREE_SITTER_NODE_DEPS=/home/box/deps", "--env", "NODE_PATH=/home/box/deps", "--env", "SAND_GATEWAY_BIND_HOST=0.0.0.0", "--env", "SAND_HOST_PORT=1340", "--env", "SAND_DATA_ROOT=/home/box/sand-data", "--env", `SAND_GATEWAY_TOKEN=${token}`,
       ...(inferenceCredential == null ? [] : ["--env", "SAND_DEV_INFERENCE_TOKEN_FILE=/run/grok-bot/inference.json", "--env", `SAND_BACKEND_URL=${inferenceCredential.backendUrl}`]),
       "--publish", "127.0.0.1:1337:1337", "--publish", "127.0.0.1:1339:1339", "--publish", "127.0.0.1:1340:1340",
       "--publish", "127.0.0.1:6080:6080", "--publish", "127.0.0.1:6081:6081", "--publish", "127.0.0.1:8790:8790",
@@ -204,7 +418,11 @@ async function ensureLocalDockerBox(settingsPath: string, inferenceCredential?: 
   }
   const deadline = Date.now() + READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (await gatewayReady(token)) return { baseUrl: LOCAL_DOCKER_GATEWAY_URL, token };
+    if (await gatewayReady(token)) {
+      await persistLocalDockerBoxSecrets(settingsPath, exportBoxSecrets);
+      await installLocalDockerChromeConverge();
+      return { baseUrl: LOCAL_DOCKER_GATEWAY_URL, token };
+    }
     const state = await inspectContainer();
     if (!state.running) {
       const logs = await runDocker(["logs", "--tail", "80", LOCAL_DOCKER_BOX_CONTAINER]);
@@ -220,16 +438,21 @@ export async function startLocalDockerBox(settingsPath: string): Promise<Gateway
 }
 
 export async function stopLocalDockerBox(): Promise<void> {
+  if (dockerCliPath() == null) return;
   const inspected = await inspectContainer();
   if (!inspected.exists || !inspected.running) return;
   if (!inspected.owned) throw new Error(`Refusing to stop unowned container ${LOCAL_DOCKER_BOX_CONTAINER}.`);
   const stopped = await runDocker(["stop", LOCAL_DOCKER_BOX_CONTAINER]);
-  if (!stopped.ok) throw new Error(`Could not stop the local Docker VM: ${stopped.output}`);
+  if (!stopped.ok) {
+    if (isDockerUnavailableOutput(stopped.output)) return;
+    throw new Error(`Could not stop the local Docker VM: ${stopped.output}`);
+  }
 }
 
 export function createSettingsRoutedHostConnector(
   remote: SandRemoteHostConnector,
   settings: SandSettingsStore,
+  secrets?: LocalDockerSecretsSource,
 ): SandRemoteHostConnector {
   const localConnect = (): Promise<GatewayConnection> => {
     if (ensureInFlight == null) ensureInFlight = (async () => {
@@ -237,7 +460,7 @@ export function createSettingsRoutedHostConnector(
         remote.issueInferenceCredential(),
         new Promise<undefined>((resolve) => setTimeout(resolve, OPTIONAL_CREDENTIAL_TIMEOUT_MS)),
       ]);
-      return await ensureLocalDockerBox(settings.settingsPath, issued);
+      return await ensureLocalDockerBox(settings.settingsPath, issued, secrets?.exportBoxSecrets);
     })().finally(() => { ensureInFlight = undefined; });
     return ensureInFlight;
   };

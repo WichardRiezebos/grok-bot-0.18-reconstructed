@@ -47,12 +47,11 @@ export function AgentDeleteConfirmation({ agent, onClose, onConfirm }: AgentDele
     if (!isOpen) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        if (pending) return;
         event.preventDefault();
         onClose();
         return;
       }
-      if (event.key !== "Tab" || pending) return;
+      if (event.key !== "Tab") return;
       const buttons = Array.from(dialogRef.current?.querySelectorAll<HTMLButtonElement>("button:not([disabled])") ?? []);
       if (buttons.length === 0) return;
       const first = buttons[0];
@@ -66,7 +65,7 @@ export function AgentDeleteConfirmation({ agent, onClose, onConfirm }: AgentDele
       }
     };
     const handlePointerDown = (event: PointerEvent) => {
-      if (pending || dialogRef.current?.contains(event.target as Node)) return;
+      if (dialogRef.current?.contains(event.target as Node)) return;
       onClose();
     };
     document.addEventListener("keydown", handleKeyDown);
@@ -96,7 +95,7 @@ export function AgentDeleteConfirmation({ agent, onClose, onConfirm }: AgentDele
     <p>{deleteDescription(agent)}</p>
     {failure == null ? null : <p role="alert">{failure}</p>}
     <footer style={{ display: "flex", justifyContent: "flex-end", gap: 8, margin: "18px -20px -20px", padding: "12px 16px", borderTop: "1px solid var(--cursor-border-secondary)" }}>
-      <SandButton disabled={pending} onClick={onClose} size="sm" variant="secondary">Cancel</SandButton>
+      <SandButton onClick={onClose} size="sm" variant="secondary">Cancel</SandButton>
       <SandButton disabled={pending} onClick={() => void confirm()} ref={confirmRef} sentiment="danger" size="sm">{pending ? "Deleting..." : "Delete"}</SandButton>
     </footer>
   </div>;

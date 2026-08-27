@@ -247,9 +247,6 @@ export async function rewritePdfAssetReferences(rendererRoot) {
         rewritten = rewritten.replace(workerPattern, "`./${" + workerVariable + "}`");
       }
     }
-    if (counts[workerReference] === 0) {
-      if (rewritten.includes("pdf.worker.min-qwK7q_zL.mjs")) counts[workerReference] += 1;
-    }
     if (rewritten !== original) await writeFile(target, rewritten);
   }
   for (const [from, count] of Object.entries(counts)) {

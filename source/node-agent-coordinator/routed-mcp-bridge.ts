@@ -44,16 +44,21 @@ export async function createRoutedMcpBridge(deps: {
   let tools = new Map<string, Tool>();
   const server = createServer(async (request, response) => {
     if (request.method !== "POST" || request.url !== `/mcp/${secret}`) { response.writeHead(404).end(); return; }
-    let body = "";
+    const chunks: Buffer[] = [];
+    let received = 0;
     for await (const chunk of request) {
-      body += String(chunk);
-      if (body.length > 1_048_576) { response.writeHead(413).end(); return; }
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      received += buffer.length;
+      if (received > 1_048_576) { response.writeHead(413).end(); return; }
+      chunks.push(buffer);
     }
+    const body = Buffer.concat(chunks).toString("utf8");
     let message: Record<string, any>;
     try { message = JSON.parse(body) as Record<string, any>; }
     catch { response.writeHead(400).end(); return; }
-    if (message.method === "notifications/initialized") { response.writeHead(202).end(); return; }
+    if (message.method === "notifications/initialized" || message.id == null) { response.writeHead(202).end(); return; }
     const reply = (result: unknown) => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result })); };
+    const replyError = (code: number, errorMessage: string) => { response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, error: { code, message: errorMessage } })); };
     try {
       if (message.method === "initialize") { reply({ protocolVersion: "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "grok-bot-plugins", version: "1" } }); return; }
       if (message.method === "tools/list") {
@@ -76,9 +81,10 @@ export async function createRoutedMcpBridge(deps: {
         reply(mcpResult(await deps.callTool({ ...selected, args: record(message.params)?.arguments ?? {}, toolCallId: randomUUID() })));
         return;
       }
-      reply({});
+      replyError(-32601, `Unknown method: ${String(message.method)}`);
     } catch (error) {
-      reply({ isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }] });
+      if (message.method === "tools/call") reply({ isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }] });
+      else replyError(-32603, error instanceof Error ? error.message : String(error));
     }
   });
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
