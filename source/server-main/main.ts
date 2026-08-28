@@ -19,6 +19,11 @@ export function main(env: NodeJS.ProcessEnv = process.env): ReturnType<typeof st
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+  const keepServing = (kind: string, error: unknown) => {
+    process.stderr.write(`[grok-bot] ${kind}: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+  };
+  process.on("unhandledRejection", (error) => keepServing("unhandledRejection", error));
+  process.on("uncaughtException", (error) => keepServing("uncaughtException", error));
   return server;
 }
 

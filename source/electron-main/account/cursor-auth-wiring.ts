@@ -83,10 +83,14 @@ export function createCursorAuthWiring(deps: {
     if (cursorAuthService != null) return cursorAuthService;
     const service = (deps.createAuthService ?? ((options) => new SandCursorAuthService(options)))({
       ...(deps.serviceOptions ?? {}),
-      readLocalProfile: () => ({
-        name: deps.settingsStore.getLocalProfileName?.(),
-        email: deps.settingsStore.getLocalProfileEmail?.(),
-      }),
+      readLocalProfile: () => {
+        const name = deps.settingsStore.getLocalProfileName?.();
+        const email = deps.settingsStore.getLocalProfileEmail?.();
+        return {
+          ...(name === undefined ? {} : { name }),
+          ...(email === undefined ? {} : { email }),
+        };
+      },
       writeLocalProfile: (profile) => {
         deps.settingsStore.setLocalProfileName?.(profile.name);
         deps.settingsStore.setLocalProfileEmail?.(profile.email);

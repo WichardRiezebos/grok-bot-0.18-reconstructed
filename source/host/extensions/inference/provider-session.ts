@@ -13,7 +13,7 @@ import { getSandRootDir, SAND_BOX_DATA_ROOT } from "../../host-paths.js";
 import { SandSettingsStore } from "../../../shared/node/settings/sand-settings-store.js";
 import { DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, DEFAULT_OPENROUTER_REASONING_EFFORT, injectOpenRouterReasoningIntoBody, resolveOpenRouterComputerModel, resolveOpenRouterModel, resolveOpenRouterReasoningEffort, type OpenRouterReasoningEffort } from "../../../shared/openrouter-models.js";
 import { boundOpenRouterRequestBody } from "../../../shared/openrouter-prompt-budget.js";
-import { injectOpenRouterCacheControlIntoBody, openRouterCacheUsageFromPayload } from "../../../shared/openrouter-prompt-cache.js";
+import { injectOpenRouterCacheControlIntoBody, injectOpenRouterStreamUsageIntoBody, observeOpenRouterSseUsage } from "../../../shared/openrouter-prompt-cache.js";
 import {
   ROUTED_PLUGIN_MAX_STEPS,
   openRouterToolResultContent,
@@ -46,8 +46,14 @@ export const GROK_ROUTER_SYSTEM_PROMPT = [
   "Never ask for an API key for an already-connected plugin. Respond directly to the user in natural language after completing any necessary tool calls.",
 ].join("\n");
 
+function routedSettingsPath(): string {
+  const dataDir = process.env.GROK_BOT_DATA_DIR?.trim();
+  if (dataDir != null && dataDir.length > 0) return join(dataDir, "settings.json");
+  return join(getSandRootDir(), "settings.json");
+}
+
 function recordRoutedUsage(provider: RoutedProvider, usage: UsageRecord): void {
-  new SandSettingsStore(join(getSandRootDir(), "settings.json")).recordInferenceUsage(provider, usage);
+  new SandSettingsStore(routedSettingsPath()).recordInferenceUsage(provider, usage);
 }
 
 function secretsFromFile(path: string): Record<string, string> {
@@ -91,13 +97,13 @@ function providerPrompt(messages: readonly ProviderMessage[]): string {
 }
 
 function configuredOpenRouterModel(): string {
-  try { return resolveOpenRouterModel(new SandSettingsStore(join(getSandRootDir(), "settings.json")).getOpenRouterModel()); }
+  try { return resolveOpenRouterModel(new SandSettingsStore(routedSettingsPath()).getOpenRouterModel()); }
   catch { return resolveOpenRouterModel(undefined); }
 }
 
 function configuredOpenRouterComputerModel(): string {
   try {
-    const store = new SandSettingsStore(join(getSandRootDir(), "settings.json"));
+    const store = new SandSettingsStore(routedSettingsPath());
     return resolveOpenRouterComputerModel(store.getOpenRouterComputerModel(), store.getOpenRouterModel());
   } catch { return configuredOpenRouterModel(); }
 }
@@ -106,7 +112,7 @@ function configuredOpenRouterReasoningEffort(computer: boolean): OpenRouterReaso
   const fallback = computer ? DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT : DEFAULT_OPENROUTER_REASONING_EFFORT;
   const env = computer ? process.env.SAND_OPENROUTER_COMPUTER_REASONING_EFFORT : process.env.SAND_OPENROUTER_REASONING_EFFORT;
   try {
-    const store = new SandSettingsStore(join(getSandRootDir(), "settings.json"));
+    const store = new SandSettingsStore(routedSettingsPath());
     const stored = computer ? store.getOpenRouterComputerReasoningEffort() : store.getOpenRouterReasoningEffort();
     return resolveOpenRouterReasoningEffort(stored, fallback, env);
   } catch { return resolveOpenRouterReasoningEffort(undefined, fallback, env); }
@@ -116,17 +122,12 @@ function openRouterFetch(effort: OpenRouterReasoningEffort, modelId: string, usa
   return async (input, init) => {
     const nextInit = init == null ? init : (() => {
       const reasoned = injectOpenRouterReasoningIntoBody(boundOpenRouterRequestBody(init.body), effort);
-      const body = injectOpenRouterCacheControlIntoBody(reasoned, modelId);
+      const cached = injectOpenRouterCacheControlIntoBody(reasoned, modelId);
+      const body = injectOpenRouterStreamUsageIntoBody(cached);
       return body === init.body ? init : { ...init, body: body as BodyInit };
     })();
     const response = await fetch(input, nextInit);
-    void response.clone().json().then((payload) => {
-      const parsed = openRouterCacheUsageFromPayload(payload);
-      usage.cacheReadTokens = parsed.cacheReadTokens;
-      usage.cacheWriteTokens = parsed.cacheWriteTokens;
-      usage.costUsd = parsed.costUsd;
-    }).catch(() => undefined);
-    if (response.ok) return response;
+    if (response.ok) return observeOpenRouterSseUsage(response, usage);
     const text = await response.text();
     let message = `OpenRouter HTTP ${response.status}`;
     try {

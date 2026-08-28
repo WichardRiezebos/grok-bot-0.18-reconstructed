@@ -313,6 +313,7 @@ export function createCoordinatorInferenceRouter(options: {
     };
     let visibleText = "";
     let persistChain = Promise.resolve();
+    let persistFailed: unknown;
     let stepUsedTool = false;
     let finishedSteps = 0;
     let attemptHadProgress = false;
@@ -328,13 +329,17 @@ export function createCoordinatorInferenceRouter(options: {
       streamingByAgent.delete(agentId);
     };
     const persistThenEmit = (id: string, content: string, timestampMs: number, extra?: Partial<StoredEntry>) => {
-      persistChain = persistChain.then(async () => {
+      const run = persistChain.catch(() => undefined).then(async () => {
         await append(agentId, [{ provider, role: "assistant", content, id, timestampMs, ...extra }]);
         clearStreaming(id);
         lastSettled = { id, content, timestampMs };
         emitAssistant(content, false, id, timestampMs);
       });
-      return persistChain;
+      persistChain = run.catch((error) => {
+        persistFailed = error;
+        log(`persist-error ${error instanceof Error ? error.message : String(error)}`);
+      });
+      return run;
     };
     const settleStep = () => {
       const usedTool = stepUsedTool;
@@ -342,12 +347,14 @@ export function createCoordinatorInferenceRouter(options: {
       stepUsedTool = false;
       finishedSteps += 1;
       if (snapshot.trim().length === 0) {
+        if (assistantStreamStarted) emitAssistant("", false);
         clearStreaming(assistantId);
         return;
       }
       if (usedTool) {
         log(`discard-narration ${snapshot.replaceAll("\n", " ").slice(0, 200)}`);
         visibleText = "";
+        if (assistantStreamStarted) emitAssistant("", false);
         clearStreaming(assistantId);
         return;
       }
@@ -514,6 +521,7 @@ export function createCoordinatorInferenceRouter(options: {
           finishedSteps = 0;
           visibleText = "";
           lastStreamEmitAt = 0;
+          persistFailed = undefined;
           clearStreaming();
           try {
             content = await runOnce();
@@ -530,7 +538,8 @@ export function createCoordinatorInferenceRouter(options: {
         }
       }
       finally { await session.bridge?.close(); }
-      await persistChain;
+      await persistChain.catch(() => undefined);
+      if (persistFailed != null) throw persistFailed;
       if (visibleText.trim().length > 0) {
         await persistThenEmit(assistantId, visibleText, assistantTimestampMs);
       } else if (content.trim().length > 0 && assistantSlot === 0 && !assistantStreamStarted) {
@@ -539,14 +548,20 @@ export function createCoordinatorInferenceRouter(options: {
         clearStreaming();
         if (lastSettled != null) {
           emitAssistant(lastSettled.content, false, lastSettled.id, lastSettled.timestampMs);
+        } else if (assistantStreamStarted) {
+          emitAssistant("", false);
         }
       }
       log(`turn-finish ${visibleText.length || content.length} chars`);
     } catch (error) {
-      await persistChain;
+      await persistChain.catch(() => undefined);
       const content = routedSettledAssistantContent(visibleText, error);
       log(`turn-error ${content}`);
-      await persistThenEmit(assistantId, content, assistantTimestampMs);
+      try {
+        await persistThenEmit(assistantId, content, assistantTimestampMs);
+      } catch {
+        emitAssistant(content, false);
+      }
     }
     finally { turnActivity.stop(); }
     return { accepted: true, clientNonce, provider };
@@ -610,7 +625,7 @@ export function createCoordinatorInferenceRouter(options: {
       });
       const queued = next.finally(() => { if (queues.get(agentId) === queued) queues.delete(agentId); });
       queues.set(agentId, queued);
-      void queued;
+      void queued.catch(() => undefined);
       return { handled: true, value: { accepted: true, clientNonce, provider } };
     },
     overlayAgents,

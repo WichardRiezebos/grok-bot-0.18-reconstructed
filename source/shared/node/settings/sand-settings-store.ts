@@ -269,11 +269,42 @@ export class SandSettingsStore {
   recordInferenceUsage(provider: SandInferenceProvider, usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; costUsd?: number }): void {
     const safe = (value: number | undefined): number => Number.isFinite(value) && value! >= 0 ? Math.round(value!) : 0;
     const safeCost = (value: number | undefined): number => Number.isFinite(value) && value! >= 0 ? value! : 0;
-    this.update((settings) => {
+    const increment = {
+      requests: 1,
+      inputTokens: safe(usage.inputTokens),
+      outputTokens: safe(usage.outputTokens),
+      cacheReadTokens: safe(usage.cacheReadTokens),
+      cacheWriteTokens: safe(usage.cacheWriteTokens),
+      costUsd: safeCost(usage.costUsd),
+    };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const before = existsSync(this.settingsPath) ? readFileSync(this.settingsPath, "utf8") : "";
+      const settings = this.load();
       const current = settings.inferenceRouterUsage ?? emptySandInferenceRouterUsage();
       const previous = current.providers[provider];
-      return { ...settings, inferenceRouterUsage: { schemaVersion: 1, providers: { ...current.providers, [provider]: { requests: previous.requests + 1, inputTokens: previous.inputTokens + safe(usage.inputTokens), outputTokens: previous.outputTokens + safe(usage.outputTokens), cacheReadTokens: previous.cacheReadTokens + safe(usage.cacheReadTokens), cacheWriteTokens: previous.cacheWriteTokens + safe(usage.cacheWriteTokens), costUsd: (previous.costUsd ?? 0) + safeCost(usage.costUsd), lastUsedAt: new Date().toISOString() } } } };
-    });
+      const next = {
+        ...settings,
+        inferenceRouterUsage: {
+          schemaVersion: 1 as const,
+          providers: {
+            ...current.providers,
+            [provider]: {
+              requests: previous.requests + increment.requests,
+              inputTokens: previous.inputTokens + increment.inputTokens,
+              outputTokens: previous.outputTokens + increment.outputTokens,
+              cacheReadTokens: previous.cacheReadTokens + increment.cacheReadTokens,
+              cacheWriteTokens: previous.cacheWriteTokens + increment.cacheWriteTokens,
+              costUsd: (previous.costUsd ?? 0) + increment.costUsd,
+              lastUsedAt: new Date().toISOString(),
+            },
+          },
+        },
+      };
+      const after = existsSync(this.settingsPath) ? readFileSync(this.settingsPath, "utf8") : "";
+      if (after !== before && attempt < 2) continue;
+      this.persist(next);
+      return;
+    }
   }
   setLocalToolPermissionCeiling(value?: SandLocalToolPermission): void { this.update((s) => { const { localToolPermissionCeiling: _old, ...rest } = s; return value === undefined ? rest : { ...rest, localToolPermissionCeiling: value }; }); }
   getPinnedAgentIds(): string[] | undefined { return this.load().pinnedAgentIds; }

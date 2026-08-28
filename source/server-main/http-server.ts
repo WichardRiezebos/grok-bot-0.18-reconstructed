@@ -90,7 +90,12 @@ function injectRenderer(html: string, debug: boolean): string {
 }
 
 function safeStaticPath(root: string, urlPath: string): string | null {
-  const decoded = decodeURIComponent(urlPath.split("?")[0] ?? "/");
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(urlPath.split("?")[0] ?? "/");
+  } catch {
+    return null;
+  }
   const relativePath = decoded === "/" ? "index.html" : decoded.replace(/^\//, "");
   const target = resolve(root, relativePath);
   const rel = relative(root, target);
@@ -179,13 +184,19 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
 
   const sessionCookieHeaders = (_req: IncomingMessage): Record<string, string> => ({});
 
-  const server = createServer(async (req, res) => {
-    const url = new URL(normalizeRequestUrl(req.url), "http://127.0.0.1");
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    let url: URL;
+    try {
+      url = new URL(normalizeRequestUrl(req.url), "http://127.0.0.1");
+    } catch {
+      return send(res, 400, "bad request");
+    }
     const pathName = url.pathname;
 
     if (req.method === "GET" && pathName === "/health") {
       if (!authorize(req, true)) return send(res, 401, "unauthorized");
-      return sendJson(res, 200, await buildRuntimeHealth(config, debug));
+      const health = await buildRuntimeHealth(config, debug);
+      return sendJson(res, health.ok ? 200 : 503, health);
     }
 
     if (req.method === "GET" && pathName === "/debug") {
@@ -214,7 +225,8 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
         try {
           const bytes = readFileSync(join(root, file));
           res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
-          return res.end(bytes);
+          res.end(bytes);
+          return;
         } catch {}
       }
       return send(res, 404, "missing shim");
@@ -238,36 +250,51 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
           const stats = statSync(target);
           if (stats.isFile()) {
             res.writeHead(200, { "content-type": MIME[extname(target)] ?? "application/octet-stream", "cache-control": "public, max-age=60" });
-            return res.end(readFileSync(target));
+            res.end(readFileSync(target));
+            return;
           }
         } catch {}
       }
     }
 
     return send(res, 404, "not found");
+  };
+
+  const server = createServer(async (req, res) => {
+    try {
+      await handleRequest(req, res);
+    } catch (error) {
+      noteLog(debug, "stderr", `request failed: ${error instanceof Error ? error.message : String(error)}`);
+      if (!res.headersSent) send(res, 500, "internal error");
+      else res.end();
+    }
   });
 
   const wss = new WebSocketServer({ noServer: true });
   debug.wsListenerReady = true;
   server.on("upgrade", (req, socket, head) => {
-    const url = new URL(normalizeRequestUrl(req.url), "http://127.0.0.1");
-    const vnc = vncProxyMatch(url.pathname);
-    if (vnc != null) {
-      if (!authorize(req)) {
-        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+    try {
+      const url = new URL(normalizeRequestUrl(req.url), "http://127.0.0.1");
+      const vnc = vncProxyMatch(url.pathname);
+      if (vnc != null) {
+        if (!authorize(req)) {
+          socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        proxyVncUpgrade(req, socket, head, config.gatewayUrl, vnc, url.search);
+        return;
+      }
+      if (url.pathname !== "/ws") {
         socket.destroy();
         return;
       }
-      proxyVncUpgrade(req, socket, head, config.gatewayUrl, vnc, url.search);
-      return;
+      wss.handleUpgrade(req, socket, head, (client) => {
+        wss.emit("connection", client, req);
+      });
+    } catch {
+      try { socket.destroy(); } catch {}
     }
-    if (url.pathname !== "/ws") {
-      socket.destroy();
-      return;
-    }
-    wss.handleUpgrade(req, socket, head, (client) => {
-      wss.emit("connection", client, req);
-    });
   });
   wss.on("connection", (socket, req) => {
     if (!authorize(req)) {

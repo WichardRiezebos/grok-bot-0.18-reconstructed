@@ -279,9 +279,11 @@ export class SandCursorAuthService {
 
   async updateLocalProfile(profile: { readonly name?: string; readonly email?: string }): Promise<SandAuthStatus> {
     const current = this.options.readLocalProfile?.() ?? {};
+    const name = profile.name === undefined ? current.name : (normalizeLocalProfileName(profile.name) ?? LOCAL_PROFILE_DEFAULT_NAME);
+    const email = profile.email === undefined ? current.email : (normalizeLocalProfileEmail(profile.email) ?? "");
     this.options.writeLocalProfile?.({
-      name: profile.name === undefined ? current.name : (normalizeLocalProfileName(profile.name) ?? LOCAL_PROFILE_DEFAULT_NAME),
-      email: profile.email === undefined ? current.email : (normalizeLocalProfileEmail(profile.email) ?? ""),
+      ...(name === undefined ? {} : { name }),
+      ...(email === undefined ? {} : { email }),
     });
     const status = this.currentLocalStatus();
     this.emitStatus(status);

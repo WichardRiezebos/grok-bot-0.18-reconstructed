@@ -14,6 +14,13 @@ import type { DebugState } from "./debug-log.js";
 import { noteLog } from "./debug-log.js";
 import { createHeadlessExecutors } from "./executors.js";
 
+export function noteCoordinatorExit(debug: DebugState, childPid: number | null, code: number | null): void {
+  debug.coordinatorLastExit = code;
+  if (debug.coordinatorPid !== childPid) return;
+  debug.coordinatorAlive = false;
+  debug.coordinatorPid = null;
+}
+
 export interface CoordinatorSession {
   readonly child: ChildProcess;
   postData(frame: unknown): void;
@@ -35,6 +42,7 @@ export function forkCoordinator(config: RuntimeConfig, debug: DebugState): Coord
       OPENROUTER_API_KEY: config.openRouterKey ?? process.env.OPENROUTER_API_KEY,
       SAND_HOST_GATEWAY_URL: config.gatewayUrl,
       SAND_HOST_GATEWAY_TOKEN: config.gatewayToken,
+      SAND_DATA_ROOT: config.dataDir,
     },
   });
   debug.coordinatorPid = child.pid ?? null;
@@ -91,9 +99,7 @@ export function forkCoordinator(config: RuntimeConfig, debug: DebugState): Coord
   });
 
   child.on("exit", (code) => {
-    debug.coordinatorAlive = false;
-    debug.coordinatorLastExit = code;
-    debug.coordinatorPid = null;
+    noteCoordinatorExit(debug, child.pid ?? null, code);
     server.handlePortClosed();
     noteLog(debug, "control", `coordinator exited ${code ?? "null"}`);
   });

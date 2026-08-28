@@ -626,3 +626,140 @@ test("double-slash VNC upgrade paths are normalized onto the proxy", async () =>
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test("malformed percent-encoded static paths do not crash the runtime", async () => {
+  const loaded = await loadModule("source/server-main/http-server.ts");
+  const configLoaded = await loadModule("source/server-main/config.ts");
+  const dataDir = await mkdtemp(path.join(tmpdir(), "grok-bot-web-"));
+  const rendererRoot = path.join(dataDir, "renderer");
+  await mkdir(path.join(rendererRoot, "assets"), { recursive: true });
+  await writeFile(path.join(rendererRoot, "index.html"), "<!doctype html><html><body>ok</body></html>");
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/health") && url.includes("box")) {
+      return new Response(JSON.stringify({ ok: true, isBusy: false }), { status: 200 });
+    }
+    return previousFetch(input, init);
+  };
+  const { resolveRuntimeConfig } = configLoaded.module;
+  const { startRuntimeServer } = loaded.module;
+  const server = startRuntimeServer(resolveRuntimeConfig({
+    GROK_BOT_LISTEN_HOST: "127.0.0.1",
+    GROK_BOT_LISTEN_PORT: "0",
+    GROK_BOT_DATA_DIR: dataDir,
+    GROK_BOT_STATIC_ROOT: path.join(repoRoot, "source", "server-main"),
+    GROK_BOT_RENDERER_ROOT: rendererRoot,
+    SAND_HOST_GATEWAY_URL: "http://box:1340",
+  }), { fork: mockFork });
+  try {
+    await server.ready;
+    const port = Number(new URL(server.url).port);
+    const status = await new Promise((resolve, reject) => {
+      const req = httpRequest({ hostname: "127.0.0.1", port, path: "/%zz.js" }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    assert.ok(status === 400 || status === 404);
+    const health = await fetch(`${server.url}/health`);
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).ok, true);
+  } finally {
+    globalThis.fetch = previousFetch;
+    await server.close();
+    await loaded.dispose();
+    await configLoaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("/health returns 503 when the coordinator is dead", async () => {
+  const loaded = await loadModule("source/server-main/http-server.ts");
+  const configLoaded = await loadModule("source/server-main/config.ts");
+  const dataDir = await mkdtemp(path.join(tmpdir(), "grok-bot-web-"));
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/health") && url.includes("box")) {
+      return new Response(JSON.stringify({ ok: true, isBusy: false }), { status: 200 });
+    }
+    return previousFetch(input, init);
+  };
+  const { resolveRuntimeConfig } = configLoaded.module;
+  const { startRuntimeServer } = loaded.module;
+  const server = startRuntimeServer(resolveRuntimeConfig({
+    GROK_BOT_LISTEN_HOST: "127.0.0.1",
+    GROK_BOT_LISTEN_PORT: "0",
+    GROK_BOT_DATA_DIR: dataDir,
+    GROK_BOT_STATIC_ROOT: path.join(repoRoot, "source", "server-main"),
+    SAND_HOST_GATEWAY_URL: "http://box:1340",
+  }), { fork: mockFork });
+  try {
+    await server.ready;
+    server.debug.coordinatorAlive = false;
+    const health = await fetch(`${server.url}/health`);
+    assert.equal(health.status, 503);
+    assert.equal((await health.json()).ok, false);
+  } finally {
+    globalThis.fetch = previousFetch;
+    await server.close();
+    await loaded.dispose();
+    await configLoaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("coordinator exit does not clobber a newer child's health flags", async () => {
+  const loaded = await loadModule("source/server-main/coordinator-parent.ts");
+  const debugLoaded = await loadModule("source/server-main/debug-log.ts");
+  try {
+    const debug = debugLoaded.module.createDebugState();
+    debug.coordinatorAlive = true;
+    debug.coordinatorPid = 20;
+    loaded.module.noteCoordinatorExit(debug, 19, 0);
+    assert.equal(debug.coordinatorAlive, true);
+    assert.equal(debug.coordinatorPid, 20);
+    assert.equal(debug.coordinatorLastExit, 0);
+    loaded.module.noteCoordinatorExit(debug, 20, 1);
+    assert.equal(debug.coordinatorAlive, false);
+    assert.equal(debug.coordinatorPid, null);
+    assert.equal(debug.coordinatorLastExit, 1);
+  } finally {
+    await loaded.dispose();
+    await debugLoaded.dispose();
+  }
+});
+
+test("VNC HTTP proxy aborts upstream when the client disconnects", async () => {
+  const loaded = await loadModule("source/server-main/vnc-proxy.ts");
+  let aborted = false;
+  const upstream = createServer((req) => {
+    req.on("aborted", () => { aborted = true; });
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const upstreamPort = upstream.address().port;
+  const proxy = createServer((req, res) => {
+    loaded.module.proxyVncHttp(req, res, `http://127.0.0.1:${upstreamPort}`, { port: upstreamPort, rest: "/" }, "");
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const proxyPort = proxy.address().port;
+  try {
+    await new Promise((resolve, reject) => {
+      const req = httpRequest({ hostname: "127.0.0.1", port: proxyPort, path: "/" }, () => {});
+      req.on("error", () => resolve());
+      req.on("close", resolve);
+      req.on("socket", () => setTimeout(() => req.destroy(), 40));
+      req.end();
+      setTimeout(() => reject(new Error("client destroy timeout")), 2_000);
+    });
+    for (let i = 0; i < 40 && !aborted; i++) await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(aborted, true);
+  } finally {
+    await new Promise((resolve, reject) => proxy.close((error) => error != null ? reject(error) : resolve()));
+    await new Promise((resolve, reject) => upstream.close((error) => error != null ? reject(error) : resolve()));
+    await loaded.dispose();
+  }
+});

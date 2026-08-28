@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -783,5 +783,100 @@ test("overlay fills roster lastEntry from the routed store", async () => {
     assert.equal(overlaid[1].lastEntry, undefined);
   } finally {
     await loaded.dispose();
+  }
+});
+
+test("a turn that ends on a tool step settles the streamed bubble", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-ghost-bubble-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), routerSettings());
+    const events = [];
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: (family, payload) => events.push({ family, payload }),
+      dispatchRemote: async (method) => {
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") return [{ id: "agent-1" }];
+        if (method === "listRoutedComputerTools") {
+          return [{ name: "Computer", providerIdentifier: "grok-bot-computer", toolName: "Computer" }];
+        }
+        if (method === "listRoutedMcpTools") return [];
+        if (method === "executeRoutedComputerTool") return { ok: true };
+        return {};
+      },
+      runProviderText: async (_provider, _messages, options) => {
+        options.onTextDelta?.("I've clicked Submit.");
+        await options.executeTool(
+          { name: "Computer", providerIdentifier: "grok-bot-computer", toolName: "Computer" },
+          { action: "click", x: 1, y: 2 },
+          "call-1",
+        );
+        options.onStreamEvent?.({ type: "step-finish", elapsedMs: 12 });
+        return "I've clicked Submit.";
+      },
+    });
+    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "click it", clientNonce: "n1" });
+    let lastForSlot = null;
+    for (let i = 0; i < 80; i++) {
+      const forSlot = events.filter((event) => event.family === "transcript" && event.payload?.entry?.id === "t0s0");
+      lastForSlot = forSlot.at(-1)?.payload?.entry ?? null;
+      if (lastForSlot?.streaming === false) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(lastForSlot?.streaming, false);
+    assert.equal(events.some((event) => event.family === "transcript" && event.payload?.entry?.id === "t0s0" && event.payload?.entry?.streaming === true), true);
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a persist failure mid-turn settles an error bubble without crashing", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-persist-fail-"));
+  const storePath = path.join(dataDir, "inference-router-transcript.json");
+  const rejections = [];
+  const onUnhandled = (error) => { rejections.push(error); };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), routerSettings());
+    const events = [];
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: (family, payload) => events.push({ family, payload }),
+      dispatchRemote: async (method) => {
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") return [{ id: "agent-1" }];
+        if (method === "listRoutedComputerTools") return [];
+        if (method === "listRoutedMcpTools") return [];
+        return {};
+      },
+      runProviderText: async (_provider, _messages, options) => {
+        await rm(storePath, { force: true });
+        await mkdir(storePath);
+        options.onTextDelta?.("hello");
+        options.onStreamEvent?.({ type: "step-finish", elapsedMs: 8 });
+        return "hello";
+      },
+    });
+    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "hi", clientNonce: "n1" });
+    let settled = null;
+    for (let i = 0; i < 80; i++) {
+      settled = events.find((event) => event.family === "transcript" && event.payload?.entry?.kind === "send-message" && event.payload?.entry?.streaming === false);
+      if (settled != null) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(rejections.length, 0);
+    assert.ok(settled != null);
+    assert.match(String(settled.payload.entry.message.content), /Router error|EISDIR|hello/i);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
   }
 });

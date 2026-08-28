@@ -97,11 +97,32 @@ function truncateToolMessage(message: unknown, limit: number): unknown {
   };
 }
 
+function hasToolCalls(message: unknown): boolean {
+  const record = asRecord(message);
+  if (record == null) return false;
+  if (Array.isArray(record.tool_calls) && record.tool_calls.length > 0) return true;
+  if (Array.isArray(record.content) && record.content.some((part) => {
+    const item = asRecord(part);
+    return item?.type === "tool-call" || item?.type === "tool_call";
+  })) return true;
+  return false;
+}
+
 function dropOldestNonSystem(messages: readonly unknown[]): unknown[] | null {
   if (messages.length <= 1) return null;
   const index = messages.findIndex((message, offset) => offset < messages.length - 1 && !isSystemMessage(message));
   if (index < 0) return null;
-  return [...messages.slice(0, index), ...messages.slice(index + 1)];
+  let start = index;
+  let end = index + 1;
+  if (isToolMessage(messages[index])) {
+    let previous = index - 1;
+    while (previous >= 0 && isSystemMessage(messages[previous])) previous -= 1;
+    if (previous >= 0 && (hasToolCalls(messages[previous]) || messageRole(messages[previous]) === "assistant")) start = previous;
+  }
+  if (hasToolCalls(messages[start]) || messageRole(messages[start]) === "assistant") {
+    while (end < messages.length - 1 && isToolMessage(messages[end])) end += 1;
+  }
+  return [...messages.slice(0, start), ...messages.slice(end)];
 }
 
 function enforceCharBudget(messages: readonly unknown[], extra: unknown, budget: number, keepRecentImages: number): unknown[] {

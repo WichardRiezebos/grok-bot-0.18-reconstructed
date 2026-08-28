@@ -97,3 +97,26 @@ test("routed Computer JSON schema lists every property in required", async () =>
   assert.match(source, /function strictObject/);
   assert.match(source, /openAiStrictSchemaGap/);
 });
+
+test("web runtime keeps serving after unhandled rejections", async () => {
+  const main = await readFile(path.join(repoRoot, "source/server-main/main.ts"), "utf8");
+  const http = await readFile(path.join(repoRoot, "source/server-main/http-server.ts"), "utf8");
+  assert.match(main, /process\.on\("unhandledRejection"/);
+  assert.match(main, /process\.on\("uncaughtException"/);
+  assert.match(http, /await handleRequest\(req, res\)/);
+  assert.match(http, /send\(res, 500, "internal error"\)/);
+});
+
+test("OpenRouter usage is taken from the SSE stream, not a JSON clone", async () => {
+  const session = await readFile(path.join(repoRoot, "source/host/extensions/inference/provider-session.ts"), "utf8");
+  assert.match(session, /observeOpenRouterSseUsage/);
+  assert.match(session, /injectOpenRouterStreamUsageIntoBody/);
+  assert.match(session, /GROK_BOT_DATA_DIR/);
+  assert.match(session, /function routedSettingsPath/);
+  assert.doesNotMatch(session, /response\.clone\(\)\.json/);
+});
+
+test("coordinator fork shares the web data dir as SAND_DATA_ROOT", async () => {
+  const parent = await readFile(path.join(repoRoot, "source/server-main/coordinator-parent.ts"), "utf8");
+  assert.match(parent, /SAND_DATA_ROOT: config\.dataDir/);
+});

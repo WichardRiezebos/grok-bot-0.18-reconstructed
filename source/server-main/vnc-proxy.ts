@@ -62,6 +62,11 @@ export function proxyVncHttp(
     res.writeHead(incoming.statusCode ?? 502, incoming.headers);
     incoming.pipe(res);
   });
+  const abortUpstream = () => {
+    upstream.destroy();
+  };
+  res.on("close", abortUpstream);
+  req.on("aborted", abortUpstream);
   upstream.on("error", () => {
     if (!res.headersSent) {
       res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });

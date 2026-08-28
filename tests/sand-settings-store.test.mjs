@@ -57,3 +57,26 @@ test("settings store drops the leftover qwen computer model so Computer inherits
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("recordInferenceUsage re-reads settings before persisting the increment", async () => {
+  const loaded = await loadModule();
+  const directory = await mkdtemp(path.join(os.tmpdir(), "grok-settings-usage-"));
+  const settingsPath = path.join(directory, "settings.json");
+  try {
+    const store = new loaded.module.SandSettingsStore(settingsPath);
+    store.setLocalProfileName("Ada");
+    store.recordInferenceUsage("openrouter", { inputTokens: 10, outputTokens: 2, costUsd: 0.01 });
+    const other = new loaded.module.SandSettingsStore(settingsPath);
+    other.setLocalProfileEmail("ada@example.com");
+    store.recordInferenceUsage("openrouter", { inputTokens: 5, outputTokens: 1, costUsd: 0.02 });
+    const persisted = JSON.parse(await readFile(settingsPath, "utf8"));
+    assert.equal(persisted.localProfileName, "Ada");
+    assert.equal(persisted.localProfileEmail, "ada@example.com");
+    assert.equal(persisted.inferenceRouterUsage.providers.openrouter.requests, 2);
+    assert.equal(persisted.inferenceRouterUsage.providers.openrouter.inputTokens, 15);
+    assert.equal(persisted.inferenceRouterUsage.providers.openrouter.costUsd, 0.03);
+  } finally {
+    await loaded.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

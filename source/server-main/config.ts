@@ -32,12 +32,13 @@ export function resolveRuntimeConfig(env: NodeJS.ProcessEnv = process.env, cwd =
   const staticRoot = env.GROK_BOT_STATIC_ROOT?.trim() || join(cwd, "static");
   const parsedPort = Number.parseInt(env.GROK_BOT_LISTEN_PORT?.trim() || String(CONTROL_PORT_DEFAULT), 10);
   const listenPort = Number.isInteger(parsedPort) && parsedPort >= 0 ? parsedPort : CONTROL_PORT_DEFAULT;
+  const accessToken = env.RUNTIME_ACCESS_TOKEN?.trim() || env.GROK_BOT_ACCESS_TOKEN?.trim();
   return {
     listenHost: env.GROK_BOT_LISTEN_HOST?.trim() || "0.0.0.0",
     listenPort,
     dataDir,
     publicUrl: env.PUBLIC_URL?.trim() || `http://127.0.0.1:${CONTROL_PORT_DEFAULT}`,
-    accessToken: env.RUNTIME_ACCESS_TOKEN?.trim() || env.GROK_BOT_ACCESS_TOKEN?.trim() || undefined,
+    ...(accessToken ? { accessToken } : {}),
     gatewayUrl: env.SAND_HOST_GATEWAY_URL?.trim() || "http://box:1340",
     gatewayToken: env.SAND_HOST_GATEWAY_TOKEN?.trim() || env.SAND_GATEWAY_TOKEN?.trim() || "",
     openRouterKey: env.OPENROUTER_API_KEY?.trim() || undefined,

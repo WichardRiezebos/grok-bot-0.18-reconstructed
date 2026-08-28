@@ -73,3 +73,27 @@ test("OpenRouter prompt budget keeps the newest screenshots and trims older hist
     await loaded.dispose();
   }
 });
+
+test("OpenRouter prompt budget keeps assistant tool_calls paired with tool replies", async () => {
+  const loaded = await loadModule();
+  try {
+    const messages = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "old" },
+      { role: "assistant", content: "calling", tool_calls: [{ id: "call-1", type: "function", function: { name: "Computer" } }] },
+      { role: "tool", tool_call_id: "call-1", content: "ok ".repeat(80) },
+      { role: "user", content: "latest" },
+    ];
+    const trimmed = loaded.module.boundOpenRouterMessages(messages, { charBudget: 120, keepRecentImages: 3 });
+    const roles = trimmed.map((message) => message.role);
+    assert.equal(roles[0], "system");
+    assert.equal(roles.at(-1), "user");
+    const toolIndex = roles.lastIndexOf("tool");
+    if (toolIndex >= 0) {
+      assert.equal(roles[toolIndex - 1], "assistant");
+      assert.ok(Array.isArray(trimmed[toolIndex - 1].tool_calls));
+    }
+  } finally {
+    await loaded.dispose();
+  }
+});

@@ -38,7 +38,6 @@ export function injectOpenRouterCacheControlIntoBody(body: unknown, modelId: str
     const next: Record<string, unknown> = { ...root };
     if (typeof next.system === "string" || Array.isArray(next.system)) next.system = withCacheControl(next.system);
     if (Array.isArray(next.tools) && next.tools.length > 0) next.tools = withCacheControl(next.tools);
-    next.stream_options = { ...(asRecord(next.stream_options) ?? {}), include_usage: true };
     if (Array.isArray(next.messages)) {
       next.messages = next.messages.map((item, index, messages) => {
         const message = asRecord(item);
@@ -72,6 +71,66 @@ export function openRouterCacheUsageFromPayload(payload: unknown): { cacheReadTo
   return { cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite, costUsd };
 }
 
+export function injectOpenRouterStreamUsageIntoBody(body: unknown): unknown {
+  if (typeof body !== "string") return body;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    const root = asRecord(parsed);
+    if (root == null) return body;
+    return JSON.stringify({
+      ...root,
+      stream_options: { ...(asRecord(root.stream_options) ?? {}), include_usage: true },
+    });
+  } catch {
+    return body;
+  }
+}
+
+export function applyOpenRouterSseUsage(chunk: string, usage: { cacheReadTokens: number; cacheWriteTokens: number; costUsd: number }): void {
+  for (const line of chunk.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) continue;
+    const payload = trimmed.slice(5).trim();
+    if (payload.length === 0 || payload === "[DONE]") continue;
+    try {
+      const parsed = openRouterCacheUsageFromPayload(JSON.parse(payload) as unknown);
+      if (parsed.cacheReadTokens > usage.cacheReadTokens) usage.cacheReadTokens = parsed.cacheReadTokens;
+      if (parsed.cacheWriteTokens > usage.cacheWriteTokens) usage.cacheWriteTokens = parsed.cacheWriteTokens;
+      if (parsed.costUsd > usage.costUsd) usage.costUsd = parsed.costUsd;
+    } catch {}
+  }
+}
+
+export function observeOpenRouterSseUsage(
+  response: Response,
+  usage: { cacheReadTokens: number; cacheWriteTokens: number; costUsd: number },
+): Response {
+  if (response.body == null) return response;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (value != null) {
+        buffer += decoder.decode(value, { stream: !done });
+        const events = buffer.split("\n\n");
+        buffer = events.pop() ?? "";
+        for (const event of events) applyOpenRouterSseUsage(event, usage);
+        controller.enqueue(value);
+      }
+      if (done) {
+        if (buffer.length > 0) applyOpenRouterSseUsage(buffer, usage);
+        controller.close();
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  return new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers });
+}
+
 function numberOrZero(...values: unknown[]): number {
   for (const value of values) {
     if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
@@ -81,5 +140,5 @@ function numberOrZero(...values: unknown[]): number {
 
 export function rewriteOpenRouterFetchBody(body: unknown, effortBody: unknown, modelId: string): unknown {
   const withEffort = effortBody ?? body;
-  return injectOpenRouterCacheControlIntoBody(withEffort, modelId);
+  return injectOpenRouterStreamUsageIntoBody(injectOpenRouterCacheControlIntoBody(withEffort, modelId));
 }
