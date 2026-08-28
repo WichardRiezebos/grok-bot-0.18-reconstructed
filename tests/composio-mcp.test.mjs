@@ -221,3 +221,38 @@ test("Connect ck_ keys list tools through local HTTP MCP, not Cursor", async () 
     await loaded.dispose();
   }
 });
+
+test("mergeInstalledMcpServers keeps Composio when the gateway is empty", async () => {
+  const loaded = await loadModule();
+  try {
+    const local = loaded.module.toInstalledComposioServers([{
+      serverIdentifier: "composio",
+      rowServerIdentifier: "composio",
+      accountLabel: "default",
+      status: "connected",
+      tools: [{ name: "GMAIL_FETCH_EMAILS", toolName: "GMAIL_FETCH_EMAILS", providerIdentifier: "composio", description: "Fetch", inputSchema: {} }],
+    }]);
+    const merged = loaded.module.mergeInstalledMcpServers([], local);
+    assert.equal(merged[0].name, "Composio");
+    assert.equal(merged[0].status, "connected");
+    assert.equal(merged[0].toolCount, 1);
+    const tools = loaded.module.toInstalledComposioServerTools([{
+      serverIdentifier: "composio",
+      rowServerIdentifier: "composio",
+      accountLabel: "default",
+      status: "connected",
+      tools: [{ name: "GMAIL_FETCH_EMAILS", toolName: "GMAIL_FETCH_EMAILS", providerIdentifier: "composio", description: "Fetch", inputSchema: {} }],
+    }]);
+    assert.equal(tools[0].name, "GMAIL_FETCH_EMAILS");
+    const routed = loaded.module.flattenComposioRoutedTools([{
+      serverIdentifier: "composio",
+      rowServerIdentifier: "composio",
+      accountLabel: "default",
+      status: "connected",
+      tools: [{ name: "GMAIL_FETCH_EMAILS", toolName: "GMAIL_FETCH_EMAILS", providerIdentifier: "composio", description: "Fetch", inputSchema: {} }],
+    }]);
+    assert.equal(routed[0].providerIdentifier, "composio");
+  } finally {
+    await loaded.dispose();
+  }
+});

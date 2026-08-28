@@ -7,6 +7,14 @@ import { localProfilePictureUrl, resolveLocalProfile } from "../shared/local-pro
 import { isSandLocalToolPermission } from "../shared/local-tool-permission.js";
 import { openRouterUsageToCursorSummary } from "../shared/openrouter-usage-summary.js";
 import { fetchOpenRouterCatalog, readOpenRouterApiKey } from "../shared/node/openrouter-models.js";
+import {
+  composioApiKeyFrom,
+  isComposioInstalledRow,
+  listComposioBackendServers,
+  mergeInstalledMcpServers,
+  toInstalledComposioServerTools,
+  toInstalledComposioServers,
+} from "../shared/node/composio-mcp.js";
 import { SandSettingsStore } from "../shared/node/settings/sand-settings-store.js";
 import {
   DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT,
@@ -82,6 +90,28 @@ export function createRpcDispatcher(options: {
       displayName: profile.name,
       ...(profile.email.length > 0 ? { email: profile.email } : {}),
       ...(profile.gravatarUrl != null ? { profilePictureUrl: profile.gravatarUrl } : {}),
+    };
+  };
+
+  const gatewayInstalledServers = async (): Promise<unknown[]> => {
+    try {
+      const state = await postGatewayCommand(config, "listInstalledMcpServers", {});
+      if (Array.isArray(state)) return state;
+      const record = state != null && typeof state === "object" && !Array.isArray(state) ? state as JsonMap : null;
+      return Array.isArray(record?.servers) ? record.servers : [];
+    } catch (error) {
+      debug.logs.push({ at: new Date().toISOString(), stream: "control", text: `listInstalledMcpServers ${error instanceof Error ? error.message : String(error)}` });
+      return [];
+    }
+  };
+
+  const localComposioInstalled = async () => {
+    const apiKey = composioApiKeyFrom(process.env, loadSecrets(options.secretsPath));
+    if (apiKey == null) return { servers: [] as Record<string, unknown>[], tools: [] as ReturnType<typeof toInstalledComposioServerTools> };
+    const backend = await listComposioBackendServers(apiKey);
+    return {
+      servers: toInstalledComposioServers(backend),
+      tools: toInstalledComposioServerTools(backend),
     };
   };
 
@@ -191,7 +221,6 @@ export function createRpcDispatcher(options: {
         const detail = error instanceof Error ? error.message : String(error);
         throw new Error(`Couldn't update the computer (${detail}). It is unchanged.`);
       }
-      options.restartCoordinator();
       return { status: "dev-fallback-finished" };
     },
     forceReconnectGateway: () => { options.restartCoordinator(); return null; },
@@ -357,15 +386,9 @@ export function createRpcDispatcher(options: {
       return { keys: Object.keys(current).sort() };
     },
     getMcpState: async () => {
-      try {
-        const state = await postGatewayCommand(config, "listInstalledMcpServers", {});
-        if (Array.isArray(state)) return { servers: state };
-        const record = state != null && typeof state === "object" && !Array.isArray(state) ? state as JsonMap : null;
-        return { servers: Array.isArray(record?.servers) ? record.servers : [] };
-      } catch (error) {
-        debug.logs.push({ at: new Date().toISOString(), stream: "control", text: `listInstalledMcpServers ${error instanceof Error ? error.message : String(error)}` });
-        return { servers: [] };
-      }
+      const gateway = await gatewayInstalledServers();
+      const local = await localComposioInstalled();
+      return { servers: mergeInstalledMcpServers(gateway, local.servers) };
     },
     getEffectivePlugins: () => [],
     getMcpCatalog: () => [],
@@ -380,6 +403,13 @@ export function createRpcDispatcher(options: {
     removeMcpAccount: () => stub("removeMcpAccount"),
     setMcpCustomInstructions: () => stub("setMcpCustomInstructions"),
     listMcpServerTools: async (payload) => {
+      const record = payload != null && typeof payload === "object" && !Array.isArray(payload) ? payload as JsonMap : {};
+      const serverId = typeof record.serverId === "string" ? record.serverId : "";
+      const gateway = await gatewayInstalledServers();
+      const local = await localComposioInstalled();
+      const merged = mergeInstalledMcpServers(gateway, local.servers);
+      const match = merged.find((row) => row != null && typeof row === "object" && String((row as JsonMap).id) === serverId);
+      if (local.servers.length > 0 && match != null && isComposioInstalledRow(match)) return local.tools;
       try {
         const tools = await postGatewayCommand(config, "listMcpServerTools", payload ?? {});
         return Array.isArray(tools) ? tools : [];

@@ -142,6 +142,8 @@ test("headless executors point at the box gateway and record stubs", async () =>
   const configLoaded = await loadModule("source/server-main/config.ts");
   const debugLoaded = await loadModule("source/server-main/debug-log.ts");
   const previousFetch = globalThis.fetch;
+  const previousKey = process.env.COMPOSIO_API_KEY;
+  delete process.env.COMPOSIO_API_KEY;
   const gatewayCalls = [];
   globalThis.fetch = async (input, init) => {
     gatewayCalls.push({ url: String(input), body: String(init?.body ?? "") });
@@ -170,6 +172,72 @@ test("headless executors point at the box gateway and record stubs", async () =>
     assert.equal(stubs.includes("listRoutedMcpTools"), false);
   } finally {
     globalThis.fetch = previousFetch;
+    if (previousKey == null) delete process.env.COMPOSIO_API_KEY;
+    else process.env.COMPOSIO_API_KEY = previousKey;
+    await loaded.dispose();
+    await configLoaded.dispose();
+    await debugLoaded.dispose();
+  }
+});
+
+test("listRoutedMcpTools includes Gmail from control Composio without the box", async () => {
+  const loaded = await loadModule("source/server-main/executors.ts");
+  const configLoaded = await loadModule("source/server-main/config.ts");
+  const debugLoaded = await loadModule("source/server-main/debug-log.ts");
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.COMPOSIO_API_KEY;
+  process.env.COMPOSIO_API_KEY = "ak_control_gmail";
+  const gatewayCalls = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    gatewayCalls.push({ url, body: String(init?.body ?? "") });
+    if (url.includes("listSandMcpTools")) {
+      throw new Error("Cursor dashboard should not list composio");
+    }
+    if (url.includes("/api/listRoutedMcpTools")) {
+      return new Response(JSON.stringify([]), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.includes("connected_accounts")) {
+      return new Response(JSON.stringify({
+        items: [{ id: "ca_gmail", status: "ACTIVE", user_id: "user-1", toolkit: { slug: "gmail" } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.includes("/tools/execute/")) {
+      return new Response(JSON.stringify({ successful: true, data: { messages: 1 } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.includes("/api/v3.1/tools")) {
+      return new Response(JSON.stringify({
+        items: [{ slug: "GMAIL_FETCH_EMAILS", description: "Fetch Gmail threads", toolkit: { slug: "gmail" } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const { resolveRuntimeConfig } = configLoaded.module;
+    const { createDebugState } = debugLoaded.module;
+    const { createHeadlessExecutors } = loaded.module;
+    const executors = createHeadlessExecutors(resolveRuntimeConfig({
+      SAND_HOST_GATEWAY_URL: "http://box:1340",
+      SAND_GATEWAY_TOKEN: "gate-9999",
+    }), createDebugState());
+    const tools = await executors.listRoutedMcpTools();
+    assert.ok(tools.some((tool) => tool.name === "GMAIL_FETCH_EMAILS"));
+    assert.equal(tools.find((tool) => tool.name === "GMAIL_FETCH_EMAILS")?.providerIdentifier, "composio");
+    assert.equal(gatewayCalls.some((call) => call.url.includes("listSandMcpTools")), false);
+    const executed = await executors.executeRoutedMcpTool({
+      providerIdentifier: "composio",
+      toolName: "GMAIL_FETCH_EMAILS",
+      args: { query: "in:inbox" },
+    });
+    assert.equal(executed.result.case, "success");
+    assert.equal(gatewayCalls.some((call) => call.url.includes("/api/executeRoutedMcpTool")), false);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey == null) delete process.env.COMPOSIO_API_KEY;
+    else process.env.COMPOSIO_API_KEY = previousKey;
     await loaded.dispose();
     await configLoaded.dispose();
     await debugLoaded.dispose();
@@ -211,7 +279,7 @@ test("runtime health JSON has the stable docker shape", async () => {
   }
 });
 
-test("updateComputer posts to the box gateway and restarts the coordinator", async () => {
+test("updateComputer posts to the box gateway without restarting the coordinator", async () => {
   const loaded = await loadModule("source/server-main/rpc.ts");
   const configLoaded = await loadModule("source/server-main/config.ts");
   const debugLoaded = await loadModule("source/server-main/debug-log.ts");
@@ -249,10 +317,12 @@ test("updateComputer posts to the box gateway and restarts the coordinator", asy
     });
     const result = await dispatch("sand-rpc:main:m:updateComputer", { id: "agent-1", force: false });
     assert.deepEqual(result, { status: "dev-fallback-finished" });
-    assert.equal(restarted, 1);
+    assert.equal(restarted, 0);
     assert.ok(gatewayCalls.some((call) => call.url === "http://box:1340/api/updateForeverBox"));
     assert.ok(gatewayCalls.some((call) => call.auth === "Bearer gate-9999"));
     assert.equal(debug.stubs.snapshot().some((row) => row.method === "updateComputer"), false);
+    await dispatch("sand-rpc:main:m:forceReconnectGateway", {});
+    assert.equal(restarted, 1);
     await assert.rejects(
       () => dispatch("sand-rpc:main:m:forceRecreateComputer", {}),
       /Reset the box container from your host instead/,
@@ -268,7 +338,7 @@ test("updateComputer posts to the box gateway and restarts the coordinator", asy
   }
 });
 
-test("updateComputer answers over websocket before the coordinator-restart close", async () => {
+test("updateComputer answers over websocket without a coordinator-restart close", async () => {
   const loaded = await loadModule("source/server-main/http-server.ts");
   const configLoaded = await loadModule("source/server-main/config.ts");
   const dataDir = await mkdtemp(path.join(tmpdir(), "grok-bot-update-ws-"));
@@ -300,11 +370,9 @@ test("updateComputer answers over websocket before the coordinator-restart close
     await server.ready;
     await new Promise((resolve, reject) => {
       const ws = new WebSocket(`${server.url.replace("http", "ws")}/ws?token=secret-token`);
-      const kinds = [];
       const timer = setTimeout(() => reject(new Error("updateComputer websocket timeout")), 5_000);
       ws.on("message", (raw) => {
         const message = JSON.parse(String(raw));
-        kinds.push(message.kind);
         if (message.kind === "hello-ok") {
           ws.send(JSON.stringify({
             kind: "rpc",
@@ -315,17 +383,21 @@ test("updateComputer answers over websocket before the coordinator-restart close
           return;
         }
         if (message.kind === "rpc-ok") {
-          assert.deepEqual(message.value, { status: "dev-fallback-finished" });
+          clearTimeout(timer);
+          try {
+            assert.deepEqual(message.value, { status: "dev-fallback-finished" });
+            assert.equal(ws.readyState, WebSocket.OPEN);
+            ws.close();
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
         }
       });
       ws.on("close", (code) => {
-        clearTimeout(timer);
-        try {
-          assert.equal(kinds.includes("rpc-ok"), true, `expected rpc-ok before close, got ${kinds.join(",")}`);
-          assert.equal(code, 1012);
-          resolve();
-        } catch (error) {
-          reject(error);
+        if (code === 1012) {
+          clearTimeout(timer);
+          reject(new Error("updateComputer should not close the websocket with 1012"));
         }
       });
       ws.on("error", (error) => {
@@ -499,6 +571,7 @@ test("ungated /health, /debug, and websocket RPC", async () => {
     assert.match(shimSource, /1012/);
     assert.match(shimSource, /coordinator restarted; reconnecting/);
     assert.doesNotMatch(shimSource, /coordinator restarted; reloading/);
+    assert.match(shimSource, /owner\?\.onPort\(coordinatorPort\)/);
     assert.match(shimSource, /__SENTRY__RENDERER_INIT__/);
     assert.match(shimSource, /dummy\\.dsn/);
     assert.match(shimSource, /listener\(undefined, payload\)/);
@@ -1021,6 +1094,8 @@ test("getMcpState and listMcpServerTools proxy the host gateway", async () => {
   const settingsLoaded = await loadModule("source/shared/node/settings/sand-settings-store.ts");
   const dataDir = await mkdtemp(path.join(tmpdir(), "grok-rpc-mcp-"));
   const previousFetch = globalThis.fetch;
+  const previousKey = process.env.COMPOSIO_API_KEY;
+  delete process.env.COMPOSIO_API_KEY;
   const gatewayCalls = [];
   globalThis.fetch = async (input, init) => {
     gatewayCalls.push({ url: String(input), body: String(init?.body ?? "") });
@@ -1065,6 +1140,76 @@ test("getMcpState and listMcpServerTools proxy the host gateway", async () => {
     assert.ok(gatewayCalls.some((call) => call.url === "http://box:1340/api/listMcpServerTools" && call.body.includes("\"serverId\":\"1\"")));
   } finally {
     globalThis.fetch = previousFetch;
+    if (previousKey == null) delete process.env.COMPOSIO_API_KEY;
+    else process.env.COMPOSIO_API_KEY = previousKey;
+    await rm(dataDir, { recursive: true, force: true });
+    await loaded.dispose();
+    await configLoaded.dispose();
+    await debugLoaded.dispose();
+    await settingsLoaded.dispose();
+  }
+});
+
+test("getMcpState returns local Composio when the gateway is empty", async () => {
+  const loaded = await loadModule("source/server-main/rpc.ts");
+  const configLoaded = await loadModule("source/server-main/config.ts");
+  const debugLoaded = await loadModule("source/server-main/debug-log.ts");
+  const settingsLoaded = await loadModule("source/shared/node/settings/sand-settings-store.ts");
+  const dataDir = await mkdtemp(path.join(tmpdir(), "grok-rpc-mcp-local-"));
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.COMPOSIO_API_KEY;
+  process.env.COMPOSIO_API_KEY = "ak_control_gmail";
+  const gatewayCalls = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    gatewayCalls.push({ url, body: String(init?.body ?? "") });
+    if (url.includes("listSandMcpTools")) {
+      throw new Error("Cursor dashboard should not list composio");
+    }
+    if (url.endsWith("/api/listInstalledMcpServers")) {
+      return new Response(JSON.stringify({ servers: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.includes("connected_accounts")) {
+      return new Response(JSON.stringify({
+        items: [{ id: "ca_gmail", status: "ACTIVE", user_id: "user-1", toolkit: { slug: "gmail" } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.includes("/api/v3.1/tools")) {
+      return new Response(JSON.stringify({
+        items: [{ slug: "GMAIL_FETCH_EMAILS", description: "Fetch Gmail threads", toolkit: { slug: "gmail" } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const { resolveRuntimeConfig } = configLoaded.module;
+    const { createDebugState } = debugLoaded.module;
+    const dispatch = loaded.module.createRpcDispatcher({
+      config: resolveRuntimeConfig({
+        SAND_HOST_GATEWAY_URL: "http://box:1340",
+        SAND_GATEWAY_TOKEN: "gate-9999",
+      }),
+      debug: createDebugState(),
+      settings: new settingsLoaded.module.SandSettingsStore(path.join(dataDir, "settings.json")),
+      secretsPath: path.join(dataDir, "box-secrets.json"),
+      persistencePath: path.join(dataDir, "client-persistence.json"),
+      restartCoordinator: () => {},
+    });
+    const state = await dispatch("sand-rpc:main:m:getMcpState", {});
+    assert.equal(state.servers[0].name, "Composio");
+    assert.equal(state.servers[0].status, "connected");
+    assert.ok(state.servers[0].toolCount > 0);
+    const tools = await dispatch("sand-rpc:main:m:listMcpServerTools", { serverId: state.servers[0].id });
+    assert.ok(tools.some((tool) => tool.name === "GMAIL_FETCH_EMAILS"));
+    assert.equal(gatewayCalls.some((call) => call.url.includes("listSandMcpTools")), false);
+    assert.equal(gatewayCalls.some((call) => call.url.includes("/api/listMcpServerTools")), false);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey == null) delete process.env.COMPOSIO_API_KEY;
+    else process.env.COMPOSIO_API_KEY = previousKey;
     await rm(dataDir, { recursive: true, force: true });
     await loaded.dispose();
     await configLoaded.dispose();

@@ -428,6 +428,93 @@ export async function listComposioBackendServers(apiKey: string | undefined): Pr
   }
 }
 
+export function isComposioInstalledRow(value: unknown): boolean {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const identifier = typeof record.serverIdentifier === "string" ? record.serverIdentifier : "";
+  const name = typeof record.name === "string" ? record.name : "";
+  return isComposioServerIdentifier(identifier) || name.toLowerCase() === "composio";
+}
+
+export function toInstalledComposioServers(
+  servers: readonly ReturnType<typeof backendServerFromTools>[],
+): Record<string, unknown>[] {
+  return servers.map((server, index) => ({
+    id: String(index + 1),
+    name: "Composio",
+    serverIdentifier: server.serverIdentifier,
+    accountKey: "default",
+    rowServerIdentifier: server.rowServerIdentifier,
+    isTeamServer: false,
+    status: server.status === "connected" ? "connected" : "error",
+    ...(server.statusDetail == null ? {} : { statusDetail: server.statusDetail }),
+    transport: "http",
+    toolCount: server.tools.length,
+    customInstructions: "",
+  }));
+}
+
+export function toInstalledComposioServerTools(
+  servers: readonly ReturnType<typeof backendServerFromTools>[],
+): Array<{ name: string; description?: string; isDisabled: boolean }> {
+  return servers.flatMap((server) =>
+    server.tools.map((tool) => ({
+      name: tool.toolName,
+      ...(tool.description.length > 0 ? { description: tool.description } : {}),
+      isDisabled: false,
+    })),
+  );
+}
+
+export function flattenComposioRoutedTools(
+  servers: readonly ReturnType<typeof backendServerFromTools>[],
+): Array<{
+  name: string;
+  providerIdentifier: string;
+  toolName: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}> {
+  return servers.flatMap((server) =>
+    server.tools.map((tool) => ({
+      name: tool.name,
+      providerIdentifier: tool.providerIdentifier,
+      toolName: tool.toolName,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+    })),
+  );
+}
+
+export function mergeInstalledMcpServers(
+  gatewayServers: readonly unknown[],
+  localServers: readonly Record<string, unknown>[],
+): unknown[] {
+  const gateway = [...gatewayServers];
+  if (localServers.length === 0) return gateway;
+  const local = localServers[0];
+  if (local == null) return gateway;
+  const existingIndex = gateway.findIndex((row) => isComposioInstalledRow(row));
+  if (existingIndex >= 0) {
+    const existing = gateway[existingIndex];
+    const existingRecord = existing != null && typeof existing === "object" && !Array.isArray(existing)
+      ? existing as Record<string, unknown>
+      : {};
+    gateway[existingIndex] = { ...existingRecord, ...local, id: existingRecord.id ?? local.id };
+    return gateway;
+  }
+  const used = new Set(
+    gateway.map((row) => (row != null && typeof row === "object" && "id" in row ? String((row as { id: unknown }).id) : "")),
+  );
+  let id = typeof local.id === "string" && local.id.length > 0 ? local.id : "1";
+  if (used.has(id)) {
+    let next = 1;
+    while (used.has(String(next))) next += 1;
+    id = String(next);
+  }
+  return [{ ...local, id }, ...gateway];
+}
+
 export async function executeComposioBackendTool(
   apiKey: string | undefined,
   args: { readonly name?: string; readonly toolName?: string; readonly args?: unknown },

@@ -56,7 +56,7 @@ export function toNotificationAgentFromRoster(value: unknown): NotificationAgent
     name: typeof nested.name === "string" ? nested.name : "",
     isRunning: nested.isRunning === true,
     awaitingUserResponse: awaitingFromRoster(nested.awaitingUserResponse),
-    notifyOnUpdatesEnabled: nested.notifyOnUpdatesEnabled === true,
+    notifyOnUpdatesEnabled: nested.notifyOnUpdatesEnabled !== false,
     isHiddenFromSidebar: nested.isHiddenFromSidebar === true || nested.hiddenFromSidebar === true || nested.isHidden === true,
     ...(typeof nested.lastMessageId === "string" || nested.lastMessageId === null ? { lastMessageId: nested.lastMessageId } : {}),
     lastMessagePreview: typeof nested.lastMessagePreview === "string" ? nested.lastMessagePreview : null
@@ -64,8 +64,13 @@ export function toNotificationAgentFromRoster(value: unknown): NotificationAgent
 }
 
 export function toNotificationAgentsFromRoster(value: unknown): NotificationAgent[] {
-  if (!Array.isArray(value)) return [];
-  return value
+  const roster = Array.isArray(value)
+    ? value
+    : isRecord(value) && Array.isArray(value.agents)
+      ? value.agents
+      : null;
+  if (roster == null) return [];
+  return roster
     .map(toNotificationAgentFromRoster)
     .filter((agent): agent is NotificationAgent => agent != null);
 }

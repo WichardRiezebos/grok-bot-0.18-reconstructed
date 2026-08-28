@@ -303,6 +303,7 @@ test("Router settings use the trusted backend and display recorded inference usa
   assert.match(webShim, /background:#fff/);
   assert.match(webShim, /background:#171914/);
   assert.match(webShim, /coordinator restarted; reconnecting/);
+  assert.match(webShim, /owner\?\.onPort\(coordinatorPort\)/);
   assert.match(providers, /grokRouterSystemPrompt\(pluginTools\)/);
   assert.match(providers, /No Connect plugins are attached/);
   assert.match(composer, /sand-prompt-stop-glyph/);

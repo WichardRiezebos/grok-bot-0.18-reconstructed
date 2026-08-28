@@ -348,6 +348,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       state.connection = "connected";
       log("websocket open");
       for (const payload of outbound.splice(0)) socket.send(payload);
+      owner?.onPort(coordinatorPort);
       window.dispatchEvent(new Event("grok-bot-ws"));
     });
     socket.addEventListener("error", () => {
@@ -439,7 +440,10 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       postMessage(data) {
         sendSocket(JSON.stringify({ kind, frame: data }));
       },
-      close() {},
+      close() {
+        listeners.message.length = 0;
+        listeners.close.length = 0;
+      },
       start() {},
       addEventListener(type, listener) {
         if (listeners[type] != null) listeners[type].push(listener);
