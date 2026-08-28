@@ -54,7 +54,7 @@ export function createProductionCoordinatorGatewayBinding(): Pick<
       ), context.settings.settingsStore, {
         exportBoxSecrets: async () => (await context.secretsStores.userSecretsStore.exportSnapshot()).secrets,
       }) as unknown as {
-        connect(): unknown | Promise<unknown>;
+        connect(options?: { demand?: boolean }): unknown | Promise<unknown>;
         recreate?: (...args: any[]) => unknown;
         forceRecreate?: (...args: any[]) => unknown;
         issueLocalExecDaemonCredential?: (...args: any[]) => unknown;
@@ -65,12 +65,12 @@ export function createProductionCoordinatorGatewayBinding(): Pick<
         "generated local-exec credential issuer",
       );
       const wrappedBase: {
-        connect(): Promise<BoxConnectionInfo>;
+        connect(options?: { demand?: boolean }): Promise<BoxConnectionInfo>;
         issueLocalExecDaemonCredential(...args: any[]): unknown;
         recreate?: (...args: any[]) => unknown;
         forceRecreate?: (...args: any[]) => unknown;
       } = {
-        connect: async () => await remote.connect() as BoxConnectionInfo,
+        connect: async (options) => await remote.connect(options) as BoxConnectionInfo,
         issueLocalExecDaemonCredential: remote.issueLocalExecDaemonCredential.bind(remote),
       };
       if (remote.recreate != null) wrappedBase.recreate = remote.recreate.bind(remote);

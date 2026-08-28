@@ -80,7 +80,7 @@ export interface WebAuthnPromptDependencies {
 }
 
 export interface CoordinatorGatewayConnector {
-  connect(): unknown | Promise<unknown>;
+  connect(options?: { demand?: boolean }): unknown | Promise<unknown>;
   issueLocalExecDaemonCredential?(): unknown | Promise<unknown>;
 }
 
@@ -461,7 +461,7 @@ export function createCoordinatorControlExecutors(
   };
 
   return {
-    resolveGatewayConnection: () => connector.connect(),
+    resolveGatewayConnection: (args?: { demand?: boolean }) => connector.connect({ demand: args?.demand === true }),
     listRoutedMcpTools: async () => {
       if (dependencies.listRoutedMcpTools == null) throw new Error("Desktop MCP routing is unavailable.");
       return await dependencies.listRoutedMcpTools();

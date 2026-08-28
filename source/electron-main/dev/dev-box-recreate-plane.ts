@@ -288,7 +288,7 @@ export class DevBoxRecreatePlane {
 
 export function actionFailureMessage(action: string, reason: string): string { return `Couldn't ${action} the computer (${reason}). It is unchanged.`; }
 export interface RemoteHostConnector<TCredential = unknown> {
-  connect(): Promise<BoxConnectionInfo>;
+  connect(options?: { demand?: boolean }): Promise<BoxConnectionInfo>;
   issueLocalExecDaemonCredential?: () => Promise<TCredential | undefined>;
   recreate?: (args: { preserveData: boolean; force?: boolean }) => Promise<RecreateResult>;
   forceRecreate?: () => Promise<RecreateResult>;
@@ -299,7 +299,7 @@ export function wrapRemoteHostConnectorWithDevBoxPlane<TCredential>(base: Remote
   const plane = new DevBoxRecreatePlane({ ...deps, ops: deps.ops ?? createDevBoxRecreateOps({ config, log: deps.log }), imageIsPullable: config.imageIsPullable });
   deps.log(`dev box recreate/reset control plane armed (container ${config.containerName}, image ${config.image}).`);
   return {
-    connect: () => base.connect(),
+    connect: (options) => base.connect(options),
     ...(base.issueLocalExecDaemonCredential == null ? {} : { issueLocalExecDaemonCredential: base.issueLocalExecDaemonCredential.bind(base) }),
     recreate: (args) => plane.recreate(args),
     forceRecreate: () => plane.forceRecreate(),

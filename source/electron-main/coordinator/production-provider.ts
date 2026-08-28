@@ -372,7 +372,7 @@ export function createProductionCoordinatorAdapter<
       const baseConnector = ports.createGatewayConnector(context);
       const connector = context.connectorEgress.wrap({
         ...baseConnector,
-        connect: async () => await baseConnector.connect() as BoxConnectionInfo,
+        connect: async (options?: { demand?: boolean }) => await baseConnector.connect(options) as BoxConnectionInfo,
       }) as unknown as ProductionCoordinatorGatewayConnector;
       if (connector == null || typeof connector.connect !== "function") {
         throw new Error("Production coordinator gateway connector did not provide connect().");
