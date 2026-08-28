@@ -138,9 +138,11 @@ await cp(path.join(root, "source/server-main/overlay.js"), path.join(out, "overl
 
 const rendererCandidates = [
   path.join(root, "src/app/dist/renderer"),
+  path.join(root, "deploy/control/shipped-renderer"),
   path.join(root, ".build/fidelity-clean-runtime/dist/renderer"),
   path.join(root, ".build/clean-runtime/dist/renderer"),
 ];
+let stagedRenderer = false;
 for (const candidate of rendererCandidates) {
   if (await exists(path.join(candidate, "index.html"))) {
     await mkdir(path.join(out, "dist"), { recursive: true });
@@ -151,9 +153,16 @@ for (const candidate of rendererCandidates) {
       process.stderr.write(`Renderer router patch skipped: ${error instanceof Error ? error.message : String(error)}\n`);
     }
     await cp(path.join(out, "dist", "renderer"), path.join(out, "renderer"), { recursive: true });
+    stagedRenderer = true;
     process.stdout.write(`Staged shipped renderer from ${candidate}\n`);
     break;
   }
+}
+
+if (!stagedRenderer) {
+  const message = "Shipped renderer was not staged (no index.html). Linux/Dokploy images need deploy/control/shipped-renderer or a bootstrapped src/app/dist/renderer.";
+  if (process.env.GROK_BOT_REQUIRE_RENDERER === "1") throw new Error(message);
+  process.stderr.write(`${message}\n`);
 }
 
 process.stdout.write(`Web runtime artifacts: ${out}\n`);

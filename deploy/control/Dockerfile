@@ -3,6 +3,7 @@ WORKDIR /src
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
 COPY . .
+ENV GROK_BOT_REQUIRE_RENDERER=1
 RUN node scripts/apply-third-party-patches.mjs && node scripts/build-web-runtime.mjs
 
 FROM node:26.5-bookworm-slim

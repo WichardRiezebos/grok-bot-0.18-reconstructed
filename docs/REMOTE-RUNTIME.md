@@ -69,11 +69,12 @@ Verify in this order before treating the UI as healthy:
    `?token=`). Confirm coordinator alive and WS ready.
 3. Open `/`. Confirm the overlay (`data-testid="grok-bot-debug-overlay"`) or
    `window.__grokBotDebug.connection === "connected"`.
-4. Exercise send-prompt / settings if the shipped renderer is in the image. If
-   it is not, the fallback shell still talks to the same WebSocket control plane.
+4. Open `/`. Confirm the shipped Grok Bot UI (sidebar + chat), not the
+   fallback banner “Shipped renderer is not in this image.”
 
-Linux/Dokploy builds often do not include the checksum-pinned Mac renderer. The
-control image then serves a small owned shell instead of the shipped UI.
+The control image stages `deploy/control/shipped-renderer` during `docker
+build`. That directory is the checksum-pinned 0.18 renderer so Linux/Dokploy
+builds serve the real UI instead of the debug shell.
 
 ## Debug surface
 

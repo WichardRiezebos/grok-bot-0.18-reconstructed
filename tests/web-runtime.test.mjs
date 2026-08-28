@@ -55,6 +55,8 @@ test("web runtime host bundle inlines jsonc-parser instead of UMD relative requi
   assert.match(script, /mainFields:\s*\["module", "main"\]/);
   assert.match(script, /startProductionHost/);
   assert.match(script, /bindRecoveredProductionExtensions/);
+  assert.match(script, /deploy\/control\/shipped-renderer/);
+  assert.match(script, /GROK_BOT_REQUIRE_RENDERER/);
   const temporary = await mkdtemp(path.join(tmpdir(), "grok-jsonc-bundle-"));
   const output = path.join(temporary, "jsonc.cjs");
   try {
@@ -79,6 +81,14 @@ test("web runtime host bundle inlines jsonc-parser instead of UMD relative requi
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
+});
+
+test("control image ships the checksum-pinned renderer", async () => {
+  const html = await readFile(path.join(repoRoot, "deploy/control/shipped-renderer/index.html"), "utf8");
+  assert.match(html, /index-UbX-y3il\.js/);
+  assert.match(html, /index-lCyB53CO\.css/);
+  const entry = await readFile(path.join(repoRoot, "deploy/control/shipped-renderer/assets/index-UbX-y3il.js"), "utf8");
+  assert.match(entry, /sand-/);
 });
 
 test("bundled CJS entrypoint still matches node server-main.cjs", async () => {
