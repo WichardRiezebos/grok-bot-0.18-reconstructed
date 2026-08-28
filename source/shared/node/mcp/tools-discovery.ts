@@ -23,6 +23,7 @@ import {
   type McpResultFactory,
 } from "./mcp-image-assets.js";
 import { toJsonArgs } from "./mcp-validation.js";
+import { isComposioServerIdentifier } from "../composio-mcp.js";
 
 export const MCP_TOOLS_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
 export const TOOLS_DISCOVERY_DEADLINE_MS = 120_000;
@@ -398,7 +399,7 @@ export function createMcpToolsDiscovery(
     args: any,
     auditIdentity: any,
   ): Promise<McpResultLike> {
-    if (await isHttpProvider(args.providerIdentifier)) {
+    if (isComposioServerIdentifier(args.providerIdentifier) || await isHttpProvider(args.providerIdentifier)) {
       const result = await core.backendMcpExec.executeTool({
         serverIdentifier: args.providerIdentifier,
         toolName: args.name,

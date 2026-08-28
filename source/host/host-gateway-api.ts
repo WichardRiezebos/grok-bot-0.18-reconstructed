@@ -645,6 +645,14 @@ export function createHostGatewayApi(
     },
     listRoutedMcpTools,
     executeRoutedMcpTool,
+    listInstalledMcpServers: async () => {
+      const servers = await method(deps.extensions.api("mcp").management, "listInstalled")();
+      return { servers: Array.isArray(servers) ? servers : [] };
+    },
+    listMcpServerTools: async ({ serverId }: any) => {
+      const tools = await method(deps.extensions.api("mcp").management, "listServerTools")(String(serverId ?? ""));
+      return Array.isArray(tools) ? tools : [];
+    },
     listRoutedComputerTools: () => [...listRoutedComputerToolDefinitions()],
     executeRoutedComputerTool: async (args: any) => {
       const foreverBox = deps.extensions.api("forever-box");

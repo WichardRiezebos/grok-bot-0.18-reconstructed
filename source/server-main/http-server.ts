@@ -136,6 +136,7 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
       try { previous.close(4409, "superseded by another tab"); } catch {}
     }
   };
+  let restartQueued = false;
   const startCoordinator = () => {
     const generation = ++coordinatorGeneration;
     try {
@@ -185,9 +186,14 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
     settings,
     secretsPath: secretsPathFor(config.dataDir),
     persistencePath: persistencePathFor(config.dataDir),
-    restartCoordinator: startCoordinator,
+    restartCoordinator: () => { restartQueued = true; },
     emit,
   });
+  const flushCoordinatorRestart = () => {
+    if (!restartQueued) return;
+    restartQueued = false;
+    startCoordinator();
+  };
 
   const authorize = (_req: IncomingMessage, _allowLoopbackHealth = false): boolean => true;
 
@@ -327,10 +333,12 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
         if (message.kind === "rpc" && typeof message.id === "string" && typeof message.channel === "string") {
           try {
             const value = await dispatchRpc(message.channel, message.payload);
-            socket.send(JSON.stringify({ kind: "rpc-ok", id: message.id, value }));
+            if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ kind: "rpc-ok", id: message.id, value }));
           } catch (error) {
             const envelope = failureEnvelope(error);
-            socket.send(JSON.stringify({ kind: "rpc-err", id: message.id, failure: envelope.failure }));
+            if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ kind: "rpc-err", id: message.id, failure: envelope.failure }));
+          } finally {
+            flushCoordinatorRestart();
           }
           return;
         }

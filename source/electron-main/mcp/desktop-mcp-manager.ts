@@ -13,7 +13,7 @@ import {
 import { pinMcpDiagnosticsReporter } from "../../shared/node/mcp/mcp-diagnostics.js";
 import { SandMcpManager } from "../../shared/node/mcp/mcp-manager.js";
 import { createMcpToolsDiscovery } from "../../shared/node/mcp/tools-discovery.js";
-import { readComposioApiKey, resolveComposioMcpRuntimeConfig } from "../../shared/node/composio-mcp.js";
+import { readComposioApiKey, resolveComposioMcpRuntimeConfig, wrapBackendMcpExecWithComposio } from "../../shared/node/composio-mcp.js";
 
 export interface DesktopMcpManagerFacade {
   listServers(): Promise<unknown>;
@@ -76,11 +76,11 @@ export async function createSandDesktopMcpManager(options: DesktopMcpManagerOpti
     getBackendUrl: getSandInferenceBackendUrl,
     createClient: generatedAccountClient,
   };
-  const backendMcpExec = createDashboardSandBackendMcpExec({
+  const backendMcpExec = wrapBackendMcpExecWithComposio(createDashboardSandBackendMcpExec({
     getAccessToken: accountMcpDeps.getAccessToken,
     getMachineId: accountMcpDeps.getMachineId,
     createClient: generatedBackendClient,
-  });
+  }));
   const manager = new SandMcpManager({
     settingsStore: options.settingsStore,
     onAccountScopeApplied: options.onAccountScopeApplied,

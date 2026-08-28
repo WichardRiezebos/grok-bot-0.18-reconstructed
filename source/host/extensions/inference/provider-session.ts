@@ -30,20 +30,26 @@ type UsageRecord = { inputTokens?: number; outputTokens?: number; cacheReadToken
 type OpenRouterTurnUsage = { cacheReadTokens: number; cacheWriteTokens: number; costUsd: number };
 type RoutedToolExecutor = (tool: Loose, args: unknown, toolCallId: string) => Promise<unknown>;
 
-export const GROK_ROUTER_SYSTEM_PROMPT = [
-  "You are Grok Bot, a warm, concise desktop assistant.",
-  "You are running inside Grok Bot, not inside Codex CLI or Claude Code.",
-  "The tools supplied with this request include Grok Bot's already-connected plugins and accounts, plus Computer for this agent's own box desktop (the live screen in the UI). Use plugins whenever they are relevant instead of claiming that a plugin is unavailable or asking the user to reconnect it.",
-  "You do have a screen you can drive: it is this agent's box desktop. Chrome starts with no visible window. Call box_chrome with the destination URL only if Chrome is not already visible, then use Computer to screenshot, click, type, and scroll. Never claim a page is loaded, searched, or clicked unless the latest Computer screenshot shows that window.",
-  "Report only what the latest Computer screenshot actually shows. If the expected page is not visible, say so plainly, wait, and re-screenshot. Do not call box_chrome again for a site that is already open — reopening the homepage wipes search and basket.",
-  "The user watches your screen live next to this chat. You cannot attach or show screenshots in chat, so never say you are showing one; when asked to show something, put it on the screen and point them to your screen.",
-  "Do not screenshot in a loop. After at most two screenshots, click, type, or navigate, or stop and tell the user what you see.",
-  "Cookie banners, GDPR consent, and Accept/Accepteren/Akkoord buttons are yours: click them with Computer. Never request_box_help for a cookie banner, and never ask the user to click one.",
-  "Do not announce screenshots, clicks, or waits. Speak only when you are blocked or done.",
-  "Do not close the box browser or its windows. If a page looks blank, screenshot again after a short wait instead of quitting Chrome.",
-  "When a step needs the user (a login, 2FA, captcha, or payment), hand them the box with request_box_help immediately. Do not keep driving Computer toward checkout. You never see their password or 2FA.",
-  "Never ask for an API key for an already-connected plugin. Respond directly to the user in natural language after completing any necessary tool calls.",
-].join("\n");
+export function grokRouterSystemPrompt(pluginTools = false): string {
+  return [
+    "You are Grok Bot, a warm, concise desktop assistant.",
+    "You are running inside Grok Bot, not inside Codex CLI or Claude Code.",
+    pluginTools
+      ? "The tools supplied with this request include Grok Bot's already-connected plugins and accounts, plus Computer for this agent's own box desktop (the live screen in the UI). Use plugins whenever they are relevant instead of claiming that a plugin is unavailable or asking the user to reconnect it."
+      : "No Connect plugins are attached to this turn. Do not claim Gmail, Composio, or other plugins are connected, and do not say you searched or sent mail. If the user asks to use a plugin, tell them it is not available on this turn.",
+    "You do have a screen you can drive: it is this agent's box desktop. Chrome starts with no visible window. Call box_chrome with the destination URL only if Chrome is not already visible, then use Computer to screenshot, click, type, and scroll. Never claim a page is loaded, searched, or clicked unless the latest Computer screenshot shows that window.",
+    "Report only what the latest Computer screenshot actually shows. If the expected page is not visible, say so plainly, wait, and re-screenshot. Do not call box_chrome again for a site that is already open — reopening the homepage wipes search and basket.",
+    "The user watches your screen live next to this chat. You cannot attach or show screenshots in chat, so never say you are showing one; when asked to show something, put it on the screen and point them to your screen.",
+    "Do not screenshot in a loop. After at most two screenshots, click, type, or navigate, or stop and tell the user what you see.",
+    "Cookie banners, GDPR consent, and Accept/Accepteren/Akkoord buttons are yours: click them with Computer. Never request_box_help for a cookie banner, and never ask the user to click one.",
+    "Do not announce screenshots, clicks, or waits. Speak only when you are blocked or done.",
+    "Do not close the box browser or its windows. If a page looks blank, screenshot again after a short wait instead of quitting Chrome.",
+    "When a step needs the user (a login, 2FA, captcha, or payment), hand them the box with request_box_help immediately. Do not keep driving Computer toward checkout. You never see their password or 2FA.",
+    "Never ask for an API key for an already-connected plugin. Respond directly to the user in natural language after completing any necessary tool calls.",
+  ].join("\n");
+}
+
+export const GROK_ROUTER_SYSTEM_PROMPT = grokRouterSystemPrompt(true);
 
 function routedSettingsPath(): string {
   const dataDir = process.env.GROK_BOT_DATA_DIR?.trim();
@@ -360,8 +366,7 @@ function toToolSet(definitions: readonly Loose[] | undefined, executeTool?: Rout
   const tools: ToolSet = {};
   for (const definition of definitions) {
     if (typeof definition.name !== "string" || definition.name.length === 0) continue;
-    const parameters = definition.inputSchema ?? definition.parameters;
-    if (parameters == null) continue;
+    const parameters = definition.inputSchema ?? definition.parameters ?? { type: "object", properties: {} };
     const routedTool: any = {
       ...(typeof definition.description === "string" ? { description: definition.description } : {}),
       parameters: jsonSchema(parameters),
@@ -373,12 +378,12 @@ function toToolSet(definitions: readonly Loose[] | undefined, executeTool?: Rout
   return Object.keys(tools).length === 0 ? undefined : tools;
 }
 
-function openRouterExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void, abortSignal?: AbortSignal, maxSteps?: number, slot: OpenRouterSlot = "think") {
+function openRouterExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void, abortSignal?: AbortSignal, maxSteps?: number, slot: OpenRouterSlot = "think", pluginTools = false) {
   const id = configuredOpenRouterSlotModel(slot);
   const turnUsage: OpenRouterTurnUsage = { cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
   const model: LanguageModelV1 = createOpenAI({ apiKey: openRouterCredential(), baseURL: "https://openrouter.ai/api/v1", compatibility: "compatible", name: "openrouter", headers: { "HTTP-Referer": "https://github.com/grok-bot-reconstructed", "X-Title": "Grok Bot Reconstructed" }, fetch: openRouterFetch(configuredOpenRouterReasoningEffort(slot), id, turnUsage) }).chat(id as any);
   const tools = toToolSet(definitions, executeTool);
-  const result = streamText({ model, system: GROK_ROUTER_SYSTEM_PROMPT, messages: messages as CoreMessage[], ...(tools === undefined ? {} : { tools }), toolCallStreaming: true, maxRetries: 0, maxSteps: resolvedMaxSteps(tools !== undefined, maxSteps), ...(abortSignal == null ? {} : { abortSignal }) });
+  const result = streamText({ model, system: grokRouterSystemPrompt(pluginTools), messages: messages as CoreMessage[], ...(tools === undefined ? {} : { tools }), toolCallStreaming: true, maxRetries: 0, maxSteps: resolvedMaxSteps(tools !== undefined, maxSteps), ...(abortSignal == null ? {} : { abortSignal }) });
   const extendedUsage = result.usage.then(value => ({ inputTokens: value.promptTokens, outputTokens: value.completionTokens, cacheReadTokens: turnUsage.cacheReadTokens, cacheWriteTokens: turnUsage.cacheWriteTokens, costUsd: turnUsage.costUsd, maxTokens: 0 }));
   if (onUsage != null) void extendedUsage.then(onUsage, () => undefined);
   return { fullStream: result.fullStream, response: result.response, usage: result.usage, extendedUsage, providerMetadata: result.providerMetadata, invocationId: Promise.resolve(invocationId) };
@@ -454,11 +459,13 @@ export async function runRoutedProviderText(provider: RoutedProvider, messages: 
   readonly abortSignal?: AbortSignal;
   readonly maxSteps?: number;
   readonly slot?: OpenRouterSlot;
+  readonly pluginTools?: boolean;
 }): Promise<string> {
   const invocationId = crypto.randomUUID();
   const onUsage = (usage: UsageRecord) => recordRoutedUsage(provider, usage);
   const abortSignal = options?.abortSignal;
   const slot = options?.slot ?? "think";
+  const pluginTools = options?.pluginTools === true;
   if (provider === "openrouter" && slot === "drive") {
     const { runPiDriveSession } = await import("./pi-drive-session.js");
     return runPiDriveSession({
@@ -479,7 +486,7 @@ export async function runRoutedProviderText(provider: RoutedProvider, messages: 
     ? codexExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage, options?.maxSteps)
     : provider === "claude-code"
       ? claudeExecutor(messages, invocationId, onUsage, options?.mcpServerUrl, options?.maxSteps)
-      : openRouterExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage, abortSignal, options?.maxSteps, slot);
+      : openRouterExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage, abortSignal, options?.maxSteps, slot, pluginTools);
   try {
     const text = await collectRoutedText(result.fullStream, options?.onTextDelta, abortSignal, options?.onStreamEvent, options?.onProgress);
     if (abortSignal?.aborted) throw routedTurnTimeoutError(abortSignal);

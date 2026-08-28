@@ -71,6 +71,8 @@ test("Router settings use the trusted backend and display recorded inference usa
   const coordinatorResync = await readFile(path.join(repoRoot, "source", "electron-main", "coordinator", "coordinator-resync.ts"), "utf8");
   const hostBox = await readFile(path.join(repoRoot, "source", "host", "extensions", "forever-box", "host-box.ts"), "utf8");
   const composer = await readFile(path.join(repoRoot, "frontend", "src", "recovered", "features", "conversation", "workspace", "composer.tsx"), "utf8");
+  const viewCss = await readFile(path.join(repoRoot, "frontend", "src", "recovered", "features", "conversation", "workspace", "view.css"), "utf8");
+  const pluginsBrowser = await readFile(path.join(repoRoot, "frontend", "src", "recovered", "features", "plugins", "overlay", "browser.tsx"), "utf8");
   const webShim = await readFile(path.join(repoRoot, "source", "server-main", "web-shim.js"), "utf8");
   assert.match(rendererPatch, /desktop\.agent\.getInferenceRouter\(\)/);
   assert.match(rendererPatch, /desktop\.agent\.setInferenceRouter\("openrouter"\)/);
@@ -298,7 +300,16 @@ test("Router settings use the trusted backend and display recorded inference usa
   assert.match(webShim, /method: "stopRoutedTurn"/);
   assert.match(webShim, /grok-bot-composer-stop/);
   assert.match(webShim, /nativeComposerStop/);
-  assert.match(webShim, /sand-fill-primary/);
+  assert.match(webShim, /background:#fff/);
+  assert.match(webShim, /background:#171914/);
+  assert.match(webShim, /coordinator restarted; reconnecting/);
+  assert.match(providers, /grokRouterSystemPrompt\(pluginTools\)/);
+  assert.match(providers, /No Connect plugins are attached/);
+  assert.match(composer, /sand-prompt-stop-glyph/);
+  assert.match(viewCss, /cursor-text-primary/);
+  assert.match(pluginsBrowser, /No tools loaded for this connector/);
+  assert.match(gatewayProtocol, /listInstalledMcpServers/);
+  assert.match(gatewayProtocol, /listMcpServerTools/);
   assert.match(webShim, /sand:vnc-viewer-visible/);
   assert.match(webShim, /refreshNoVncIframe/);
   assert.match(webShim, /IntersectionObserver/);

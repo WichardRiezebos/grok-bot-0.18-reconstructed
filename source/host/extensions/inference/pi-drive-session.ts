@@ -21,7 +21,7 @@ export const GROK_DRIVE_SYSTEM_PROMPT = [
   "Cookie banners, GDPR consent, and Accept/Accepteren/Akkoord buttons are yours: press them with act_ui. Never request_box_help for a cookie banner.",
   "The user watches your screen live next to this chat. Speak only when you are blocked or done.",
   "When a step needs the user (a login, 2FA, captcha, or payment), hand them the box with request_box_help immediately.",
-  "The tools supplied with this request include already-connected plugins. Use them when relevant.",
+  "Use plugin tools from this request when they are present. If none are supplied, do not claim Gmail or Composio is connected.",
 ].join("\n");
 
 function parametersFromSchema(schema: unknown): TSchema {

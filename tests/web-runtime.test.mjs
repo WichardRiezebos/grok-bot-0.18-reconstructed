@@ -268,6 +268,80 @@ test("updateComputer posts to the box gateway and restarts the coordinator", asy
   }
 });
 
+test("updateComputer answers over websocket before the coordinator-restart close", async () => {
+  const loaded = await loadModule("source/server-main/http-server.ts");
+  const configLoaded = await loadModule("source/server-main/config.ts");
+  const dataDir = await mkdtemp(path.join(tmpdir(), "grok-bot-update-ws-"));
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/api/updateForeverBox")) {
+      return new Response(JSON.stringify({ started: true, agentId: "agent-1" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.includes("/health")) {
+      return new Response(JSON.stringify({ ok: true, isBusy: false }), { status: 200 });
+    }
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const { resolveRuntimeConfig } = configLoaded.module;
+  const { startRuntimeServer } = loaded.module;
+  const server = startRuntimeServer(resolveRuntimeConfig({
+    RUNTIME_ACCESS_TOKEN: "secret-token",
+    GROK_BOT_LISTEN_HOST: "127.0.0.1",
+    GROK_BOT_LISTEN_PORT: "0",
+    GROK_BOT_DATA_DIR: dataDir,
+    GROK_BOT_STATIC_ROOT: path.join(repoRoot, "source", "server-main"),
+    SAND_HOST_GATEWAY_URL: "http://box:1340",
+  }), { fork: mockFork });
+  try {
+    await server.ready;
+    await new Promise((resolve, reject) => {
+      const ws = new WebSocket(`${server.url.replace("http", "ws")}/ws?token=secret-token`);
+      const kinds = [];
+      const timer = setTimeout(() => reject(new Error("updateComputer websocket timeout")), 5_000);
+      ws.on("message", (raw) => {
+        const message = JSON.parse(String(raw));
+        kinds.push(message.kind);
+        if (message.kind === "hello-ok") {
+          ws.send(JSON.stringify({
+            kind: "rpc",
+            id: "upd",
+            channel: "sand-rpc:main:m:updateComputer",
+            payload: { id: "agent-1", force: false },
+          }));
+          return;
+        }
+        if (message.kind === "rpc-ok") {
+          assert.deepEqual(message.value, { status: "dev-fallback-finished" });
+        }
+      });
+      ws.on("close", (code) => {
+        clearTimeout(timer);
+        try {
+          assert.equal(kinds.includes("rpc-ok"), true, `expected rpc-ok before close, got ${kinds.join(",")}`);
+          assert.equal(code, 1012);
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+      ws.on("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+  } finally {
+    globalThis.fetch = previousFetch;
+    await server.close();
+    await loaded.dispose();
+    await configLoaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("renderer assets load without a site access token", async () => {
   const loaded = await loadModule("source/server-main/http-server.ts");
   const configLoaded = await loadModule("source/server-main/config.ts");
@@ -423,6 +497,8 @@ test("ungated /health, /debug, and websocket RPC", async () => {
     assert.match(shimSource, /4409/);
     assert.match(shimSource, /grok-bot-superseded/);
     assert.match(shimSource, /1012/);
+    assert.match(shimSource, /coordinator restarted; reconnecting/);
+    assert.doesNotMatch(shimSource, /coordinator restarted; reloading/);
     assert.match(shimSource, /__SENTRY__RENDERER_INIT__/);
     assert.match(shimSource, /dummy\\.dsn/);
     assert.match(shimSource, /listener\(undefined, payload\)/);
@@ -935,5 +1011,64 @@ test("updateLocalProfile persists and broadcasts cursor-auth-changed", async () 
     await loaded.dispose();
     await configLoaded.dispose();
     await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("getMcpState and listMcpServerTools proxy the host gateway", async () => {
+  const loaded = await loadModule("source/server-main/rpc.ts");
+  const configLoaded = await loadModule("source/server-main/config.ts");
+  const debugLoaded = await loadModule("source/server-main/debug-log.ts");
+  const settingsLoaded = await loadModule("source/shared/node/settings/sand-settings-store.ts");
+  const dataDir = await mkdtemp(path.join(tmpdir(), "grok-rpc-mcp-"));
+  const previousFetch = globalThis.fetch;
+  const gatewayCalls = [];
+  globalThis.fetch = async (input, init) => {
+    gatewayCalls.push({ url: String(input), body: String(init?.body ?? "") });
+    const url = String(input);
+    if (url.endsWith("/api/listInstalledMcpServers")) {
+      return new Response(JSON.stringify({ servers: [{ id: "1", name: "Composio", status: "connected", toolCount: 2 }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.endsWith("/api/listMcpServerTools")) {
+      return new Response(JSON.stringify([{ name: "GMAIL_FETCH_EMAILS", isDisabled: false }]), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const { resolveRuntimeConfig } = configLoaded.module;
+    const { createDebugState } = debugLoaded.module;
+    const dispatch = loaded.module.createRpcDispatcher({
+      config: resolveRuntimeConfig({
+        SAND_HOST_GATEWAY_URL: "http://box:1340",
+        SAND_GATEWAY_TOKEN: "gate-9999",
+      }),
+      debug: createDebugState(),
+      settings: new settingsLoaded.module.SandSettingsStore(path.join(dataDir, "settings.json")),
+      secretsPath: path.join(dataDir, "box-secrets.json"),
+      persistencePath: path.join(dataDir, "client-persistence.json"),
+      restartCoordinator: () => {},
+    });
+    const state = await dispatch("sand-rpc:main:m:getMcpState", {});
+    assert.deepEqual(state, { servers: [{ id: "1", name: "Composio", status: "connected", toolCount: 2 }] });
+    const listed = await dispatch("sand:mcp-list", {});
+    assert.equal(listed.servers[0].name, "Composio");
+    const tools = await dispatch("sand-rpc:main:m:listMcpServerTools", { serverId: "1" });
+    assert.equal(tools[0].name, "GMAIL_FETCH_EMAILS");
+    const ipcTools = await dispatch("sand:mcp-list-server-tools", { serverId: "1" });
+    assert.equal(ipcTools[0].name, "GMAIL_FETCH_EMAILS");
+    assert.ok(gatewayCalls.some((call) => call.url === "http://box:1340/api/listInstalledMcpServers"));
+    assert.ok(gatewayCalls.some((call) => call.url === "http://box:1340/api/listMcpServerTools" && call.body.includes("\"serverId\":\"1\"")));
+  } finally {
+    globalThis.fetch = previousFetch;
+    await rm(dataDir, { recursive: true, force: true });
+    await loaded.dispose();
+    await configLoaded.dispose();
+    await debugLoaded.dispose();
+    await settingsLoaded.dispose();
   }
 });

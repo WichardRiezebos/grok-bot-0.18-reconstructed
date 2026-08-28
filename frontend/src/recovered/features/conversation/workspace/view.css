@@ -324,7 +324,7 @@
 .sand-prompt-actions-row > .sand-prompt-mic,
 .sand-prompt-actions-row > .sand-prompt-send { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; color: var(--cursor-icon-secondary); background: var(--sand-fill-secondary); border: 0; border-radius: 50%; cursor: pointer; }
 .sand-prompt-actions-row > .sand-prompt-send { color: var(--sand-text-on-color); background: var(--sand-fill-primary); }
-.sand-prompt-stop-glyph { display: block; width: 10px; height: 10px; background: currentColor; border-radius: var(--cursor-radius-xs, 2px); }
+.sand-prompt-stop-glyph { display: block; width: 10px; height: 10px; background: var(--cursor-text-primary, #171914); border-radius: var(--cursor-radius-xs, 2px); }
 .sand-prompt-actions-row > .sand-prompt-mic:focus-visible,
 .sand-prompt-actions-row > .sand-prompt-send:focus-visible { outline: 1px solid var(--sand-border-accent); outline-offset: 1px; }
 .sand-prompt-actions-row button:disabled { cursor: not-allowed; opacity: .4; }

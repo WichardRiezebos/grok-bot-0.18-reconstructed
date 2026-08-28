@@ -583,7 +583,15 @@ export function PluginServerTools({ serverId, onLoad, onToggle }: { serverId: st
     return () => controller.dispose();
   }, [controller]);
 
-  if (tools.length === 0) return null;
+  if (snapshot.status === "loading" && tools.length === 0) {
+    return <section aria-label="Tools"><p role="status">Loading tools…</p></section>;
+  }
+  if (snapshot.status === "failed" && tools.length === 0) {
+    return <section aria-label="Tools"><p role="alert">{snapshot.failure instanceof Error ? snapshot.failure.message : String(snapshot.failure ?? "Couldn't load tools for this connector.")}</p></section>;
+  }
+  if (tools.length === 0) {
+    return <section aria-label="Tools"><p>No tools loaded for this connector.</p></section>;
+  }
 
   const enabledTools = tools.filter((tool) => !tool.isDisabled);
   const summary = pluginToolSummary(enabledTools.length, tools.length);

@@ -1236,3 +1236,99 @@ test("deleteAgents drops overlay transcripts so the tail cannot resurrect them",
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+const COMPOSIO_TOOLS_MISSING_MESSAGE = "Composio is saved but tools did not load. Open Plugins → Yours to see the connector, or save the key again in Settings after the computer is running.";
+
+async function waitForSettledAssistant(events, predicate) {
+  for (let i = 0; i < 80; i++) {
+    const assistant = events
+      .filter((event) => event.family === "transcript" && event.payload?.entry?.kind === "send-message")
+      .map((event) => event.payload.entry)
+      .filter((entry) => entry.streaming === false && entry.message?.content != null);
+    const match = assistant.find(predicate);
+    if (match != null) return match;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("timed out waiting for settled assistant");
+}
+
+test("Think Gmail prompt with an empty plugin list surfaces a Composio load error", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-composio-empty-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), routerSettings());
+    const events = [];
+    let providerCalls = 0;
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: (family, payload) => events.push({ family, payload }),
+      dispatchRemote: async (method) => {
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") return [{ id: "agent-1" }];
+        if (method === "listRoutedComputerTools" || method === "listRoutedMcpTools") return [];
+        return {};
+      },
+      runProviderText: async () => {
+        providerCalls += 1;
+        return "I'll search Gmail now.";
+      },
+    });
+    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "search my gmail inbox", clientNonce: "n1" });
+    const assistant = await waitForSettledAssistant(events, (entry) => entry.message.content === COMPOSIO_TOOLS_MISSING_MESSAGE);
+    assert.equal(assistant.message.content, COMPOSIO_TOOLS_MISSING_MESSAGE);
+    assert.equal(providerCalls, 0);
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("Think Gmail prompt with a listed Gmail tool executes it", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-composio-gmail-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), routerSettings());
+    const remoteCalls = [];
+    const gmailTool = {
+      name: "GMAIL_FETCH_EMAILS",
+      toolName: "GMAIL_FETCH_EMAILS",
+      providerIdentifier: "composio",
+      description: "Fetch Gmail threads",
+      inputSchema: { type: "object", properties: { query: { type: "string" } } },
+    };
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: () => {},
+      dispatchRemote: async (method, args) => {
+        remoteCalls.push({ method, args });
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") return [{ id: "agent-1" }];
+        if (method === "listRoutedMcpTools") return [gmailTool];
+        if (method === "executeRoutedMcpTool") return { ok: true, text: "1 thread" };
+        return {};
+      },
+      runProviderText: async (_provider, _messages, options) => {
+        const tool = (options.tools ?? []).find((entry) => entry.name === "GMAIL_FETCH_EMAILS");
+        assert.ok(tool);
+        await options.executeTool(tool, { query: "in:inbox" }, "call-gmail-1");
+        return "Found 1 thread.";
+      },
+    });
+    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "search my gmail inbox", clientNonce: "n1" });
+    for (let i = 0; i < 80; i++) {
+      if (remoteCalls.some((call) => call.method === "executeRoutedMcpTool")) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const executed = remoteCalls.find((call) => call.method === "executeRoutedMcpTool");
+    assert.ok(executed);
+    assert.equal(executed.args.name, "GMAIL_FETCH_EMAILS");
+    assert.equal(executed.args.providerIdentifier, "composio");
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

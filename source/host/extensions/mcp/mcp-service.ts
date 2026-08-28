@@ -1,4 +1,4 @@
-import { readComposioApiKey, resolveComposioMcpRuntimeConfig } from "../../../shared/node/composio-mcp.js";
+import { readComposioApiKey, resolveComposioMcpRuntimeConfig, wrapBackendMcpExecWithComposio } from "../../../shared/node/composio-mcp.js";
 import { DashboardService } from "../../../packages/proto/generated/aiserver/v1/dashboard_connect.js";
 import {
   type AccountMcpClient,
@@ -143,7 +143,8 @@ export function createHostMcp(deps: CreateHostMcpOptions): McpHostPort {
     authenticate: async (serverId: string, accountKey: string, requestingAgentId?: string, forceReauth?: boolean) => { const result = toAuthResult(await manager.authenticateServer(serverId, accountKey, requestingAgentId ?? null, forceReauth)); if (result.kind === "started") deps.onServersMutated?.(); return result; },
     logoutAccount: async ({ serverId, accountKey }: { serverId: string; accountKey: string }) => toInstalledServers(await mutate(() => manager.logoutAccount(serverId, accountKey))),
     renameAccount: async ({ serverId, accountKey, newAccountKey }: { serverId: string; accountKey: string; newAccountKey: string }) => toInstalledServers(await mutate(() => manager.renameAccount(serverId, accountKey, newAccountKey))),
-    removeAccount: async ({ serverId, accountKey }: { serverId: string; accountKey: string }) => toInstalledServers(await mutate(() => manager.removeAccount(serverId, accountKey)))
+    removeAccount: async ({ serverId, accountKey }: { serverId: string; accountKey: string }) => toInstalledServers(await mutate(() => manager.removeAccount(serverId, accountKey))),
+    listServerTools: (serverId: string) => manager.listServerTools(serverId),
   };
   return {
     mcp: { getTools: (ctx: unknown) => discovery.getToolsForTurnStart(ctx), listTools: async (ctx: unknown) => { const connected = await manager.listConnectedBackendTools(), discovered = await discovery.getTools(ctx), byName = new Map<string, any>(); for (const tool of [...connected, ...discovered] as any[]) if (!byName.has(tool.name)) byName.set(tool.name, tool); return [...byName.values()]; }, createExecutor: (persistImage: unknown, spillLargeText: unknown, auditIdentity: unknown) => new SandMcpExecutor(discovery, persistImage, spillLargeText, auditIdentity), refreshAccountConfig: () => manager.refreshAccountConfigInBackground(), createStateExecutor: () => createSandMcpStateExecutor({ getTools: (ctx: unknown) => discovery.getTools(ctx) }), getCustomInstructions: () => manager.getMcpCustomInstructions(), resolveToolTransport: (id: string) => discovery.resolveProviderTransport(id), resolveNeedsAuthSlot: async (id: string) => { const summary = (await manager.listServers()).servers.find((server: McpServerSummary) => server.serverIdentifier === id && server.status === "needsAuth"); return summary == null ? null : { serverId: summary.id, serverName: summary.name }; } },
@@ -186,14 +187,14 @@ export class McpHostService {
         getMachineId: credentials.getMachineId,
       }) as unknown as AccountMcpClient,
     };
-    const backendMcpExec = createDashboardSandBackendMcpExec({
+    const backendMcpExec = wrapBackendMcpExecWithComposio(createDashboardSandBackendMcpExec({
       getAccessToken: accountMcpDeps.getAccessToken,
       getMachineId: accountMcpDeps.getMachineId,
       createClient: (credentials) => createSandCursorBackendClient(DashboardService, {
         getAccessToken: (options) => credentials.getAccessToken({ backendUrl: options.backendUrl }),
         getMachineId: credentials.getMachineId,
       }) as unknown as DashboardMcpExecClient,
-    });
+    }));
     this.hostMcp = createHostMcp({
       log: deps.log,
       onServerAuthenticated: (completion) => this.emitAuthCompletion(completion),

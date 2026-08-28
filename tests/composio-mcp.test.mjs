@@ -70,3 +70,154 @@ test("project ak_ keys open a tool-router MCP session with Gmail pinned", async 
     await loaded.dispose();
   }
 });
+
+test("project ak_ keys keep a composio HTTP server when the tool-router session fails", async () => {
+  const loaded = await loadModule();
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("connected_accounts")) {
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("session down", { status: 503 });
+  };
+  try {
+    const config = await loaded.module.resolveComposioMcpRuntimeConfig("ak_fallback");
+    assert.equal(config.mcpServers.composio.url, loaded.module.COMPOSIO_TOOLS_URL);
+    assert.equal(config.mcpServers.composio.headers["x-api-key"], "ak_fallback");
+  } finally {
+    globalThis.fetch = previousFetch;
+    await loaded.dispose();
+  }
+});
+
+test("capComposioModelTools prefers Gmail and respects the model limit", () => {
+  return loadModule().then(async (loaded) => {
+    try {
+      const tools = [
+        { name: "SLACK_SEND_MESSAGE", toolName: "SLACK_SEND_MESSAGE", providerIdentifier: "composio", description: "slack", inputSchema: {}, toolkit: "slack" },
+        { name: "GMAIL_SETTINGS", toolName: "GMAIL_SETTINGS", providerIdentifier: "composio", description: "settings", inputSchema: {}, toolkit: "gmail" },
+        { name: "GMAIL_FETCH_EMAILS", toolName: "GMAIL_FETCH_EMAILS", providerIdentifier: "composio", description: "fetch", inputSchema: {}, toolkit: "gmail" },
+        { name: "GITHUB_CREATE_ISSUE", toolName: "GITHUB_CREATE_ISSUE", providerIdentifier: "composio", description: "gh", inputSchema: {}, toolkit: "github" },
+      ];
+      const capped = loaded.module.capComposioModelTools(tools, 2);
+      assert.deepEqual(capped.map((tool) => tool.name), ["GMAIL_FETCH_EMAILS", "GMAIL_SETTINGS"]);
+    } finally {
+      await loaded.dispose();
+    }
+  });
+});
+
+function jsonResponse(body, status = 200, headers = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", ...headers },
+  });
+}
+
+test("project ak_ keys list Gmail REST tools and execute without Cursor", async () => {
+  const loaded = await loadModule();
+  const previousFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    calls.push({ url, method: init?.method ?? "GET", body: String(init?.body ?? "") });
+    if (url.includes("connected_accounts")) {
+      return jsonResponse({
+        items: [{ id: "ca_gmail", status: "ACTIVE", user_id: "user-1", toolkit: { slug: "gmail" } }],
+      });
+    }
+    if (url.includes("/tools/execute/")) {
+      return jsonResponse({ successful: true, data: { messages: 1 } });
+    }
+    if (url.includes("/api/v3.1/tools")) {
+      return jsonResponse({
+        items: [
+          { slug: "GMAIL_FETCH_EMAILS", description: "Fetch Gmail threads", toolkit: { slug: "gmail" }, input_parameters: { type: "object", properties: { query: { type: "string" } } } },
+          { slug: "GMAIL_SEND_EMAIL", description: "Send mail", toolkit: { slug: "gmail" } },
+        ],
+      });
+    }
+    return jsonResponse({}, 404);
+  };
+  try {
+    loaded.module.resetComposioCachesForTests();
+    const innerCalls = [];
+    const wrapped = loaded.module.wrapBackendMcpExecWithComposio({
+      async listTools(ids) {
+        innerCalls.push(["list", ids]);
+        if (ids.includes("composio")) throw new Error("Cursor dashboard should not list composio");
+        return [];
+      },
+      async executeTool(args) {
+        innerCalls.push(["execute", args]);
+        throw new Error("Cursor dashboard should not execute composio");
+      },
+    }, () => "ak_gmail");
+    const servers = await wrapped.listTools(["composio"]);
+    assert.equal(innerCalls.length, 0);
+    assert.equal(servers[0]?.status, "connected");
+    assert.ok(servers[0]?.tools.some((tool) => tool.name === "GMAIL_FETCH_EMAILS"));
+    assert.ok(calls.some((call) => call.url.includes("toolkit_slug=gmail") && !call.url.includes("/execute/")));
+    const result = await wrapped.executeTool({
+      serverIdentifier: "composio",
+      toolName: "GMAIL_FETCH_EMAILS",
+      args: { query: "in:inbox" },
+    });
+    assert.equal(innerCalls.length, 0);
+    assert.equal(result.result.case, "success");
+    const execute = calls.find((call) => call.url.includes("/tools/execute/GMAIL_FETCH_EMAILS"));
+    assert.ok(execute);
+    assert.match(execute.body, /user-1/);
+    assert.match(execute.body, /ca_gmail/);
+    await wrapped.listTools(["other"]);
+    assert.deepEqual(innerCalls[0], ["list", ["other"]]);
+  } finally {
+    globalThis.fetch = previousFetch;
+    await loaded.dispose();
+  }
+});
+
+test("Connect ck_ keys list tools through local HTTP MCP, not Cursor", async () => {
+  const loaded = await loadModule();
+  const previousFetch = globalThis.fetch;
+  const methods = [];
+  globalThis.fetch = async (input, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    methods.push(body.method);
+    assert.match(String(input), /connect\.composio\.dev\/mcp/);
+    if (body.method === "initialize") {
+      return jsonResponse({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2024-11-05" } }, 200, { "mcp-session-id": "sess-1" });
+    }
+    if (body.method === "tools/list") {
+      return jsonResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          tools: [
+            { name: "GMAIL_FETCH_EMAILS", description: "Fetch", inputSchema: { type: "object", properties: {} } },
+            { name: "SLACK_SEND_MESSAGE", description: "Slack" },
+          ],
+        },
+      });
+    }
+    return jsonResponse({ jsonrpc: "2.0", id: 1, result: {} });
+  };
+  try {
+    loaded.module.resetComposioCachesForTests();
+    const tools = await loaded.module.listComposioConnectMcpTools("ck_example");
+    assert.equal(tools[0]?.name, "GMAIL_FETCH_EMAILS");
+    assert.ok(methods.includes("initialize"));
+    assert.ok(methods.includes("tools/list"));
+    const wrapped = loaded.module.wrapBackendMcpExecWithComposio({
+      async listTools() { throw new Error("Cursor dashboard should not list composio"); },
+      async executeTool() { throw new Error("Cursor dashboard should not execute composio"); },
+    }, () => "ck_example");
+    const servers = await wrapped.listTools(["composio"]);
+    assert.equal(servers[0]?.status, "connected");
+    assert.ok(servers[0]?.tools.some((tool) => tool.name === "GMAIL_FETCH_EMAILS"));
+  } finally {
+    globalThis.fetch = previousFetch;
+    await loaded.dispose();
+  }
+});

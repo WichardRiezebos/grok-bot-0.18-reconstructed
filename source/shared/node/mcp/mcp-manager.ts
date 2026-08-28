@@ -49,6 +49,7 @@ export class SandMcpManager {
   private lastDisplay: any = null;
   private lastState: any = null;
   private lastBackendTools: any[] = [];
+  private lastListedBackendTools: any[] = [];
   private lastScope: string | undefined;
   private readonly authWatches: SandMcpAuthWatchLifecycle;
   private readonly summaries: SandMcpListingSummaries;
@@ -92,7 +93,10 @@ export class SandMcpManager {
       resolveDisplayServer: (id) => this.resolveDisplayServer(id),
       listServers: () => this.listServers(),
       lastAccountDisplayConfig: () => this.lastDisplay,
-      getToolsRaw: async () => (await this.boxRuntime?.getToolsRaw()) ?? [],
+      getToolsRaw: async () => {
+        const box = (await this.boxRuntime?.getToolsRaw()) ?? [];
+        return [...this.lastListedBackendTools, ...box];
+      },
     });
     this.catalog = new SandMcpCatalogFlow({
       getMachineId: options.getMachineId,
@@ -205,9 +209,9 @@ export class SandMcpManager {
       rows =
         effectiveDisplay?.servers ??
         (this.accountServersProvider == null
-          ? Object.entries(runtime).map(([serverIdentifier, config]) => ({
-              id: "0",
-              name: serverIdentifier,
+          ? Object.entries(runtime).map(([serverIdentifier, config], index) => ({
+              id: String(index + 1),
+              name: serverIdentifier === "composio" ? "Composio" : serverIdentifier,
               serverIdentifier,
               config,
               isTeamServer: false,
@@ -219,6 +223,7 @@ export class SandMcpManager {
           server.serverIdentifier == null ||
           !BUILTIN_MCP_SERVER_NAMES.has(server.serverIdentifier),
       );
+    if (effectiveDisplay == null && visible.length > 0) this.lastDisplay = { servers: visible };
     this.instructions.migrateCustomInstructions(visible);
     const http = visible.filter(
         (server: any) =>
@@ -240,16 +245,25 @@ export class SandMcpManager {
       boxByName = new Map<string, any>();
     const disabledByServer =
       this.settingsStore.getMcpDisabledToolsByServerId?.() ?? {};
-    this.lastBackendTools = backend.flatMap((entry: any) => {
+    this.lastListedBackendTools = [];
+    this.lastBackendTools = [];
+    for (const entry of backend) {
       const row = http.find((server: any) =>
         backendEntryBelongsToRow(entry, server.serverIdentifier),
       );
-      if (row == null) return [];
+      if (row == null) continue;
       const disabled = disabledByServer[row.id] ?? [];
-      return entry.tools.filter(
-        (tool: any) => !disabled.includes(tool.toolName),
-      );
-    });
+      for (const tool of entry.tools ?? []) {
+        const toolName = tool.toolName ?? tool.name;
+        this.lastListedBackendTools.push({
+          providerIdentifier: tool.providerIdentifier ?? row.serverIdentifier ?? entry.serverIdentifier,
+          toolName,
+          ...(tool.title ? { title: tool.title } : {}),
+          ...(tool.description ? { description: tool.description } : {}),
+        });
+        if (!disabled.includes(toolName)) this.lastBackendTools.push(tool);
+      }
+    }
     let unavailable = false;
     if (this.boxRuntime?.isBoxExecWired())
       try {
@@ -529,7 +543,7 @@ export class SandMcpManager {
     if (this.accountDisplayConfigProvider == null) {
       if (options?.requireFreshRead)
         throw new SandMcpConfigError("no account display config provider");
-      return undefined;
+      return (this.lastDisplay ?? this.lastState)?.servers?.find((server: any) => server.id === id);
     }
     let display = null;
     try {

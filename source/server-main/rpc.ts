@@ -356,7 +356,17 @@ export function createRpcDispatcher(options: {
       persistSecrets(options.secretsPath, current);
       return { keys: Object.keys(current).sort() };
     },
-    getMcpState: () => ({ servers: [] }),
+    getMcpState: async () => {
+      try {
+        const state = await postGatewayCommand(config, "listInstalledMcpServers", {});
+        if (Array.isArray(state)) return { servers: state };
+        const record = state != null && typeof state === "object" && !Array.isArray(state) ? state as JsonMap : null;
+        return { servers: Array.isArray(record?.servers) ? record.servers : [] };
+      } catch (error) {
+        debug.logs.push({ at: new Date().toISOString(), stream: "control", text: `listInstalledMcpServers ${error instanceof Error ? error.message : String(error)}` });
+        return { servers: [] };
+      }
+    },
     getEffectivePlugins: () => [],
     getMcpCatalog: () => [],
     getMcpTeamPopularity: () => [],
@@ -369,7 +379,15 @@ export function createRpcDispatcher(options: {
     renameMcpAccount: () => stub("renameMcpAccount"),
     removeMcpAccount: () => stub("removeMcpAccount"),
     setMcpCustomInstructions: () => stub("setMcpCustomInstructions"),
-    listMcpServerTools: () => [],
+    listMcpServerTools: async (payload) => {
+      try {
+        const tools = await postGatewayCommand(config, "listMcpServerTools", payload ?? {});
+        return Array.isArray(tools) ? tools : [];
+      } catch (error) {
+        debug.logs.push({ at: new Date().toISOString(), stream: "control", text: `listMcpServerTools ${error instanceof Error ? error.message : String(error)}` });
+        return [];
+      }
+    },
     toggleMcpToolDisabled: () => stub("toggleMcpToolDisabled"),
   };
 
@@ -382,7 +400,7 @@ export function createRpcDispatcher(options: {
     "sand:secrets-reveal": (payload) => main.revealSecret!(payload),
     "sand:secrets-upsert": (payload) => main.upsertSecrets!(payload),
     "sand:secrets-delete": (payload) => main.removeSecrets!(payload),
-    "sand:mcp-list": () => ({ servers: [] }),
+    "sand:mcp-list": () => main.getMcpState!({}),
     "sand:mcp-effective-plugins": () => [],
     "sand:mcp-catalog": () => [],
     "sand:mcp-team-popularity": () => [],
@@ -395,7 +413,7 @@ export function createRpcDispatcher(options: {
     "sand:mcp-rename-account": () => stub("sand:mcp-rename-account"),
     "sand:mcp-remove-account": () => stub("sand:mcp-remove-account"),
     "sand:mcp-set-instructions": () => stub("sand:mcp-set-instructions"),
-    "sand:mcp-list-server-tools": () => [],
+    "sand:mcp-list-server-tools": (payload) => main.listMcpServerTools!(payload),
     "sand:mcp-toggle-tool-disabled": () => stub("sand:mcp-toggle-tool-disabled"),
     [CLIENT_PERSISTENCE_CHANNELS.read]: (payload) => {
       const key = (payload as JsonMap).key;

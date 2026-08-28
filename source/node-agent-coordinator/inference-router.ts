@@ -29,6 +29,7 @@ import {
 import type { SandInferenceProvider } from "../shared/inference-router.js";
 import { SandSettingsStore } from "../shared/node/settings/sand-settings-store.js";
 import { createRoutedMcpBridge } from "./routed-mcp-bridge.js";
+import { COMPOSIO_TOOLS_MISSING_MESSAGE, promptLooksLikeComposioPluginUse } from "../shared/node/composio-mcp.js";
 
 export {
   ROUTED_COMPUTER_INFERENCE_TURN_TIMEOUT_MS,
@@ -543,6 +544,12 @@ export function createCoordinatorInferenceRouter(options: {
     log(`turn-start ${slot}`);
     try {
       const listedTools = await listRoutedTools();
+      const pluginTools = listedTools.some((tool) => !isRoutedComputerTool(asRecord(tool) ?? {}));
+      if (!pluginTools && !drive && promptLooksLikeComposioPluginUse(prompt)) {
+        await persistThenEmit(assistantId, COMPOSIO_TOOLS_MISSING_MESSAGE, assistantTimestampMs);
+        log("turn-finish composio-tools-missing");
+        return { accepted: true, clientNonce, provider };
+      }
       if (drive) {
         const url = extractRoutedBrowserUrl(prompt);
         if (url != null && shouldSkipRoutedBoxChromeReload(url, chromeOpenByAgent.has(agentId))) {
@@ -589,7 +596,8 @@ export function createCoordinatorInferenceRouter(options: {
           abortSignal,
           maxSteps,
           slot,
-        } : { mcpServerUrl: session.bridge.url, onTextDelta, onProgress, abortSignal, maxSteps, slot });
+          pluginTools,
+        } : { mcpServerUrl: session.bridge.url, onTextDelta, onProgress, abortSignal, maxSteps, slot, pluginTools });
         let retries = 0;
         for (;;) {
           attemptHadProgress = false;
