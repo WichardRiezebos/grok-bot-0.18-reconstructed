@@ -57,8 +57,12 @@ export function createMcpRuntime<
         settingsStore: deps.settingsStore,
         onAccountScopeApplied: () => void deps.pushBoxSecrets(),
         getAccessToken: async ({ backendUrl }) => {
-          const service = await deps.ensureCursorAuthService();
-          return await service.getValidAccessToken({ backendUrl });
+          try {
+            const service = await deps.ensureCursorAuthService();
+            return await service.getValidAccessToken({ backendUrl });
+          } catch {
+            return null;
+          }
         },
         getMachineId: deps.getMachineId,
         listBoxMcpServers: deps.listBoxMcpServers,

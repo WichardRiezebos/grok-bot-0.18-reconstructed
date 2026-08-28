@@ -22,6 +22,7 @@ export interface AuthServicePort {
   cancelLogin(): Promise<SandAuthStatus>;
   logout(): Promise<SandAuthStatus>;
   updateDisplayName(name: string): Promise<SandAuthStatus>;
+  updateLocalProfile?(profile: { readonly name?: string; readonly email?: string }): Promise<SandAuthStatus>;
   devLogin?(options: { readonly tier?: string; readonly email?: string }): Promise<SandAuthStatus>;
 }
 
@@ -41,6 +42,10 @@ export function createCursorAuthWiring(deps: {
   readonly settingsStore: {
     getLocalToolPermission(): string;
     setLocalToolPermissionCeiling(ceiling: string | undefined): void;
+    getLocalProfileName?(): string | undefined;
+    setLocalProfileName?(value: string | undefined): void;
+    getLocalProfileEmail?(): string | undefined;
+    setLocalProfileEmail?(value: string | undefined): void;
   };
   readonly syncHostSettingsToBox: (settings: { readonly localToolPermission: string }) => Promise<void>;
   readonly reportFailure?: (domain: string, operation: string, error: unknown) => void;
@@ -54,6 +59,7 @@ export function createCursorAuthWiring(deps: {
   const syncSentryAccount = deps.syncSentryAccount ?? (async (status: SandAuthStatus, privacyMode: () => Promise<unknown>) => await syncSandSentryAccount(status as Parameters<typeof syncSandSentryAccount>[0], async () => await privacyMode() as PrivacyMode));
 
   async function syncLocalToolPermissionCeiling(service: AuthServicePort, status: SandAuthStatus): Promise<void> {
+    if (status.kind === "logged-in" && status.authId === "local") return;
     const sequence = ++localToolCeilingSyncSeq;
     const previous = deps.settingsStore.getLocalToolPermission();
     let ceiling: string | undefined;
@@ -77,6 +83,14 @@ export function createCursorAuthWiring(deps: {
     if (cursorAuthService != null) return cursorAuthService;
     const service = (deps.createAuthService ?? ((options) => new SandCursorAuthService(options)))({
       ...(deps.serviceOptions ?? {}),
+      readLocalProfile: () => ({
+        name: deps.settingsStore.getLocalProfileName?.(),
+        email: deps.settingsStore.getLocalProfileEmail?.(),
+      }),
+      writeLocalProfile: (profile) => {
+        deps.settingsStore.setLocalProfileName?.(profile.name);
+        deps.settingsStore.setLocalProfileEmail?.(profile.email);
+      },
       openExternal: deps.openExternal,
       fetchProfile: deps.fetchProfile ?? (async (getAccessToken) => {
         const profile = await fetchCursorProfile(getAccessToken, {});
@@ -163,6 +177,18 @@ export function createCursorAccountEdgePort(deps: {
     updateAccountName: async (name: unknown) => {
       if (typeof name !== "string" || name.length > 200) throw new Error("updateCursorAccountName requires a bounded name string.");
       return await withService(async (service) => { const result = await service.updateDisplayName(name); return await deps.getAccountRuntime()?.whenIdle() ?? result; });
+    },
+    updateLocalProfile: async (raw: unknown) => {
+      const record = raw != null && typeof raw === "object" && !Array.isArray(raw) ? raw as { name?: unknown; email?: unknown } : {};
+      return await withService(async (service) => {
+        const result = service.updateLocalProfile == null
+          ? await service.updateDisplayName(typeof record.name === "string" ? record.name : "")
+          : await service.updateLocalProfile({
+            ...(typeof record.name === "string" ? { name: record.name } : {}),
+            ...(typeof record.email === "string" ? { email: record.email } : {}),
+          });
+        return await deps.getAccountRuntime()?.whenIdle() ?? result;
+      });
     },
     getAvatar: async () => withService(async (service) => { const status = await service.getStatus(); return status.kind !== "logged-in" || status.authId == null ? null : await deps.resolveAvatar(status.authId, status.profilePictureUrl); }),
     getWeeklyUsage: async () => withService(async (service) => (await service.getStatus()).kind === "logged-in" ? await deps.fetchWeeklyUsage(tokenReader(service)) : null),

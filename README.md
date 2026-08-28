@@ -1,6 +1,6 @@
 # Grok Bot 0.18 — reconstructed and extended
 
-![Grok Bot Router settings with Codex selected and local usage totals](docs/assets/router-settings.png)
+![Grok Bot Router settings with OpenRouter, profile, and local usage totals](docs/assets/router-settings.png)
 
 This repository is an unofficial, source-oriented reconstruction of the
 publicly shipped Grok Bot 0.18.0 macOS app.
@@ -13,10 +13,11 @@ application.
 
 It also adds a few practical experiments:
 
-- an inference router for Cursor, Claude Code, Codex, and OpenRouter;
-- Grok Bot plugin/MCP tools across the routed providers;
-- local usage tracking for routed inference;
-- an optional local Docker sandbox in place of the remote box; and
+- OpenRouter as the only inference path, with chat vs computer models;
+- Composio Connect plugins from a saved API key;
+- a local name, email, and Gravatar on the account menu;
+- local usage and OpenRouter spend in Settings;
+- a local Docker sandbox for computer use; and
 - a reconstructed settings surface integrated into the polished shipped UI.
 
 This is a hacking and research project, not Anysphere's original monorepo and
@@ -80,40 +81,31 @@ sizes, verification commands, and the machine-readable artifact manifest.
 
 ### Inference Router
 
-Open **Settings → Router** to choose the backend used for new turns:
+Open **Settings → Router** to configure this local Grok Bot:
 
-| Provider | Authentication | Tool support |
-| --- | --- | --- |
-| Cursor | Existing Grok Bot/Cursor session | Native Grok Bot tools and plugins |
-| Claude Code | Existing Claude Code login | Routed Grok Bot MCP tools |
-| Codex | Existing local ChatGPT/Codex login | Direct Responses transport with Grok Bot tools |
-| OpenRouter | API key saved through the desktop secrets bridge | Grok Bot tool-execution loop |
+- your **name** and **email**, with a live Gravatar preview in the sidebar;
+- the OpenRouter API key plus chat and computer models;
+- a Composio API key for Connect plugins;
+- the local Docker computer status; and
+- recorded OpenRouter spend, requests, and tokens.
 
-Cursor is the default. Claude Code and Codex do not require separate API keys
-when their local clients are already authenticated. The application preserves
-streaming responses, thinking state, reactions, rich plugin mentions, and MCP
-tool execution across routed conversations.
+There is no Cursor login and no Claude Code or Codex route. The official Grok
+Bot product remains Cursor's.
 
-**Usage & Billing** shows the locally recorded request and token totals for
-providers that return usage data. These figures are activity records, not an
-authoritative provider invoice.
+**Usage & Billing** shows locally recorded OpenRouter activity, including
+`usage.cost` when the provider returns it. These figures are activity records,
+not an authoritative invoice. The account menu usage row opens
+[OpenRouter activity](https://openrouter.ai/activity).
 
 ### Local Docker sandbox
 
-The Router page also has a **Use local Docker VM** toggle. When enabled, Grok
-Bot runs its box host and execution daemon in an owned local container instead
-of connecting to the remote sandbox.
-
-The container:
-
-- is bound only to loopback ports;
-- mounts content-addressed host and daemon artifacts read-only;
-- reuses the user's existing provider authentication where needed;
-- is validated before the coordinator connects; and
-- is stopped or replaced through the same settings lifecycle.
+Computer use always runs in a local Docker VM (`grok-bot-local-vm`). Settings
+show whether that container is running. **Update Computer** pulls
+`sand-box-latest` and recreates the container while keeping workspace and data
+volumes.
 
 A Docker-compatible engine (OrbStack, Docker Desktop, Colima, or Rancher Desktop)
-must be running. Remote mode remains the default.
+must be running.
 
 ### Web app on Docker (Dokploy)
 
@@ -131,8 +123,8 @@ local Compose overlay on `http://127.0.0.1:8080`, and the `/health` plus
 - Node.js 26.5.x
 - Xcode Command Line Tools
 - Git LFS
-- a Docker-compatible engine (OrbStack, Docker Desktop, Colima, …; optional, only for the local sandbox)
-- local Claude Code or Codex authentication for those router choices
+- a Docker-compatible engine (OrbStack, Docker Desktop, Colima, …) for computer use
+- an OpenRouter API key
 
 ## Quick start
 

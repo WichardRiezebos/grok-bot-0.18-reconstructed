@@ -102,7 +102,7 @@ test("Dokploy compose uses named volumes, env interpolation, and no host ports",
   const local = await readFile(path.join(repoRoot, "deploy", "docker-compose.local.yml"), "utf8");
   assert.match(base, /\$\{OPENROUTER_API_KEY\}/);
   assert.match(base, /\$\{SAND_GATEWAY_TOKEN\}/);
-  assert.match(base, /\$\{RUNTIME_ACCESS_TOKEN\}/);
+  assert.doesNotMatch(base, /RUNTIME_ACCESS_TOKEN/);
   assert.match(base, /\$\{PUBLIC_URL\}/);
   assert.match(base, /box-workspace:/);
   assert.match(base, /box-data:/);
@@ -197,7 +197,7 @@ test("runtime health JSON has the stable docker shape", async () => {
   }
 });
 
-test("query token sets a cookie and renderer assets load without it", async () => {
+test("renderer assets load without a site access token", async () => {
   const loaded = await loadModule("source/server-main/http-server.ts");
   const configLoaded = await loadModule("source/server-main/config.ts");
   const dataDir = await mkdtemp(path.join(tmpdir(), "grok-bot-web-"));
@@ -232,9 +232,9 @@ test("query token sets a cookie and renderer assets load without it", async () =
   }), { fork: mockFork });
   try {
     await server.ready;
-    const page = await fetch(`${server.url}/?token=secret-token`);
+    const page = await fetch(`${server.url}/`);
     assert.equal(page.status, 200);
-    assert.match(page.headers.get("set-cookie") ?? "", /grok_bot_runtime=secret-token/);
+    assert.equal(page.headers.get("set-cookie"), null);
     const html = await page.text();
     assert.doesNotMatch(html, /crossorigin/);
     assert.match(html, /__grok_bot\/shim\.js/);
@@ -243,8 +243,8 @@ test("query token sets a cookie and renderer assets load without it", async () =
     assert.equal(await asset.text(), "window.__app = true;\n");
     const css = await fetch(`${server.url}/assets/app.css`);
     assert.equal(css.status, 200);
-    const unauthHtml = await fetch(`${server.url}/`);
-    assert.equal(unauthHtml.status, 401);
+    const again = await fetch(`${server.url}/`);
+    assert.equal(again.status, 200);
   } finally {
     globalThis.fetch = previousFetch;
     await server.close();
@@ -254,7 +254,7 @@ test("query token sets a cookie and renderer assets load without it", async () =
   }
 });
 
-test("token-gated /health, /debug, and websocket RPC", async () => {
+test("ungated /health, /debug, and websocket RPC", async () => {
   const loaded = await loadModule("source/server-main/http-server.ts");
   const configLoaded = await loadModule("source/server-main/config.ts");
   const dataDir = await mkdtemp(path.join(tmpdir(), "grok-bot-web-"));
@@ -281,7 +281,7 @@ test("token-gated /health, /debug, and websocket RPC", async () => {
   try {
     await server.ready;
     const unauth = await fetch(`${server.url}/debug`);
-    assert.equal(unauth.status, 401);
+    assert.equal(unauth.status, 200);
     const loopbackHealth = await fetch(`${server.url}/health`);
     assert.equal(loopbackHealth.status, 200);
     const health = await loopbackHealth.json();
@@ -301,7 +301,7 @@ test("token-gated /health, /debug, and websocket RPC", async () => {
     assert.equal(html.includes("sk-or-v1-not-leaked"), false);
 
     const unauthVnc = await fetch(`${server.url}/__grok_bot/vnc/fork/vnc.html`);
-    assert.equal(unauthVnc.status, 401);
+    assert.notEqual(unauthVnc.status, 401);
 
     const ping = await fetch(`${server.url}/debug/actions/ping-rpc`, {
       method: "POST",
@@ -346,7 +346,7 @@ test("token-gated /health, /debug, and websocket RPC", async () => {
     assert.match(shimSource, /grok-bot-superseded/);
     assert.match(shimSource, /1012/);
     const gatedApp = await fetch(`${server.url}/`);
-    assert.equal(gatedApp.status, 401);
+    assert.equal(gatedApp.status, 200);
 
     await new Promise((resolve, reject) => {
       const ws = new WebSocket(`${server.url.replace("http", "ws")}/ws?token=secret-token`);

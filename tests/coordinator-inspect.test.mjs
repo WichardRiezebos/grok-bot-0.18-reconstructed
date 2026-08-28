@@ -60,7 +60,7 @@ test("coordinator inspect fork passes --inspect and pipes stdio only when enable
 test("routed stream progress and router errors stay human-readable", async () => {
   const loaded = await loadModule("source/shared/routed-inference-log.ts");
   try {
-    assert.equal(loaded.module.routedStreamProgressLine({ type: "tool-call", toolName: "Computer" }), "Using Computer…");
+    assert.equal(loaded.module.routedStreamProgressLine({ type: "tool-call", toolName: "Computer" }), undefined);
     assert.equal(loaded.module.routedStreamProgressLine({ type: "reasoning" }), "Thinking…");
     assert.equal(loaded.module.routedRouterErrorText(new Error("timed out")), "Router error: timed out");
     const retry = new Error("Failed after 3 attempts. Last error: Provider returned error");

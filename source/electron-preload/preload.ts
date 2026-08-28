@@ -271,6 +271,8 @@ export function createDesktopPreloadBridge(options: {
       listOpenRouterModels: () => edge("listOpenRouterModels"),
       getBoxRuntime: () => edge("getBoxRuntime"),
       setBoxRuntime: (mode: string) => edge("setBoxRuntime", { mode }),
+      getLocalProfile: () => edge("getLocalProfile"),
+      setLocalProfile: (profile: { readonly name?: string; readonly email?: string }) => edge("updateLocalProfile", profile),
       clientPersistence: {
         read: (key: string) => ipc.invoke(CLIENT_PERSISTENCE_CHANNELS.read, { key }),
         async write(key: string, value: string) { await ipc.invoke(CLIENT_PERSISTENCE_CHANNELS.write, { key, value }); },

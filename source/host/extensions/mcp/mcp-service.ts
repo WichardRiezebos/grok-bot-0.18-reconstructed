@@ -1,8 +1,6 @@
+import { composioMcpRuntimeConfig, readComposioApiKey } from "../../../shared/node/composio-mcp.js";
 import { DashboardService } from "../../../packages/proto/generated/aiserver/v1/dashboard_connect.js";
 import {
-  createAccountMcpWriter,
-  fetchAccountMcpServers,
-  fetchEffectiveUserPlugins,
   type AccountMcpClient,
   type AccountMcpDependencies,
 } from "../../../shared/node/cursor-backend/account-mcp.js";
@@ -203,9 +201,7 @@ export class McpHostService {
       ...(deps.pluginSkills == null ? {} : { pluginSkills: deps.pluginSkills }),
       getAccessToken: async () => { try { const token = await deps.auth.getAccessToken({ backendUrl: getSandInferenceBackendUrl() }); return token.length > 0 ? token : null; } catch { return null; } },
       getMachineId: deps.auth.getMachineId,
-      accountServersProvider: () => fetchAccountMcpServers(accountMcpDeps),
-      accountMcpWriter: createAccountMcpWriter(accountMcpDeps),
-      effectivePluginsProvider: () => fetchEffectiveUserPlugins(accountMcpDeps),
+      accountConfigProvider: async () => composioMcpRuntimeConfig(readComposioApiKey()),
       backendMcpExec,
       boxMcpExec: createBoxSandMcpExec(deps.foreverBox.box),
       settingsStore: deps.settings,

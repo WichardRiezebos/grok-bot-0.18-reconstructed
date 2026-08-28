@@ -3,10 +3,6 @@ import { McpError, McpResult } from "../../packages/proto/generated/agent/v1/mcp
 import { reportDesktopEdgeFailure } from "../desktop-edge-failures.js";
 import { createSandCursorBackendClient, getSandInferenceBackendUrl } from "../../shared/node/cursor-backend/cursor-inference.js";
 import {
-  createAccountMcpWriter,
-  backfillUserPluginInstalls,
-  fetchAccountMcpServers,
-  fetchEffectiveUserPlugins,
   type AccountMcpClient,
   type AccountMcpDependencies,
 } from "../../shared/node/cursor-backend/account-mcp.js";
@@ -17,6 +13,7 @@ import {
 import { pinMcpDiagnosticsReporter } from "../../shared/node/mcp/mcp-diagnostics.js";
 import { SandMcpManager } from "../../shared/node/mcp/mcp-manager.js";
 import { createMcpToolsDiscovery } from "../../shared/node/mcp/tools-discovery.js";
+import { composioMcpRuntimeConfig, readComposioApiKey } from "../../shared/node/composio-mcp.js";
 
 export interface DesktopMcpManagerFacade {
   listServers(): Promise<unknown>;
@@ -87,9 +84,7 @@ export async function createSandDesktopMcpManager(options: DesktopMcpManagerOpti
   const manager = new SandMcpManager({
     settingsStore: options.settingsStore,
     onAccountScopeApplied: options.onAccountScopeApplied,
-    accountServersProvider: () => fetchAccountMcpServers(accountMcpDeps),
-    accountMcpWriter: createAccountMcpWriter(accountMcpDeps),
-    effectivePluginsProvider: () => fetchEffectiveUserPlugins(accountMcpDeps),
+    accountConfigProvider: async () => composioMcpRuntimeConfig(readComposioApiKey()),
     getMachineId: accountMcpDeps.getMachineId,
     backendMcpExec,
     onConnectorAuth: options.onConnectorAuth,
@@ -119,22 +114,13 @@ export async function createSandDesktopMcpManager(options: DesktopMcpManagerOpti
     throw error;
   });
   void warmRoutedTools().catch((error: unknown) => reportDesktopEdgeFailure("mcp-manager", "routed-tools-warm", error));
-  let hasKickedInstallBackfill = false;
-  const kickInstallBackfillOnce = (): void => {
-    if (hasKickedInstallBackfill) return;
-    hasKickedInstallBackfill = true;
-    void backfillUserPluginInstalls(accountMcpDeps).catch((error: unknown) => reportDesktopEdgeFailure("mcp-manager", "install-backfill", error));
-  };
   return {
-    listServers: () => {
-      kickInstallBackfillOnce();
-      return manager.listServers();
-    },
-    listEffectivePlugins: () => manager.listEffectivePlugins(),
-    getCatalog: (getAccessToken) => manager.getCatalog(getAccessToken),
-    resolvePluginLogo: (url) => manager.resolvePluginLogo(url),
-    installEntry: (request, getAccessToken) => manager.installEntry(request, getAccessToken),
-    updatePluginInstall: (request, getAccessToken) => manager.updatePluginInstall(request, getAccessToken),
+    listServers: () => manager.listServers(),
+    listEffectivePlugins: async () => [],
+    getCatalog: async () => [],
+    resolvePluginLogo: async () => null,
+    installEntry: async () => manager.listServers(),
+    updatePluginInstall: async () => manager.listServers(),
     removeServer: (serverId) => manager.removeServer(serverId),
     uninstallPlugin: (pluginId) => manager.uninstallPlugin(pluginId),
     authenticateServer: (serverId, accountKey, trigger) => manager.authenticateServer(serverId, accountKey, null, false, trigger ?? null),

@@ -13,6 +13,7 @@ import { getSandRootDir, SAND_BOX_DATA_ROOT } from "../../host-paths.js";
 import { SandSettingsStore } from "../../../shared/node/settings/sand-settings-store.js";
 import { DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, DEFAULT_OPENROUTER_REASONING_EFFORT, injectOpenRouterReasoningIntoBody, resolveOpenRouterComputerModel, resolveOpenRouterModel, resolveOpenRouterReasoningEffort, type OpenRouterReasoningEffort } from "../../../shared/openrouter-models.js";
 import { boundOpenRouterRequestBody } from "../../../shared/openrouter-prompt-budget.js";
+import { injectOpenRouterCacheControlIntoBody, openRouterCacheUsageFromPayload } from "../../../shared/openrouter-prompt-cache.js";
 import {
   ROUTED_PLUGIN_MAX_STEPS,
   openRouterToolResultContent,
@@ -26,7 +27,8 @@ import { awaitAbortRace, routedStreamEventToolName, routedStreamProgressLine } f
 type Loose = Record<string, any>;
 interface ProviderMessage extends LabelMessage { role: string; content: string | readonly unknown[] }
 type RoutedProvider = Exclude<SandInferenceProvider, "cursor">;
-type UsageRecord = { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number };
+type UsageRecord = { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; costUsd?: number };
+type OpenRouterTurnUsage = { cacheReadTokens: number; cacheWriteTokens: number; costUsd: number };
 type RoutedToolExecutor = (tool: Loose, args: unknown, toolCallId: string) => Promise<unknown>;
 
 export const GROK_ROUTER_SYSTEM_PROMPT = [
@@ -110,13 +112,20 @@ function configuredOpenRouterReasoningEffort(computer: boolean): OpenRouterReaso
   } catch { return resolveOpenRouterReasoningEffort(undefined, fallback, env); }
 }
 
-function openRouterFetch(effort: OpenRouterReasoningEffort): typeof fetch {
+function openRouterFetch(effort: OpenRouterReasoningEffort, modelId: string, usage: OpenRouterTurnUsage): typeof fetch {
   return async (input, init) => {
     const nextInit = init == null ? init : (() => {
-      const body = injectOpenRouterReasoningIntoBody(boundOpenRouterRequestBody(init.body), effort);
+      const reasoned = injectOpenRouterReasoningIntoBody(boundOpenRouterRequestBody(init.body), effort);
+      const body = injectOpenRouterCacheControlIntoBody(reasoned, modelId);
       return body === init.body ? init : { ...init, body: body as BodyInit };
     })();
     const response = await fetch(input, nextInit);
+    void response.clone().json().then((payload) => {
+      const parsed = openRouterCacheUsageFromPayload(payload);
+      usage.cacheReadTokens = parsed.cacheReadTokens;
+      usage.cacheWriteTokens = parsed.cacheWriteTokens;
+      usage.costUsd = parsed.costUsd;
+    }).catch(() => undefined);
     if (response.ok) return response;
     const text = await response.text();
     let message = `OpenRouter HTTP ${response.status}`;
@@ -351,10 +360,11 @@ function toToolSet(definitions: readonly Loose[] | undefined, executeTool?: Rout
 function openRouterExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void, abortSignal?: AbortSignal, maxSteps?: number) {
   const computer = routedToolsIncludeComputer(definitions ?? []);
   const id = computer ? configuredOpenRouterComputerModel() : configuredOpenRouterModel();
-  const model: LanguageModelV1 = createOpenAI({ apiKey: openRouterCredential(), baseURL: "https://openrouter.ai/api/v1", compatibility: "compatible", name: "openrouter", headers: { "HTTP-Referer": "https://github.com/grok-bot-reconstructed", "X-Title": "Grok Bot Reconstructed" }, fetch: openRouterFetch(configuredOpenRouterReasoningEffort(computer)) }).chat(id as any);
+  const turnUsage: OpenRouterTurnUsage = { cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
+  const model: LanguageModelV1 = createOpenAI({ apiKey: openRouterCredential(), baseURL: "https://openrouter.ai/api/v1", compatibility: "compatible", name: "openrouter", headers: { "HTTP-Referer": "https://github.com/grok-bot-reconstructed", "X-Title": "Grok Bot Reconstructed" }, fetch: openRouterFetch(configuredOpenRouterReasoningEffort(computer), id, turnUsage) }).chat(id as any);
   const tools = toToolSet(definitions, executeTool);
   const result = streamText({ model, system: GROK_ROUTER_SYSTEM_PROMPT, messages: messages as CoreMessage[], ...(tools === undefined ? {} : { tools }), toolCallStreaming: true, maxRetries: 0, maxSteps: resolvedMaxSteps(tools !== undefined, maxSteps), ...(abortSignal == null ? {} : { abortSignal }) });
-  const extendedUsage = result.usage.then(value => ({ inputTokens: value.promptTokens, outputTokens: value.completionTokens, cacheReadTokens: 0, cacheWriteTokens: 0, maxTokens: 0 }));
+  const extendedUsage = result.usage.then(value => ({ inputTokens: value.promptTokens, outputTokens: value.completionTokens, cacheReadTokens: turnUsage.cacheReadTokens, cacheWriteTokens: turnUsage.cacheWriteTokens, costUsd: turnUsage.costUsd, maxTokens: 0 }));
   if (onUsage != null) void extendedUsage.then(onUsage, () => undefined);
   return { fullStream: result.fullStream, response: result.response, usage: result.usage, extendedUsage, providerMetadata: result.providerMetadata, invocationId: Promise.resolve(invocationId) };
 }
@@ -369,8 +379,10 @@ class ProviderPromptExecutor extends BasePromptExecutor<ProviderMessage> {
 }
 
 export function createProviderPromptSession(provider: RoutedProvider): { getModelId(): string; getExecutor(state?: unknown): PromptExecutor } {
-  const modelId = provider === "codex" ? configuredCodexModel() : provider === "claude-code" ? "claude-code" : configuredOpenRouterModel();
-  return { getModelId: () => modelId, getExecutor: state => new ProviderPromptExecutor(provider, Array.isArray(state) ? state as ProviderMessage[] : undefined, usage => recordRoutedUsage(provider, usage)) };
+  return {
+    getModelId: () => provider === "codex" ? configuredCodexModel() : provider === "claude-code" ? "claude-code" : configuredOpenRouterModel(),
+    getExecutor: state => new ProviderPromptExecutor(provider, Array.isArray(state) ? state as ProviderMessage[] : undefined, usage => recordRoutedUsage(provider, usage)),
+  };
 }
 
 function routedTurnTimeoutError(signal?: AbortSignal): Error {

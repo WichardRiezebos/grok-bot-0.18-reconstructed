@@ -7,6 +7,7 @@ export interface SandInferenceRouterUsageProvider {
   readonly outputTokens: number;
   readonly cacheReadTokens: number;
   readonly cacheWriteTokens: number;
+  readonly costUsd: number;
   readonly lastUsedAt: string | null;
 }
 
@@ -20,6 +21,6 @@ export function isSandInferenceProvider(value: unknown): value is SandInferenceP
 }
 
 export function emptySandInferenceRouterUsage(): SandInferenceRouterUsage {
-  const empty = (): SandInferenceRouterUsageProvider => ({ requests: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, lastUsedAt: null });
+  const empty = (): SandInferenceRouterUsageProvider => ({ requests: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0, lastUsedAt: null });
   return { schemaVersion: 1, providers: { cursor: empty(), "claude-code": empty(), codex: empty(), openrouter: empty() } };
 }

@@ -12,12 +12,18 @@ import { isSandAgentModelSelection, type SandAgentModelSelection } from "../../a
 import { emptySandInferenceRouterUsage, isSandInferenceProvider, type SandInferenceProvider, type SandInferenceRouterUsage } from "../../inference-router.js";
 import { DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENROUTER_REASONING_EFFORT, normalizeOpenRouterModelId, normalizeOpenRouterReasoningEffort, type OpenRouterReasoningEffort } from "../../openrouter-models.js";
 import { DEFAULT_SAND_BOX_RUNTIME, isSandBoxRuntime, type SandBoxRuntime } from "../../box-runtime.js";
+import { normalizeLocalProfileEmail, normalizeLocalProfileName } from "../../local-profile.js";
 
 export const SETTINGS_VERSION = 1;
 export const SAND_DOWNGRADE_MAX_FAST_MIGRATION_ID = "downgrade-persisted-max-fast";
 export const SAND_DROP_QWEN_COMPUTER_MODEL_MIGRATION_ID = "drop-qwen-computer-model";
+export const SAND_LOCAL_OPENROUTER_MIGRATION_ID = "local-openrouter-only";
 export const LEGACY_OPENROUTER_COMPUTER_MODEL = "qwen/qwen3.7-flash";
-export const SAND_SETTINGS_MIGRATION_IDS = [SAND_DOWNGRADE_MAX_FAST_MIGRATION_ID, SAND_DROP_QWEN_COMPUTER_MODEL_MIGRATION_ID] as const;
+export const SAND_SETTINGS_MIGRATION_IDS = [SAND_DOWNGRADE_MAX_FAST_MIGRATION_ID, SAND_DROP_QWEN_COMPUTER_MODEL_MIGRATION_ID, SAND_LOCAL_OPENROUTER_MIGRATION_ID] as const;
+
+export function coerceInferenceProviderToOpenRouter(provider: SandInferenceProvider | undefined): "openrouter" {
+  return provider === "openrouter" ? "openrouter" : "openrouter";
+}
 
 type StringMap = Record<string, string>;
 type StringListMap = Record<string, string[]>;
@@ -35,6 +41,8 @@ export interface SandStoredSettings {
   openRouterReasoningEffort?: OpenRouterReasoningEffort;
   openRouterComputerReasoningEffort?: OpenRouterReasoningEffort;
   boxRuntime?: SandBoxRuntime;
+  localProfileName?: string;
+  localProfileEmail?: string;
   mcpCustomInstructionsAccountScope?: string; pinnedAgentIds?: string[]; sidebarSections?: SidebarSection[];
 }
 
@@ -86,6 +94,10 @@ function parseSettings(value: unknown): SandStoredSettings | null {
   const openRouterComputerReasoningEffort = normalizeOpenRouterReasoningEffort(raw.openRouterComputerReasoningEffort);
   if (openRouterComputerReasoningEffort !== undefined) result.openRouterComputerReasoningEffort = openRouterComputerReasoningEffort;
   if (isSandBoxRuntime(raw.boxRuntime)) result.boxRuntime = raw.boxRuntime;
+  const localProfileName = normalizeLocalProfileName(raw.localProfileName);
+  if (localProfileName !== undefined) result.localProfileName = localProfileName;
+  const localProfileEmail = normalizeLocalProfileEmail(raw.localProfileEmail);
+  if (localProfileEmail !== undefined) result.localProfileEmail = localProfileEmail;
   if (typeof raw.inferenceRouterUsage === "object" && raw.inferenceRouterUsage != null && !Array.isArray(raw.inferenceRouterUsage)) {
     const usage = emptySandInferenceRouterUsage();
     const rawProviders = (raw.inferenceRouterUsage as { providers?: unknown }).providers;
@@ -95,7 +107,7 @@ function parseSettings(value: unknown): SandStoredSettings | null {
         if (typeof item !== "object" || item == null || Array.isArray(item)) continue;
         const record = item as Record<string, unknown>;
         const count = (key: string): number => Number.isSafeInteger(record[key]) && (record[key] as number) >= 0 ? record[key] as number : 0;
-        usage.providers[provider] = { requests: count("requests"), inputTokens: count("inputTokens"), outputTokens: count("outputTokens"), cacheReadTokens: count("cacheReadTokens"), cacheWriteTokens: count("cacheWriteTokens"), lastUsedAt: typeof record.lastUsedAt === "string" ? record.lastUsedAt : null };
+        usage.providers[provider] = { requests: count("requests"), inputTokens: count("inputTokens"), outputTokens: count("outputTokens"), cacheReadTokens: count("cacheReadTokens"), cacheWriteTokens: count("cacheWriteTokens"), costUsd: typeof record.costUsd === "number" && Number.isFinite(record.costUsd) && record.costUsd >= 0 ? record.costUsd : 0, lastUsedAt: typeof record.lastUsedAt === "string" ? record.lastUsedAt : null };
       }
     }
     result.inferenceRouterUsage = usage;
@@ -133,6 +145,15 @@ export class SandSettingsStore {
       };
       changed = true;
     }
+    if (!next.settingsMigrations.includes(SAND_LOCAL_OPENROUTER_MIGRATION_ID)) {
+      next = {
+        ...next,
+        inferenceProvider: "openrouter",
+        boxRuntime: "local-docker",
+        settingsMigrations: [...next.settingsMigrations, SAND_LOCAL_OPENROUTER_MIGRATION_ID],
+      };
+      changed = true;
+    }
     if (changed) {
       try { this.persist(next); } catch {}
     }
@@ -147,8 +168,8 @@ export class SandSettingsStore {
   setAutoUpdateWhenIdleOptIn(value: boolean): void { this.update((s) => ({ ...s, autoUpdateWhenIdleOptIn: value })); }
   getThemePreference(): SandThemePreference { return this.load().themePreference ?? DEFAULT_SAND_THEME_PREFERENCE; }
   setThemePreference(value: SandThemePreference): void { this.update((s) => ({ ...s, themePreference: value })); }
-  getBoxRuntime(): SandBoxRuntime { return this.load().boxRuntime ?? DEFAULT_SAND_BOX_RUNTIME; }
-  setBoxRuntime(value: SandBoxRuntime): void { this.update((s) => ({ ...s, boxRuntime: value })); }
+  getBoxRuntime(): SandBoxRuntime { return "local-docker"; }
+  setBoxRuntime(_value: SandBoxRuntime): void { this.update((s) => ({ ...s, boxRuntime: "local-docker" })); }
   getEgressTunnelEnabled(): boolean { return this.load().egressTunnelEnabled; }
   setEgressTunnelEnabled(value: boolean): void { this.update((s) => ({ ...s, egressTunnelEnabled: value })); }
   getWebauthnProxyEnabled(): boolean { return this.load().webauthnProxyEnabled; }
@@ -190,8 +211,24 @@ export class SandSettingsStore {
   getLocalToolPermissionChoice(): SandLocalToolPermission { return this.load().localToolPermission ?? SAND_DEFAULT_LOCAL_TOOL_PERMISSION; }
   getLocalToolPermissionCeiling(): SandLocalToolPermission | undefined { return this.load().localToolPermissionCeiling; }
   setLocalToolPermission(value: SandLocalToolPermission): void { this.update((s) => ({ ...s, localToolPermission: value })); }
-  getInferenceProvider(): SandInferenceProvider { return this.load().inferenceProvider ?? "cursor"; }
-  setInferenceProvider(value: SandInferenceProvider): void { this.update((s) => ({ ...s, inferenceProvider: value })); }
+  getLocalProfileName(): string | undefined { return this.load().localProfileName; }
+  setLocalProfileName(value: string | undefined): void {
+    const name = normalizeLocalProfileName(value);
+    this.update((s) => {
+      const { localProfileName: _old, ...rest } = s;
+      return name === undefined ? rest : { ...rest, localProfileName: name };
+    });
+  }
+  getLocalProfileEmail(): string | undefined { return this.load().localProfileEmail; }
+  setLocalProfileEmail(value: string | undefined): void {
+    const email = normalizeLocalProfileEmail(value);
+    this.update((s) => {
+      const { localProfileEmail: _old, ...rest } = s;
+      return email === undefined ? rest : { ...rest, localProfileEmail: email };
+    });
+  }
+  getInferenceProvider(): SandInferenceProvider { return coerceInferenceProviderToOpenRouter(this.load().inferenceProvider); }
+  setInferenceProvider(_value: SandInferenceProvider): void { this.update((s) => ({ ...s, inferenceProvider: "openrouter" })); }
   getOpenRouterModel(): string { return this.load().openRouterModel ?? DEFAULT_OPENROUTER_MODEL; }
   setOpenRouterModel(value: string): void {
     const model = normalizeOpenRouterModelId(value);
@@ -229,12 +266,13 @@ export class SandSettingsStore {
     });
   }
   getInferenceRouterUsage(): SandInferenceRouterUsage { return this.load().inferenceRouterUsage ?? emptySandInferenceRouterUsage(); }
-  recordInferenceUsage(provider: SandInferenceProvider, usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number }): void {
+  recordInferenceUsage(provider: SandInferenceProvider, usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; costUsd?: number }): void {
     const safe = (value: number | undefined): number => Number.isFinite(value) && value! >= 0 ? Math.round(value!) : 0;
+    const safeCost = (value: number | undefined): number => Number.isFinite(value) && value! >= 0 ? value! : 0;
     this.update((settings) => {
       const current = settings.inferenceRouterUsage ?? emptySandInferenceRouterUsage();
       const previous = current.providers[provider];
-      return { ...settings, inferenceRouterUsage: { schemaVersion: 1, providers: { ...current.providers, [provider]: { requests: previous.requests + 1, inputTokens: previous.inputTokens + safe(usage.inputTokens), outputTokens: previous.outputTokens + safe(usage.outputTokens), cacheReadTokens: previous.cacheReadTokens + safe(usage.cacheReadTokens), cacheWriteTokens: previous.cacheWriteTokens + safe(usage.cacheWriteTokens), lastUsedAt: new Date().toISOString() } } } };
+      return { ...settings, inferenceRouterUsage: { schemaVersion: 1, providers: { ...current.providers, [provider]: { requests: previous.requests + 1, inputTokens: previous.inputTokens + safe(usage.inputTokens), outputTokens: previous.outputTokens + safe(usage.outputTokens), cacheReadTokens: previous.cacheReadTokens + safe(usage.cacheReadTokens), cacheWriteTokens: previous.cacheWriteTokens + safe(usage.cacheWriteTokens), costUsd: (previous.costUsd ?? 0) + safeCost(usage.costUsd), lastUsedAt: new Date().toISOString() } } } };
     });
   }
   setLocalToolPermissionCeiling(value?: SandLocalToolPermission): void { this.update((s) => { const { localToolPermissionCeiling: _old, ...rest } = s; return value === undefined ? rest : { ...rest, localToolPermissionCeiling: value }; }); }

@@ -1,6 +1,8 @@
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { ROUTED_COMPUTER_TOOL_NAME } from "./routed-computer-tools.js";
+
 export const ROUTED_INFERENCE_LOG_FILENAME = "routed-inference.log";
 
 export function routedInferenceLogPath(dataDir: string): string {
@@ -65,6 +67,7 @@ export function routedStreamProgressLine(event: {
 }): string | undefined {
   const toolName = routedStreamEventToolName(event);
   if (event.type === "tool-call" || event.type === "tool-call-streaming-start") {
+    if (toolName === ROUTED_COMPUTER_TOOL_NAME) return undefined;
     return toolName == null ? "Using a tool…" : `Using ${toolName}…`;
   }
   if (event.type === "reasoning" || event.type === "reasoning-delta") return "Thinking…";

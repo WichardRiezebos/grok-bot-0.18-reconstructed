@@ -57,10 +57,10 @@ test("box Chrome converge disables GPU and waits for fork VNC", async () => {
   assert.match(source, /VNC_PORT=\$\(\(5900 \+ DISPLAY_NUM\)\)/);
 });
 
-test("local VM suppresses the backend image-update signal so idle updates cannot docker-restart it", async () => {
+test("local VM reports an image update so Update Computer stays available", async () => {
   const source = await readFile(path.join(repoRoot, "source/host/extensions/forever-box/extension.ts"), "utf8");
   assert.match(source, /hostBundleAutoUpdate = isHostBundleAutoUpdateEnabled\(\)/);
-  assert.match(source, /hostBundleAutoUpdate \? backendLifecycleClient : \{ recreateInBox: backendLifecycleClient\.recreateInBox\.bind\(backendLifecycleClient\), fetchImageUpdateAvailable: async \(\) => false \}/);
+  assert.match(source, /hostBundleAutoUpdate \? backendLifecycleClient : \{ recreateInBox: backendLifecycleClient\.recreateInBox\.bind\(backendLifecycleClient\), fetchImageUpdateAvailable: async \(\) => true \}/);
 });
 
 test("live view prefers the agent's fork VNC URL", async () => {

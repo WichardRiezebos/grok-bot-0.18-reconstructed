@@ -3,7 +3,9 @@ import { dirname } from "node:path";
 
 import { isSandThemePreference } from "../shared/desktop.js";
 import { isSandInferenceProvider } from "../shared/inference-router.js";
+import { localProfilePictureUrl, resolveLocalProfile } from "../shared/local-profile.js";
 import { isSandLocalToolPermission } from "../shared/local-tool-permission.js";
+import { openRouterUsageToCursorSummary } from "../shared/openrouter-usage-summary.js";
 import { fetchOpenRouterCatalog, readOpenRouterApiKey } from "../shared/node/openrouter-models.js";
 import { SandSettingsStore } from "../shared/node/settings/sand-settings-store.js";
 import {
@@ -59,6 +61,25 @@ export function createRpcDispatcher(options: {
   const stub = (method: string, detail = "Unavailable in the Docker web runtime.") => {
     debug.stubs.push({ at: new Date().toISOString(), method, detail });
     unavailable(method, detail);
+  };
+
+  const localProfile = () => {
+    const profile = resolveLocalProfile({
+      name: settings.getLocalProfileName(),
+      email: settings.getLocalProfileEmail(),
+    });
+    const gravatarUrl = localProfilePictureUrl(profile.email);
+    return { name: profile.name, email: profile.email, gravatarUrl: gravatarUrl ?? null };
+  };
+  const localAuth = () => {
+    const profile = localProfile();
+    return {
+      kind: "logged-in",
+      authId: "local",
+      displayName: profile.name,
+      ...(profile.email.length > 0 ? { email: profile.email } : {}),
+      ...(profile.gravatarUrl != null ? { profilePictureUrl: profile.gravatarUrl } : {}),
+    };
   };
 
   const snapshot = () => {
@@ -216,14 +237,25 @@ export function createRpcDispatcher(options: {
     getBoxRuntime: () => ({ mode: "docker", status: { available: true, running: true, ready: true, containerName: "box", image: "sand-box", detail: "Compose box service." } }),
     setBoxRuntime: () => stub("setBoxRuntime", "The Docker web runtime owns the box. Stop the Compose project to change it."),
     transcribeAudio: () => stub("transcribeAudio"),
-    getCursorAuthStatus: () => ({ kind: "logged-in", authId: "docker-local", displayName: "Local", email: "docker@local" }),
-    loginCursor: () => stub("loginCursor", "Cursor login is not part of the Docker web runtime. Use OpenRouter."),
-    cancelCursorLogin: () => null,
-    logoutCursor: () => stub("logoutCursor"),
-    updateCursorAccountName: () => stub("updateCursorAccountName"),
-    getCursorAvatar: () => null,
+    getCursorAuthStatus: () => localAuth(),
+    loginCursor: () => localAuth(),
+    cancelCursorLogin: () => localAuth(),
+    logoutCursor: () => localAuth(),
+    updateCursorAccountName: (payload) => {
+      const name = (payload as JsonMap).name;
+      if (typeof name === "string") settings.setLocalProfileName(name);
+      return localAuth();
+    },
+    updateLocalProfile: (payload) => {
+      const record = payload as JsonMap;
+      if (typeof record.name === "string") settings.setLocalProfileName(record.name);
+      if (typeof record.email === "string") settings.setLocalProfileEmail(record.email);
+      return localAuth();
+    },
+    getLocalProfile: () => localProfile(),
+    getCursorAvatar: () => localProfile().gravatarUrl,
     getCursorWeeklyUsage: () => null,
-    getCursorUsageSummary: () => null,
+    getCursorUsageSummary: () => openRouterUsageToCursorSummary(settings.getInferenceRouterUsage()),
     getCursorPrReviewPreferences: () => null,
     getCursorPrivacyModeEnabled: () => false,
     getSandAccess: () => ({ state: "granted", reason: "none" }),

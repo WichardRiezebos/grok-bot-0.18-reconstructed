@@ -412,6 +412,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     "refreshFeatureFlags", "startRpcTraceWindow", "getAgentDefaultModel", "setAgentDefaultModel", "getComputerUseModel",
     "setComputerUseModel", "getHostPinnedAgents", "setHostPinnedAgents", "getHostSidebarSections", "setHostSidebarSections",
     "getAvailableModels", "getInferenceRouter", "setInferenceRouter", "listOpenRouterModels", "getBoxRuntime", "setBoxRuntime",
+    "getLocalProfile", "updateLocalProfile",
     "transcribeAudio", "getCursorAuthStatus", "loginCursor", "cancelCursorLogin", "logoutCursor", "updateCursorAccountName",
     "getCursorAvatar", "getCursorWeeklyUsage", "getCursorUsageSummary", "getCursorPrReviewPreferences", "getCursorPrivacyModeEnabled",
     "getSandAccess", "getSandAccessFresh", "invokeCursorDashboardAction", "cancelCursorSandTrial", "reportAgentLoad",
@@ -596,6 +597,8 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       setInferenceRouter: (provider, extra) => edge.setInferenceRouter({ provider, ...extra }),
       getBoxRuntime: () => edge.getBoxRuntime(),
       setBoxRuntime: (mode) => edge.setBoxRuntime({ mode }),
+      getLocalProfile: () => edge.getLocalProfile(),
+      setLocalProfile: (profile) => edge.updateLocalProfile(profile ?? {}),
       listOpenRouterModels: () => edge.listOpenRouterModels(),
       getDesktopEnvironment: () => edge.getDesktopEnvironment(),
       clientPersistence: {

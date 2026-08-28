@@ -147,6 +147,7 @@ export interface LocalDockerStatus {
   readonly containerName: string;
   readonly image: string;
   readonly detail: string;
+  readonly imageUpdateAvailable?: boolean;
 }
 
 interface CommandResult { readonly ok: boolean; readonly output: string }
@@ -305,14 +306,48 @@ async function inspectContainer(): Promise<{ exists: boolean; running: boolean; 
   } catch { throw new Error("Docker returned malformed container inspection data."); }
 }
 
+async function inspectImageId(image: string): Promise<string> {
+  const result = await runDocker(["inspect", "--format", "{{.Id}}", image]);
+  return result.ok ? result.output.trim() : "";
+}
+
+async function inspectContainerImageId(): Promise<string> {
+  const result = await runDocker(["inspect", "--format", "{{.Image}}", LOCAL_DOCKER_BOX_CONTAINER]);
+  return result.ok ? result.output.trim() : "";
+}
+
+export async function pullLocalDockerBoxImage(): Promise<void> {
+  const pulled = await runDocker(["pull", LOCAL_DOCKER_BOX_IMAGE]);
+  if (!pulled.ok) throw new Error(`Could not pull the local VM image: ${pulled.output}`);
+}
+
+export async function probeLocalDockerImageUpdate(): Promise<boolean> {
+  const imageId = await inspectImageId(LOCAL_DOCKER_BOX_IMAGE);
+  const containerImageId = await inspectContainerImageId();
+  if (imageId.length === 0 || containerImageId.length === 0) return true;
+  return imageId !== containerImageId;
+}
+
+export async function updateLocalDockerBox(settingsPath: string, exportBoxSecrets?: () => Promise<Readonly<Record<string, string>>>): Promise<GatewayConnection> {
+  await pullLocalDockerBoxImage();
+  const inspected = await inspectContainer();
+  if (inspected.exists) {
+    if (!inspected.owned) throw new Error(`Refusing to replace unowned container ${LOCAL_DOCKER_BOX_CONTAINER}.`);
+    const removed = await runDocker(["rm", "--force", LOCAL_DOCKER_BOX_CONTAINER]);
+    if (!removed.ok && !/no such container/i.test(removed.output)) throw new Error(`Could not replace the local Docker VM: ${removed.output}`);
+  }
+  return await ensureLocalDockerBox(settingsPath, undefined, exportBoxSecrets);
+}
+
 export async function getLocalDockerStatus(settingsPath: string): Promise<LocalDockerStatus> {
   const daemon = await dockerInfo().catch(() => ({ ok: false, output: DOCKER_ENGINE_UNAVAILABLE }));
   if (!daemon.ok) return { available: false, running: false, ready: false, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: LOCAL_DOCKER_BOX_IMAGE, detail: formatDockerUnavailable(daemon.output) };
   const inspected = await inspectContainer();
-  if (!inspected.exists) return { available: true, running: false, ready: false, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: LOCAL_DOCKER_BOX_IMAGE, detail: "Ready to create the local VM." };
+  if (!inspected.exists) return { available: true, running: false, ready: false, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: LOCAL_DOCKER_BOX_IMAGE, detail: "Ready to create the local VM.", imageUpdateAvailable: true };
   if (!inspected.owned) return { available: true, running: inspected.running, ready: false, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: inspected.image, detail: `Container ${LOCAL_DOCKER_BOX_CONTAINER} exists but is not owned by Grok Bot.` };
   const ready = inspected.running && await gatewayReady(await readOrCreateToken(settingsPath));
-  return { available: true, running: inspected.running, ready, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: inspected.image, detail: ready ? "Local Docker VM is ready." : inspected.running ? "Container is starting." : "Local Docker VM is stopped." };
+  const imageUpdateAvailable = await probeLocalDockerImageUpdate().catch(() => false);
+  return { available: true, running: inspected.running, ready, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: inspected.image, detail: ready ? "Local Docker VM is ready." : inspected.running ? "Container is starting." : "Local Docker VM is stopped.", imageUpdateAvailable };
 }
 
 let ensureInFlight: Promise<GatewayConnection> | undefined;
@@ -456,33 +491,30 @@ export function createSettingsRoutedHostConnector(
 ): SandRemoteHostConnector {
   const localConnect = (): Promise<GatewayConnection> => {
     if (ensureInFlight == null) ensureInFlight = (async () => {
-      const issued = remote.issueInferenceCredential == null ? undefined : await Promise.race([
-        remote.issueInferenceCredential(),
-        new Promise<undefined>((resolve) => setTimeout(resolve, OPTIONAL_CREDENTIAL_TIMEOUT_MS)),
-      ]);
+      let issued: InferenceCredential | undefined;
+      if (remote.issueInferenceCredential != null) {
+        try {
+          issued = await Promise.race([
+            remote.issueInferenceCredential(),
+            new Promise<undefined>((resolve) => setTimeout(resolve, OPTIONAL_CREDENTIAL_TIMEOUT_MS)),
+          ]);
+        } catch {
+          issued = undefined;
+        }
+      }
       return await ensureLocalDockerBox(settings.settingsPath, issued, secrets?.exportBoxSecrets);
     })().finally(() => { ensureInFlight = undefined; });
     return ensureInFlight;
   };
   return {
-    connect: async () => settings.getBoxRuntime() === "local-docker" ? await localConnect() : await remote.connect(),
+    connect: async () => await localConnect(),
     ...(remote.issueLocalExecDaemonCredential == null ? {} : { issueLocalExecDaemonCredential: remote.issueLocalExecDaemonCredential.bind(remote) }),
     ...(remote.issueInferenceCredential == null ? {} : { issueInferenceCredential: remote.issueInferenceCredential.bind(remote) }),
-    recreate: async (args): Promise<RecreateResult> => {
-      if (settings.getBoxRuntime() !== "local-docker") {
-        if (remote.recreate == null) throw new Error("Remote computer recreation is unavailable.");
-        return await remote.recreate(args);
-      }
-      const stopped = await runDocker(["restart", LOCAL_DOCKER_BOX_CONTAINER]);
-      if (!stopped.ok) throw new Error(`Could not restart the local Docker VM: ${stopped.output}`);
-      await localConnect();
+    recreate: async (): Promise<RecreateResult> => {
+      await updateLocalDockerBox(settings.settingsPath, secrets?.exportBoxSecrets);
       return { status: "started-untrackable" };
     },
     forceRecreate: async (): Promise<RecreateResult> => {
-      if (settings.getBoxRuntime() !== "local-docker") {
-        if (remote.forceRecreate == null) return { status: "rejected", reason: "Remote computer reset is unavailable." };
-        return await remote.forceRecreate();
-      }
       const removed = await runDocker(["rm", "--force", LOCAL_DOCKER_BOX_CONTAINER]);
       if (!removed.ok && !/no such container/i.test(removed.output)) return { status: "rejected", reason: removed.output };
       await localConnect();

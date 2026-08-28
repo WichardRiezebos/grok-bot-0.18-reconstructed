@@ -6,13 +6,12 @@ import { fileURLToPath } from "node:url";
 import * as Ws from "ws";
 
 import { SandSettingsStore } from "../shared/node/settings/sand-settings-store.js";
-import { cookieHeader, extractAccessToken, isLoopbackAddress, tokensEqual } from "./auth.js";
 import type { RuntimeConfig } from "./config.js";
 import { persistencePathFor, secretsPathFor, settingsPathFor } from "./config.js";
 import { forkCoordinator, type CoordinatorSession } from "./coordinator-parent.js";
 import type { DebugState } from "./debug-log.js";
 import { createDebugState, noteLog } from "./debug-log.js";
-import { renderDebugPage, renderFallbackApp, renderLoginPage } from "./debug-page.js";
+import { renderDebugPage, renderFallbackApp } from "./debug-page.js";
 import { probeBoxHealth, buildRuntimeHealth, failureEnvelope } from "./health.js";
 import { createRpcDispatcher, initialRendererState } from "./rpc.js";
 import { loadSecrets, persistSecrets } from "./secrets-file.js";
@@ -63,13 +62,6 @@ const MIME: Record<string, string> = {
 };
 
 const BUNDLED_DIR = fileURLToPath(new URL("./", import.meta.url));
-const UNGATED_STATIC_EXT = new Set([".js", ".css", ".woff", ".woff2", ".ttf", ".png", ".svg", ".jpg", ".jpeg", ".webp", ".map", ".ico"]);
-
-function isUngatedStaticGet(method: string | undefined, pathName: string): boolean {
-  if (method !== "GET") return false;
-  if (pathName === "/__grok_bot/shim.js" || pathName === "/__grok_bot/overlay.js") return true;
-  return UNGATED_STATIC_EXT.has(extname(pathName));
-}
 
 function send(res: ServerResponse, status: number, body: string, headers?: Record<string, string>): void {
   res.writeHead(status, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", ...headers });
@@ -84,16 +76,6 @@ function sendHtml(res: ServerResponse, status: number, body: string, headers?: R
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
   res.end(`${JSON.stringify(body)}\n`);
-}
-
-async function readBody(req: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-function wantsHtml(req: IncomingMessage): boolean {
-  return (req.headers.accept ?? "").includes("text/html");
 }
 
 function stripCrossOrigin(html: string): string {
@@ -193,17 +175,9 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
     restartCoordinator: startCoordinator,
   });
 
-  const authorize = (req: IncomingMessage, allowLoopbackHealth = false): boolean => {
-    if (allowLoopbackHealth && isLoopbackAddress(req.socket.remoteAddress)) return true;
-    const token = extractAccessToken(req);
-    return token != null && tokensEqual(token, config.accessToken);
-  };
+  const authorize = (_req: IncomingMessage, _allowLoopbackHealth = false): boolean => true;
 
-  const sessionCookieHeaders = (req: IncomingMessage): Record<string, string> => {
-    const token = extractAccessToken(req);
-    if (token == null || !tokensEqual(token, config.accessToken)) return {};
-    return { "set-cookie": cookieHeader(token, config.publicUrl.startsWith("https://")) };
-  };
+  const sessionCookieHeaders = (_req: IncomingMessage): Record<string, string> => ({});
 
   const server = createServer(async (req, res) => {
     const url = new URL(normalizeRequestUrl(req.url), "http://127.0.0.1");
@@ -212,23 +186,6 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
     if (req.method === "GET" && pathName === "/health") {
       if (!authorize(req, true)) return send(res, 401, "unauthorized");
       return sendJson(res, 200, await buildRuntimeHealth(config, debug));
-    }
-
-    if (req.method === "POST" && pathName === "/login") {
-      const body = await readBody(req);
-      const params = new URLSearchParams(body);
-      const token = params.get("token")?.trim() ?? "";
-      if (!tokensEqual(token, config.accessToken)) return sendHtml(res, 401, renderLoginPage("Invalid token."));
-      res.writeHead(303, {
-        location: "/",
-        "set-cookie": cookieHeader(token, config.publicUrl.startsWith("https://")),
-      });
-      return res.end();
-    }
-
-    if (!isUngatedStaticGet(req.method, pathName) && !authorize(req)) {
-      if (wantsHtml(req) || pathName === "/") return sendHtml(res, 401, renderLoginPage());
-      return send(res, 401, "unauthorized");
     }
 
     if (req.method === "GET" && pathName === "/debug") {

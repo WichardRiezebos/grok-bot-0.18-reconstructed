@@ -11,19 +11,12 @@ function truthy(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
-function requiredToken(name: string, value: string | undefined, fallback?: string): string {
-  const trimmed = value?.trim();
-  if (trimmed != null && trimmed.length > 0) return trimmed;
-  if (fallback != null && fallback.length > 0) return fallback;
-  throw new Error(`${name} is required.`);
-}
-
 export interface RuntimeConfig {
   readonly listenHost: string;
   readonly listenPort: number;
   readonly dataDir: string;
   readonly publicUrl: string;
-  readonly accessToken: string;
+  readonly accessToken?: string;
   readonly gatewayUrl: string;
   readonly gatewayToken: string;
   readonly openRouterKey: string | undefined;
@@ -44,7 +37,7 @@ export function resolveRuntimeConfig(env: NodeJS.ProcessEnv = process.env, cwd =
     listenPort,
     dataDir,
     publicUrl: env.PUBLIC_URL?.trim() || `http://127.0.0.1:${CONTROL_PORT_DEFAULT}`,
-    accessToken: requiredToken("RUNTIME_ACCESS_TOKEN", env.RUNTIME_ACCESS_TOKEN, env.GROK_BOT_ACCESS_TOKEN),
+    accessToken: env.RUNTIME_ACCESS_TOKEN?.trim() || env.GROK_BOT_ACCESS_TOKEN?.trim() || undefined,
     gatewayUrl: env.SAND_HOST_GATEWAY_URL?.trim() || "http://box:1340",
     gatewayToken: env.SAND_HOST_GATEWAY_TOKEN?.trim() || env.SAND_GATEWAY_TOKEN?.trim() || "",
     openRouterKey: env.OPENROUTER_API_KEY?.trim() || undefined,

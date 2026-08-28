@@ -364,6 +364,8 @@ export interface AgentDesktopBridge {
   getComputerUseModel(): Promise<AgentModelSelection | null>;
   setComputerUseModel(model: AgentModelSelection | null): Promise<AgentModelSelection | null>;
   getAvailableModels(): Promise<unknown>;
+  getLocalProfile?(): Promise<{ readonly name: string; readonly email: string; readonly gravatarUrl: string | null }>;
+  setLocalProfile?(profile: { readonly name?: string; readonly email?: string }): Promise<unknown>;
   clientPersistence: {
     read(key: string): Promise<string | null>;
     write(key: string, value: string): Promise<void>;

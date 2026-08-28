@@ -11,7 +11,7 @@ import { getSandRootDir } from "../../host-paths.js";
 export interface HostInferenceOptions {
   auth: { getAccessToken(...args: unknown[]): Promise<string>; getMachineId(): string };
   experiments: { checkFeatureGate(name: string): boolean; getComputerUseModelOverride(): SandAgentModelSelection | undefined; getBrowserUseModelOverride(): SandAgentModelSelection | undefined; getSandModelExperimentState(): SandModelExperimentState | null | undefined; hasHydratedStatsigUserId(): boolean; getConfiguredDefaultModel(): SandAgentModelSelection | undefined; getConfiguredAutomationsModel(): SandAgentModelSelection | undefined };
-  settings: { getAgentDefaultModel(): SandAgentModelSelection | undefined; getComputerUseModel(): SandAgentModelSelection | undefined; getInferenceProvider(): SandInferenceProvider; recordInferenceUsage(provider: SandInferenceProvider, usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number }): void };
+  settings: { getAgentDefaultModel(): SandAgentModelSelection | undefined; getComputerUseModel(): SandAgentModelSelection | undefined; getInferenceProvider(): SandInferenceProvider; recordInferenceUsage(provider: SandInferenceProvider, usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; costUsd?: number }): void };
   onModelExperimentApplied(): void;
 }
 export function createHostInference(options: HostInferenceOptions) {
@@ -43,6 +43,7 @@ export function createHostInference(options: HostInferenceOptions) {
             ...(typeof usage.outputTokens === "number" ? { outputTokens: usage.outputTokens } : {}),
             ...(typeof usage.cacheReadTokens === "number" ? { cacheReadTokens: usage.cacheReadTokens } : {}),
             ...(typeof usage.cacheWriteTokens === "number" ? { cacheWriteTokens: usage.cacheWriteTokens } : {}),
+            ...(typeof usage.costUsd === "number" ? { costUsd: usage.costUsd } : {}),
           });
         }).catch(() => {});
       }
