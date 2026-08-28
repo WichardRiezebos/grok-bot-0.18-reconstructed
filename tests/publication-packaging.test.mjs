@@ -100,6 +100,8 @@ test("Router settings use the trusted backend and display recorded inference usa
   assert.match(rendererPatch, /desktop\.agent\.getLocalProfile/);
   assert.match(rendererPatch, /desktop\.agent\.setLocalProfile/);
   assert.match(rendererPatch, /Save profile/);
+  assert.match(rendererPatch, /Save updates the sidebar name and avatar in this app/);
+  assert.doesNotMatch(rendererPatch, /sidebar name and avatar on this Mac/);
   assert.match(rendererPatch, /COMPOSIO_API_KEY/);
   assert.match(rendererPatch, /costUsd/);
   assert.match(rendererPatch, /desktop\.agent\.getBoxRuntime\(\)/);

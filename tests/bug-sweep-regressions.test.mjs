@@ -120,3 +120,14 @@ test("coordinator fork shares the web data dir as SAND_DATA_ROOT", async () => {
   const parent = await readFile(path.join(repoRoot, "source/server-main/coordinator-parent.ts"), "utf8");
   assert.match(parent, /SAND_DATA_ROOT: config\.dataDir/);
 });
+
+test("web profile saves emit cursor-auth-changed and skip Sentry", async () => {
+  const rpc = await readFile(path.join(repoRoot, "source/server-main/rpc.ts"), "utf8");
+  const http = await readFile(path.join(repoRoot, "source/server-main/http-server.ts"), "utf8");
+  const shim = await readFile(path.join(repoRoot, "source/server-main/web-shim.js"), "utf8");
+  assert.match(rpc, /options\.emit\?\.\("cursor-auth-changed", status\)/);
+  assert.match(http, /kind: "event", channel: `sand-rpc:main:e:\$\{event\}`/);
+  assert.match(shim, /window\.__SENTRY__RENDERER_INIT__ = true/);
+  assert.match(shim, /listener\(undefined, payload\)/);
+  assert.match(shim, /sand-rpc:main:e:cursor-auth-changed/);
+});

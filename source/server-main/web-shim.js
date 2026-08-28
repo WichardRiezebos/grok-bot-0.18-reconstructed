@@ -1,4 +1,17 @@
 (() => {
+  // Skip the shipped Electron Sentry renderer SDK. Its dummy DSN and IPC
+  // transport throw in a browser and swallow/report unrelated page errors.
+  window.__SENTRY__RENDERER_INIT__ = true;
+  const sentryUrl = /sentry\.io|ingest\.sentry\.io|metrics\.cursor\.sh|dummy\.dsn/i;
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    try {
+      const url = typeof input === "string" ? input : (input && input.url) || "";
+      if (sentryUrl.test(String(url))) return Promise.resolve(new Response("", { status: 204 }));
+    } catch {}
+    return originalFetch(input, init);
+  };
+
   const CHROME_CSS = `
 html, :root {
   --sand-window-controls-block: 0px !important;
@@ -230,7 +243,11 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
   function emitEvent(channel, payload) {
     const set = eventListeners.get(channel);
     if (set == null) return;
-    for (const listener of set) listener(payload);
+    // Electron ipcRenderer.on listeners are (event, payload).
+    for (const listener of set) {
+      try { listener(undefined, payload); }
+      catch (error) { console.error("[grok-bot] event listener failed", channel, error); }
+    }
   }
 
   function sendSocket(payload) {
@@ -493,7 +510,11 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       login: () => edge.loginCursor(),
       cancelLogin: () => edge.cancelCursorLogin(),
       logout: () => edge.logoutCursor(),
-      updateName: (name) => edge.updateCursorAccountName({ name }),
+      async updateName(name) {
+        const status = await edge.updateCursorAccountName({ name });
+        emitEvent("sand-rpc:main:e:cursor-auth-changed", status);
+        return status;
+      },
       getAvatar: () => edge.getCursorAvatar(),
       getWeeklyUsage: () => edge.getCursorWeeklyUsage(),
       getUsageSummary: () => edge.getCursorUsageSummary(),
@@ -598,7 +619,11 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       getBoxRuntime: () => edge.getBoxRuntime(),
       setBoxRuntime: (mode) => edge.setBoxRuntime({ mode }),
       getLocalProfile: () => edge.getLocalProfile(),
-      setLocalProfile: (profile) => edge.updateLocalProfile(profile ?? {}),
+      async setLocalProfile(profile) {
+        const status = await edge.updateLocalProfile(profile ?? {});
+        emitEvent("sand-rpc:main:e:cursor-auth-changed", status);
+        return status;
+      },
       listOpenRouterModels: () => edge.listOpenRouterModels(),
       getDesktopEnvironment: () => edge.getDesktopEnvironment(),
       clientPersistence: {

@@ -345,6 +345,10 @@ test("ungated /health, /debug, and websocket RPC", async () => {
     assert.match(shimSource, /4409/);
     assert.match(shimSource, /grok-bot-superseded/);
     assert.match(shimSource, /1012/);
+    assert.match(shimSource, /__SENTRY__RENDERER_INIT__/);
+    assert.match(shimSource, /dummy\\.dsn/);
+    assert.match(shimSource, /listener\(undefined, payload\)/);
+    assert.match(shimSource, /sand-rpc:main:e:cursor-auth-changed/);
     const gatedApp = await fetch(`${server.url}/`);
     assert.equal(gatedApp.status, 200);
 
@@ -761,5 +765,97 @@ test("VNC HTTP proxy aborts upstream when the client disconnects", async () => {
     await new Promise((resolve, reject) => proxy.close((error) => error != null ? reject(error) : resolve()));
     await new Promise((resolve, reject) => upstream.close((error) => error != null ? reject(error) : resolve()));
     await loaded.dispose();
+  }
+});
+
+test("updateLocalProfile persists and broadcasts cursor-auth-changed", async () => {
+  const loaded = await loadModule("source/server-main/http-server.ts");
+  const configLoaded = await loadModule("source/server-main/config.ts");
+  const dataDir = await mkdtemp(path.join(tmpdir(), "grok-bot-profile-"));
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/health") && url.includes("box")) {
+      return new Response(JSON.stringify({ ok: true, isBusy: false }), { status: 200 });
+    }
+    return previousFetch(input, init);
+  };
+  const { resolveRuntimeConfig } = configLoaded.module;
+  const { startRuntimeServer } = loaded.module;
+  const server = startRuntimeServer(resolveRuntimeConfig({
+    RUNTIME_ACCESS_TOKEN: "secret-token",
+    GROK_BOT_LISTEN_HOST: "127.0.0.1",
+    GROK_BOT_LISTEN_PORT: "0",
+    GROK_BOT_DATA_DIR: dataDir,
+    GROK_BOT_STATIC_ROOT: path.join(repoRoot, "source", "server-main"),
+    SAND_HOST_GATEWAY_URL: "http://box:1340",
+    OPENROUTER_API_KEY: "sk-or-v1-not-leaked",
+  }), { fork: mockFork });
+  try {
+    await server.ready;
+    await new Promise((resolve, reject) => {
+      const ws = new WebSocket(`${server.url.replace("http", "ws")}/ws?token=secret-token`);
+      const timer = setTimeout(() => reject(new Error("websocket timeout")), 5_000);
+      let phase = "hello";
+      let gotStatus = null;
+      let gotEvent = null;
+      const finish = (error) => {
+        clearTimeout(timer);
+        try { ws.close(); } catch {}
+        if (error) reject(error);
+        else resolve();
+      };
+      const maybeReadBack = () => {
+        if (gotStatus == null || gotEvent == null || phase !== "update") return;
+        try {
+          assert.equal(gotStatus.kind, "logged-in");
+          assert.equal(gotStatus.displayName, "Ada Lovelace");
+          assert.equal(gotStatus.email, "ada@example.com");
+          assert.equal(gotEvent.displayName, "Ada Lovelace");
+          assert.equal(gotEvent.email, "ada@example.com");
+        } catch (error) {
+          finish(error);
+          return;
+        }
+        phase = "get";
+        ws.send(JSON.stringify({ kind: "rpc", id: "profile-2", channel: "sand-rpc:main:m:getLocalProfile", payload: {} }));
+      };
+      ws.on("message", (raw) => {
+        const message = JSON.parse(String(raw));
+        if (phase === "hello" && message.kind === "hello-ok") {
+          phase = "update";
+          ws.send(JSON.stringify({
+            kind: "rpc",
+            id: "profile-1",
+            channel: "sand-rpc:main:m:updateLocalProfile",
+            payload: { name: "  Ada Lovelace  ", email: "Ada@Example.COM" },
+          }));
+          return;
+        }
+        if (phase === "update") {
+          if (message.kind === "rpc-ok" && message.id === "profile-1") gotStatus = message.value;
+          if (message.kind === "event" && message.channel === "sand-rpc:main:e:cursor-auth-changed") gotEvent = message.payload;
+          maybeReadBack();
+          return;
+        }
+        if (phase === "get" && message.kind === "rpc-ok" && message.id === "profile-2") {
+          try {
+            assert.equal(message.value.name, "Ada Lovelace");
+            assert.equal(message.value.email, "ada@example.com");
+            assert.match(String(message.value.gravatarUrl), /gravatar\.com\/avatar\//);
+            finish();
+          } catch (error) {
+            finish(error);
+          }
+        }
+      });
+      ws.on("error", (error) => finish(error));
+    });
+  } finally {
+    globalThis.fetch = previousFetch;
+    await server.close();
+    await loaded.dispose();
+    await configLoaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
   }
 });

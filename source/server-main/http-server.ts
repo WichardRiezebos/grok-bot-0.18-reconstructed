@@ -171,6 +171,14 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
   };
   startCoordinator();
 
+  const emit = (event: string, payload: unknown) => {
+    const frame = JSON.stringify({ kind: "event", channel: `sand-rpc:main:e:${event}`, payload });
+    for (const socket of sockets) {
+      if (socket.readyState !== socket.OPEN) continue;
+      try { socket.send(frame); } catch {}
+    }
+  };
+
   const dispatchRpc = createRpcDispatcher({
     config,
     debug,
@@ -178,6 +186,7 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
     secretsPath: secretsPathFor(config.dataDir),
     persistencePath: persistencePathFor(config.dataDir),
     restartCoordinator: startCoordinator,
+    emit,
   });
 
   const authorize = (_req: IncomingMessage, _allowLoopbackHealth = false): boolean => true;

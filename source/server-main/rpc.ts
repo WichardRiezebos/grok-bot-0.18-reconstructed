@@ -55,6 +55,7 @@ export function createRpcDispatcher(options: {
   readonly secretsPath: string;
   readonly persistencePath: string;
   readonly restartCoordinator: () => void;
+  readonly emit?: (event: string, payload: unknown) => void;
 }): (channel: string, payload: unknown) => Promise<unknown> {
   const { config, debug, settings } = options;
 
@@ -244,13 +245,17 @@ export function createRpcDispatcher(options: {
     updateCursorAccountName: (payload) => {
       const name = (payload as JsonMap).name;
       if (typeof name === "string") settings.setLocalProfileName(name);
-      return localAuth();
+      const status = localAuth();
+      options.emit?.("cursor-auth-changed", status);
+      return status;
     },
     updateLocalProfile: (payload) => {
       const record = payload as JsonMap;
       if (typeof record.name === "string") settings.setLocalProfileName(record.name);
       if (typeof record.email === "string") settings.setLocalProfileEmail(record.email);
-      return localAuth();
+      const status = localAuth();
+      options.emit?.("cursor-auth-changed", status);
+      return status;
     },
     getLocalProfile: () => localProfile(),
     getCursorAvatar: () => localProfile().gravatarUrl,
