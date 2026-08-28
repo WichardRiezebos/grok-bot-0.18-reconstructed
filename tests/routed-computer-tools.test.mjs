@@ -88,6 +88,32 @@ test("routed computer catalog includes Computer and request_box_help", async () 
   }
 });
 
+test("routed SendToAgent catalog is native and OpenAI-strict", async () => {
+  const loaded = await loadModule("source/shared/routed-agent-tools.ts");
+  const computer = await loadModule("source/shared/routed-computer-tools.ts");
+  try {
+    const tools = loaded.module.listRoutedSendToAgentToolDefinitions();
+    assert.equal(tools.length, 1);
+    assert.equal(tools[0].name, "SendToAgent");
+    assert.equal(tools[0].providerIdentifier, "grok-bot-agents");
+    assert.equal(loaded.module.isRoutedSendToAgentTool(tools[0]), true);
+    assert.equal(loaded.module.isRoutedSendToAgentTool({ name: "Gmail_send" }), false);
+    assert.equal(computer.module.openAiStrictSchemaGap(loaded.module.ROUTED_SEND_TO_AGENT_INPUT_SCHEMA), null);
+    assert.equal(loaded.module.parseRoutedSendToAgentArgs({ target_id: "agent-b", message: " hi " }).message, "hi");
+    assert.equal(loaded.module.parseRoutedSendToAgentArgs({ target_id: "", message: "hi" }), null);
+    assert.deepEqual(
+      loaded.module.routedTeammatesOf(
+        [{ id: "a", name: "Atlas" }, { id: "b", name: "Research" }, { id: "g", name: "Room", isGroup: true }],
+        "a",
+      ),
+      [{ id: "b", name: "Research" }],
+    );
+  } finally {
+    await loaded.dispose();
+    await computer.dispose();
+  }
+});
+
 test("routed computer results expose screenshot images for Codex and OpenRouter", async () => {
   const loaded = await loadModule("source/shared/routed-computer-tools.ts");
   try {

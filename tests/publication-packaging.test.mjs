@@ -308,7 +308,7 @@ test("Router settings use the trusted backend and display recorded inference usa
   assert.match(webShim, /background:#171914/);
   assert.match(webShim, /coordinator restarted; reconnecting/);
   assert.match(webShim, /owner\?\.onPort\(coordinatorPort\)/);
-  assert.match(providers, /grokRouterSystemPrompt\(pluginTools\)/);
+  assert.match(providers, /grokRouterSystemPrompt\(pluginTools, systemExtra\)/);
   assert.match(providers, /No Connect plugins are attached/);
   assert.match(composer, /sand-prompt-stop-glyph/);
   assert.match(viewCss, /cursor-text-primary/);
@@ -332,6 +332,13 @@ test("Router settings use the trusted backend and display recorded inference usa
   assert.match(coordinator, /createRoutedMcpBridge/);
   assert.match(coordinator, /listRoutedMcpTools/);
   assert.match(coordinator, /executeRoutedMcpTool/);
+  assert.match(coordinator, /listRoutedSendToAgentToolDefinitions/);
+  assert.match(coordinator, /isRoutedSendToAgentTool/);
+  assert.match(coordinator, /args\.hidden === true/);
+  assert.match(coordinator, /renderAgentDirectorySystemPrompt/);
+  assert.match(coordinator, /buildAgentInboundWakePrompt/);
+  assert.match(coordinator, /systemExtra/);
+  assert.match(providers, /function grokRouterSystemPrompt\(pluginTools = false, extra\?: string\)/);
   assert.match(mcpBridge, /server\.listen\(0, "127\.0\.0\.1"/);
   assert.match(mcpBridge, /readOnlyHint: readOnly/);
   assert.match(mcpBridge, /request\.url !== `\/mcp\/\$\{secret\}`/);

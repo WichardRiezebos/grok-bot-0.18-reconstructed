@@ -131,6 +131,7 @@ export async function runPiDriveSession(options: {
   readonly onTextDelta?: ((delta: string, accumulated: string) => void) | undefined;
   readonly onProgress?: ((line: string) => void) | undefined;
   readonly onStreamEvent?: ((event: { readonly type: string; readonly toolName?: string; readonly elapsedMs: number }) => void) | undefined;
+  readonly systemExtra?: string | undefined;
 }): Promise<string> {
   const abortSignal = options.abortSignal;
   if (abortSignal?.aborted) {
@@ -146,9 +147,10 @@ export async function runPiDriveSession(options: {
     : "Continue.";
   let turns = 0;
   const started = Date.now();
+  const roster = options.systemExtra?.trim() ?? "";
   const agent = new Agent({
     initialState: {
-      systemPrompt: GROK_DRIVE_SYSTEM_PROMPT,
+      systemPrompt: roster.length === 0 ? GROK_DRIVE_SYSTEM_PROMPT : `${GROK_DRIVE_SYSTEM_PROMPT}\n\n${roster}`,
       model,
       thinkingLevel: piThinkingLevel(options.reasoningEffort),
       tools: toPiTools(options.tools, options.executeTool),

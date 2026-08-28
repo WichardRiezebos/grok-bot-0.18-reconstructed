@@ -837,6 +837,15 @@ test("a turn that ends on a tool step settles the streamed bubble", async () => 
       },
     });
     await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "click it", clientNonce: "n1" });
+    for (let i = 0; i < 80; i++) {
+      const last = events
+        .filter((event) => event.family === "agents")
+        .flatMap((event) => event.payload.agents ?? [])
+        .filter((agent) => agent.id === "agent-1")
+        .at(-1);
+      if (last?.isRunning === false) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
     const messages = events
       .filter((event) => event.family === "transcript" && event.payload?.entry?.kind === "send-message")
       .map((event) => event.payload.entry);
@@ -1070,9 +1079,9 @@ test("stopRoutedTurn stays idle when listAgents resolves after abort", async () 
     const events = [];
     let started;
     const startedTurn = new Promise((resolve) => { started = resolve; });
+    let turnStarted = false;
     let releasePulse;
     const pulseHeld = new Promise((resolve) => { releasePulse = resolve; });
-    let listAgentsCalls = 0;
     const router = loaded.module.createCoordinatorInferenceRouter({
       dataDir,
       composingDelayMs: 0,
@@ -1081,8 +1090,7 @@ test("stopRoutedTurn stays idle when listAgents resolves after abort", async () 
       dispatchRemote: async (method) => {
         if (method === "getAgentTranscriptTail") return { entries: [] };
         if (method === "listAgents") {
-          listAgentsCalls += 1;
-          if (listAgentsCalls > 1) await pulseHeld;
+          if (turnStarted) await pulseHeld;
           return [{ id: "agent-1", isRunning: true }];
         }
         if (method === "listRoutedComputerTools") return [{ name: "observe_ui", providerIdentifier: "grok-bot-computer" }];
@@ -1090,6 +1098,7 @@ test("stopRoutedTurn stays idle when listAgents resolves after abort", async () 
         return {};
       },
       runProviderText: async (_provider, _messages, options) => {
+        turnStarted = true;
         started();
         await new Promise((_, reject) => {
           const signal = options.abortSignal;
@@ -1340,5 +1349,317 @@ test("Think Gmail prompt with a listed Gmail tool executes it", async () => {
   } finally {
     await loaded.dispose();
     await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+function twoAgents() {
+  return [
+    { id: "agent-a", name: "Atlas" },
+    { id: "agent-b", name: "Research" },
+  ];
+}
+
+async function waitUntil(predicate, label) {
+  for (let i = 0; i < 80; i++) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(label ?? "timed out waiting");
+}
+
+test("SendToAgent is listed on Think turns that have no Computer tools", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-peer-list-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), routerSettings());
+    const providerCalls = [];
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: () => {},
+      dispatchRemote: async (method) => {
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") return twoAgents();
+        if (method === "listRoutedComputerTools" || method === "listRoutedMcpTools") return [];
+        return {};
+      },
+      runProviderText: async (_provider, _messages, options) => {
+        providerCalls.push({
+          slot: options.slot,
+          toolNames: (options.tools ?? []).map((tool) => tool.name),
+          systemExtra: options.systemExtra ?? "",
+        });
+        return "hello";
+      },
+    });
+    await router.dispatch("sendPrompt", { agentId: "agent-a", prompt: "hello", clientNonce: "n1" });
+    await waitUntil(() => providerCalls.length >= 1, "provider did not start");
+    assert.equal(providerCalls[0].slot, "think");
+    assert.equal(providerCalls[0].toolNames.includes("SendToAgent"), true);
+    assert.equal(providerCalls[0].toolNames.includes("Computer"), false);
+    assert.match(providerCalls[0].systemExtra, /Research \(id: agent-b\)/);
+    assert.equal(providerCalls[0].systemExtra.includes("Atlas (id: agent-a)"), false);
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("SendToAgent delivers a 1:1 message and wakes the recipient with an [agent] cue", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-peer-deliver-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), routerSettings());
+    const events = [];
+    const wakes = [];
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: (family, payload) => events.push({ family, payload }),
+      dispatchRemote: async (method) => {
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") return twoAgents();
+        if (method === "listRoutedComputerTools" || method === "listRoutedMcpTools") return [];
+        return {};
+      },
+      runProviderText: async (_provider, messages, options) => {
+        const last = messages.at(-1)?.content ?? "";
+        if (last.includes("[agent]")) {
+          wakes.push(last);
+          return "";
+        }
+        const tool = (options.tools ?? []).find((entry) => entry.name === "SendToAgent");
+        assert.ok(tool);
+        const result = await options.executeTool(tool, { target_id: "agent-b", message: "hello from A" }, "peer-1");
+        const text = typeof result === "string" ? result : JSON.stringify(result);
+        assert.match(text, /Sent to Research/);
+        return "";
+      },
+    });
+    await router.dispatch("sendPrompt", { agentId: "agent-a", prompt: "tell research hello", clientNonce: "n1" });
+    await waitUntil(() => wakes.length >= 1, "recipient was not woken");
+    assert.match(wakes[0], /^\[agent\]/);
+    assert.match(wakes[0], /Atlas \(id: agent-a\)/);
+    assert.match(wakes[0], /hello from A/);
+    assert.equal(wakes[0].startsWith("[agent] tell research hello") === false, true);
+
+    const outbound = events.find((event) => event.family === "transcript" && event.payload?.agentId === "agent-a" && event.payload?.entry?.toAgent?.id === "agent-b");
+    assert.ok(outbound);
+    assert.equal(outbound.payload.entry.kind, "send-message");
+    assert.equal(outbound.payload.entry.message.content, "hello from A");
+    assert.equal(outbound.payload.entry.toAgent.name, "Research");
+
+    const inbound = events.find((event) => event.family === "transcript" && event.payload?.agentId === "agent-b" && event.payload?.entry?.fromAgent?.id === "agent-a");
+    assert.ok(inbound);
+    assert.equal(inbound.payload.entry.kind, "message");
+    assert.equal(inbound.payload.entry.role, "user");
+    assert.equal(inbound.payload.entry.content, "hello from A");
+    assert.equal(inbound.payload.entry.fromAgent.name, "Atlas");
+
+    const fakeUser = events.filter((event) => event.family === "transcript" && event.payload?.agentId === "agent-b" && event.payload?.entry?.kind === "message" && event.payload?.entry?.fromAgent == null);
+    assert.equal(fakeUser.length, 0);
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("SendToAgent self-send and unknown id fail closed", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-peer-reject-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), routerSettings());
+    const acks = [];
+    const wakes = [];
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: () => {},
+      dispatchRemote: async (method) => {
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") return twoAgents();
+        if (method === "listRoutedComputerTools" || method === "listRoutedMcpTools") return [];
+        return {};
+      },
+      runProviderText: async (_provider, messages, options) => {
+        const last = messages.at(-1)?.content ?? "";
+        if (last.includes("[agent]")) {
+          wakes.push(last);
+          return "";
+        }
+        const tool = (options.tools ?? []).find((entry) => entry.name === "SendToAgent");
+        acks.push(JSON.stringify(await options.executeTool(tool, { target_id: "agent-a", message: "to myself" }, "self-1")));
+        acks.push(JSON.stringify(await options.executeTool(tool, { target_id: "missing", message: "hello" }, "miss-1")));
+        acks.push(JSON.stringify(await options.executeTool(tool, { target_id: "agent-b", message: "   " }, "empty-1")));
+        return "done";
+      },
+    });
+    await router.dispatch("sendPrompt", { agentId: "agent-a", prompt: "ping", clientNonce: "n1" });
+    await waitUntil(() => acks.length >= 3, "acks were not collected");
+    assert.match(acks[0], /can't message yourself/i);
+    assert.match(acks[1], /No agent found with id missing/);
+    assert.match(acks[2], /Message was empty/);
+    assert.equal(wakes.length, 0);
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("priority SendToAgent supersedes the recipient's in-flight turn", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-peer-priority-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), routerSettings());
+    let bStarted;
+    const bTurn = new Promise((resolve) => { bStarted = resolve; });
+    const wakes = [];
+    let aborted = false;
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: () => {},
+      dispatchRemote: async (method) => {
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") return twoAgents();
+        if (method === "listRoutedComputerTools" || method === "listRoutedMcpTools") return [];
+        return {};
+      },
+      runProviderText: async (_provider, messages, options) => {
+        const last = messages.at(-1)?.content ?? "";
+        if (last === "stay busy") {
+          bStarted();
+          await new Promise((_, reject) => {
+            options.abortSignal.addEventListener("abort", () => {
+              aborted = true;
+              reject(options.abortSignal.reason ?? new Error("aborted"));
+            }, { once: true });
+          });
+        }
+        if (last.includes("[agent]")) {
+          wakes.push(last);
+          return "";
+        }
+        const tool = (options.tools ?? []).find((entry) => entry.name === "SendToAgent");
+        await options.executeTool(tool, { target_id: "agent-b", message: "stop that", priority: true }, "pri-1");
+        return "";
+      },
+    });
+    await router.dispatch("sendPrompt", { agentId: "agent-b", prompt: "stay busy", clientNonce: "nb" });
+    await Promise.race([bTurn, new Promise((_, reject) => setTimeout(() => reject(new Error("B did not start")), 2_000))]);
+    await router.dispatch("sendPrompt", { agentId: "agent-a", prompt: "interrupt research", clientNonce: "na" });
+    await waitUntil(() => wakes.length >= 1, "priority wake did not run");
+    assert.equal(aborted, true);
+    assert.match(wakes[0], /PRIORITY/);
+    assert.match(wakes[0], /stop that/);
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("recipient can SendToAgent back on the wake turn", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-peer-roundtrip-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), routerSettings());
+    const events = [];
+    const wakes = [];
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: (family, payload) => events.push({ family, payload }),
+      dispatchRemote: async (method) => {
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") return twoAgents();
+        if (method === "listRoutedComputerTools" || method === "listRoutedMcpTools") return [];
+        return {};
+      },
+      runProviderText: async (_provider, messages, options) => {
+        const last = messages.at(-1)?.content ?? "";
+        const tool = (options.tools ?? []).find((entry) => entry.name === "SendToAgent");
+        if (last.includes("[agent]") && last.includes("hello from A")) {
+          wakes.push(last);
+          await options.executeTool(tool, { target_id: "agent-a", message: "hi back" }, "rt-b");
+          return "";
+        }
+        if (last.includes("[agent]") && last.includes("hi back")) {
+          wakes.push(last);
+          return "";
+        }
+        if (last.includes("tell research")) {
+          await options.executeTool(tool, { target_id: "agent-b", message: "hello from A" }, "rt-a");
+          return "";
+        }
+        return "ok";
+      },
+    });
+    await router.dispatch("sendPrompt", { agentId: "agent-a", prompt: "tell research hello", clientNonce: "n1" });
+    await waitUntil(() => wakes.length >= 2, "round-trip wakes did not finish");
+    assert.match(wakes[0], /hello from A/);
+    assert.match(wakes[1], /hi back/);
+    const reply = events.find((event) => event.family === "transcript" && event.payload?.agentId === "agent-a" && event.payload?.entry?.fromAgent?.id === "agent-b");
+    assert.ok(reply);
+    assert.equal(reply.payload.entry.content, "hi back");
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("routed transcript preserves fromAgent and toAgent across reload", async () => {
+  const loaded = await loadModule();
+  try {
+    const store = loaded.module.parseInferenceRouterTranscriptStore({
+      schemaVersion: 2,
+      agents: {
+        "agent-a": [{
+          provider: "openrouter",
+          role: "assistant",
+          content: "hello from A",
+          id: "peer-out-1",
+          timestampMs: 100,
+          toAgent: { id: "agent-b", name: "Research", kind: "agent" },
+        }],
+        "agent-b": [{
+          provider: "openrouter",
+          role: "user",
+          content: "hello from A",
+          id: "peer-in-1",
+          timestampMs: 100,
+          fromAgent: { id: "agent-a", name: "Atlas" },
+        }],
+      },
+    });
+    const outbound = loaded.module.projectInferenceRouterTranscriptEntry(store.agents["agent-a"][0]);
+    assert.equal(outbound.kind, "send-message");
+    assert.deepEqual(outbound.toAgent, { id: "agent-b", name: "Research", kind: "agent" });
+    const inbound = loaded.module.projectInferenceRouterTranscriptEntry(store.agents["agent-b"][0]);
+    assert.equal(inbound.kind, "message");
+    assert.deepEqual(inbound.fromAgent, { id: "agent-a", name: "Atlas" });
+    const coalesced = loaded.module.coalesceRoutedProviderMessages(store.agents["agent-b"]);
+    assert.deepEqual(coalesced, []);
+  } finally {
+    await loaded.dispose();
+  }
+});
+
+test("routed transcript rejects malformed fromAgent carriers", async () => {
+  const loaded = await loadModule();
+  try {
+    const store = loaded.module.parseInferenceRouterTranscriptStore({
+      schemaVersion: 2,
+      agents: {
+        agent: [{ provider: "openrouter", role: "user", content: "hi", id: "t1u", timestampMs: 123, fromAgent: { name: "no-id" } }],
+      },
+    });
+    assert.deepEqual(store.agents.agent, []);
+  } finally {
+    await loaded.dispose();
   }
 });

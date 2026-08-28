@@ -26,6 +26,20 @@ import {
   shouldSkipRoutedBoxChromeReload,
   turnNeedsRoutedComputer,
 } from "../shared/routed-computer-tools.js";
+import {
+  isRoutedSendToAgentTool,
+  listRoutedSendToAgentToolDefinitions,
+  parseRoutedSendToAgentArgs,
+  routedSendToAgentDeliveredAck,
+  routedSendToAgentEmptyAck,
+  routedSendToAgentGroupAck,
+  routedSendToAgentMissingAck,
+  routedSendToAgentSelfAck,
+  routedSendToAgentSharedRoomAck,
+  routedTeammatesOf,
+  type RoutedAgentImage,
+} from "../shared/routed-agent-tools.js";
+import { buildAgentInboundWakePrompt, renderAgentDirectorySystemPrompt } from "../host/agents/agent-messaging.js";
 import type { SandInferenceProvider } from "../shared/inference-router.js";
 import { SandSettingsStore } from "../shared/node/settings/sand-settings-store.js";
 import { createRoutedMcpBridge } from "./routed-mcp-bridge.js";
@@ -46,6 +60,7 @@ export const ROUTED_TURN_RETRY_BACKOFF_MS = [2_000, 8_000] as const;
 export const ROUTED_TURN_MAX_RETRIES = 2;
 export const ROUTED_STREAM_EMIT_THROTTLE_MS = 250;
 
+type AgentRef = { readonly id: string; readonly name: string; readonly kind?: string };
 type StoredEntry = {
   readonly provider: Exclude<SandInferenceProvider, "cursor">;
   readonly role: "user" | "assistant";
@@ -57,14 +72,18 @@ type StoredEntry = {
   readonly timestampMs: number;
   readonly boxRequestId?: string;
   readonly boxInstruction?: string;
+  readonly fromAgent?: AgentRef;
+  readonly toAgent?: AgentRef;
+  readonly images?: readonly RoutedAgentImage[];
 };
 type Store = { readonly schemaVersion: 2; readonly agents: Readonly<Record<string, readonly StoredEntry[]>> };
 
 const EMPTY_STORE: Store = { schemaVersion: 2, agents: {} };
 
-export function coalesceRoutedProviderMessages(entries: readonly { readonly role: string; readonly content: string }[]): Array<{ role: "user" | "assistant"; content: string }> {
+export function coalesceRoutedProviderMessages(entries: readonly { readonly role: string; readonly content: string; readonly fromAgent?: unknown }[]): Array<{ role: "user" | "assistant"; content: string }> {
   const messages: Array<{ role: "user" | "assistant"; content: string }> = [];
   for (const entry of entries) {
+    if (entry.fromAgent != null) continue;
     const role = entry.role === "assistant" ? "assistant" : "user";
     const content = entry.content.trim();
     if (content.length === 0) continue;
@@ -77,6 +96,25 @@ export function coalesceRoutedProviderMessages(entries: readonly { readonly role
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value != null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function parseAgentRef(value: unknown): AgentRef | null {
+  const row = asRecord(value);
+  if (row == null || typeof row.id !== "string" || row.id.length === 0 || typeof row.name !== "string") return null;
+  return { id: row.id, name: row.name, ...(typeof row.kind === "string" ? { kind: row.kind } : {}) };
+}
+
+function parseStoredImages(value: unknown): readonly RoutedAgentImage[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const images: RoutedAgentImage[] = [];
+  for (const raw of value) {
+    const row = asRecord(raw);
+    const url = typeof row?.url === "string" ? row.url : "";
+    if (url.length === 0) return undefined;
+    const alt = typeof row.alt === "string" && row.alt.length > 0 ? row.alt : undefined;
+    images.push({ url, ...(alt == null ? {} : { alt }) });
+  }
+  return images;
 }
 
 async function awaitRoutedRetryBackoff(ms: number, signal?: AbortSignal): Promise<void> {
@@ -108,7 +146,18 @@ export function parseInferenceRouterTranscriptStore(value: unknown): Store {
       const row = asRecord(raw);
       if (row == null || !["codex", "claude-code", "openrouter"].includes(String(row.provider)) || !["user", "assistant"].includes(String(row.role)) || typeof row.content !== "string" || typeof row.id !== "string" || typeof row.timestampMs !== "number" || (row.clientNonce !== undefined && typeof row.clientNonce !== "string") || (row.richText !== undefined && typeof row.richText !== "string") || (row.boxRequestId !== undefined && typeof row.boxRequestId !== "string") || (row.boxInstruction !== undefined && typeof row.boxInstruction !== "string")) continue;
       if (row.reactions !== undefined && (!Array.isArray(row.reactions) || row.reactions.some(reaction => asRecord(reaction) == null || typeof asRecord(reaction)!.emoji !== "string" || typeof asRecord(reaction)!.by !== "string"))) continue;
-      entries.push(row as unknown as StoredEntry);
+      const fromAgent = row.fromAgent === undefined ? undefined : parseAgentRef(row.fromAgent);
+      if (row.fromAgent !== undefined && fromAgent == null) continue;
+      const toAgent = row.toAgent === undefined ? undefined : parseAgentRef(row.toAgent);
+      if (row.toAgent !== undefined && toAgent == null) continue;
+      const images = row.images === undefined ? undefined : parseStoredImages(row.images);
+      if (row.images !== undefined && images == null) continue;
+      entries.push({
+        ...(row as unknown as StoredEntry),
+        ...(fromAgent == null ? {} : { fromAgent }),
+        ...(toAgent == null ? {} : { toAgent }),
+        ...(images == null ? {} : { images }),
+      });
     }
     agents[agentId] = entries.slice(-200);
   }
@@ -142,7 +191,19 @@ export function overlayRoutedRosterLastEntry(
 
 export function projectInferenceRouterTranscriptEntry(entry: StoredEntry): Record<string, unknown> {
   return entry.role === "user"
-    ? { kind: "message", id: entry.id, role: "user", content: entry.content, ...(entry.richText === undefined ? {} : { richText: entry.richText }), isStreaming: false, timestampMs: entry.timestampMs, ...(entry.clientNonce === undefined ? {} : { clientNonce: entry.clientNonce }), ...(entry.reactions === undefined ? {} : { reactions: entry.reactions }) }
+    ? {
+        kind: "message",
+        id: entry.id,
+        role: "user",
+        content: entry.content,
+        ...(entry.richText === undefined ? {} : { richText: entry.richText }),
+        isStreaming: false,
+        timestampMs: entry.timestampMs,
+        ...(entry.clientNonce === undefined ? {} : { clientNonce: entry.clientNonce }),
+        ...(entry.reactions === undefined ? {} : { reactions: entry.reactions }),
+        ...(entry.fromAgent == null ? {} : { fromAgent: entry.fromAgent }),
+        ...(entry.images == null ? {} : { images: entry.images }),
+      }
     : {
         kind: "send-message",
         id: entry.id,
@@ -150,6 +211,8 @@ export function projectInferenceRouterTranscriptEntry(entry: StoredEntry): Recor
         timestampMs: entry.timestampMs,
         ...(entry.reactions === undefined ? {} : { reactions: entry.reactions }),
         ...(entry.boxRequestId == null ? {} : { boxRequestId: entry.boxRequestId, boxInstruction: entry.boxInstruction ?? entry.content }),
+        ...(entry.toAgent == null ? {} : { toAgent: entry.toAgent }),
+        ...(entry.images == null ? {} : { images: entry.images }),
       };
 }
 
@@ -320,6 +383,7 @@ export function createCoordinatorInferenceRouter(options: {
     const prompt = typeof args.prompt === "string" ? args.prompt : "";
     const richText = typeof args.richText === "string" ? args.richText : undefined;
     const clientNonce = typeof args.clientNonce === "string" ? args.clientNonce : randomUUID();
+    const hidden = args.hidden === true;
     if (agentId.length === 0 || prompt.length === 0) throw new Error("Local inference routing requires an agentId and prompt");
     const timestampMs = now();
     const [remote, beforeUser] = await Promise.all([options.dispatchRemote("getAgentTranscriptTail", { id: agentId }), load()]);
@@ -334,10 +398,13 @@ export function createCoordinatorInferenceRouter(options: {
       return match == null ? highest : Math.max(highest, Number(match[1]));
     }, -1);
     const turn = Math.max(remoteTurn, localTurn) + 1;
-    const userEntry = { kind: "message", id: `t${turn}u`, role: "user", content: prompt, ...(richText === undefined ? {} : { richText }), isStreaming: false, timestampMs, clientNonce };
     const chromeAlreadyOpen = chromeOpenByAgent.has(agentId);
-    const withUser = await append(agentId, [{ provider, role: "user", content: prompt, ...(richText === undefined ? {} : { richText }), id: userEntry.id, clientNonce, timestampMs }]);
-    emitTranscript(agentId, "appended", userEntry);
+    let withUser = beforeUser;
+    if (!hidden) {
+      const userEntry = { kind: "message", id: `t${turn}u`, role: "user", content: prompt, ...(richText === undefined ? {} : { richText }), isStreaming: false, timestampMs, clientNonce };
+      withUser = await append(agentId, [{ provider, role: "user", content: prompt, ...(richText === undefined ? {} : { richText }), id: userEntry.id, clientNonce, timestampMs }]);
+      emitTranscript(agentId, "appended", userEntry);
+    }
     const userAbort = new AbortController();
     turnControllers.set(agentId, userAbort);
     const turnActivity = await beginActivity(agentId);
@@ -365,6 +432,7 @@ export function createCoordinatorInferenceRouter(options: {
       return { accepted: true, clientNonce, provider };
     }
     const messages = coalesceRoutedProviderMessages(withUser.agents[agentId] ?? []);
+    if (hidden) messages.push({ role: "user", content: prompt });
     let assistantSlot = 0;
     let assistantTimestampMs = now();
     let assistantId = `t${turn}s${assistantSlot}`;
@@ -382,11 +450,12 @@ export function createCoordinatorInferenceRouter(options: {
     };
     const drive = turnNeedsRoutedComputer(prompt, chromeAlreadyOpen);
     const listRoutedTools = async (): Promise<unknown[]> => {
+      const native = [...listRoutedSendToAgentToolDefinitions()];
       const plugins = await options.dispatchRemote("listRoutedMcpTools", {});
       const pluginList = Array.isArray(plugins) ? plugins : [];
-      if (!drive) return pluginList;
+      if (!drive) return mergeRoutedToolLists(native, pluginList);
       const computer = await options.dispatchRemote("listRoutedComputerTools", {});
-      return mergeRoutedToolLists(Array.isArray(computer) ? computer : [], pluginList);
+      return mergeRoutedToolLists(native, mergeRoutedToolLists(Array.isArray(computer) ? computer : [], pluginList));
     };
     let visibleText = "";
     let persistChain = Promise.resolve();
@@ -465,6 +534,85 @@ export function createCoordinatorInferenceRouter(options: {
     };
     let screenshotStreak = 0;
     let boxHandedOff = false;
+    const loadRoster = async () => {
+      const remote = await options.dispatchRemote("listAgents", {});
+      if (!Array.isArray(remote)) return [];
+      const roster: Array<{ id: string; name?: unknown; description?: unknown; isGroup?: unknown; remoteRoom?: unknown }> = [];
+      for (const row of remote) {
+        const record = asRecord(row);
+        if (record == null || typeof record.id !== "string" || record.id.length === 0) continue;
+        roster.push(record as { id: string; name?: unknown; description?: unknown; isGroup?: unknown; remoteRoom?: unknown });
+      }
+      return roster;
+    };
+    const deliverToAgent = async (
+      targetId: string,
+      message: string,
+      images: readonly RoutedAgentImage[],
+      priority: boolean,
+    ): Promise<string> => {
+      if (message.length === 0) return routedSendToAgentEmptyAck();
+      if (targetId === agentId) return routedSendToAgentSelfAck();
+      const roster = await loadRoster();
+      const target = roster.find(agent => agent.id === targetId);
+      if (target == null) return routedSendToAgentMissingAck(targetId);
+      if (target.isGroup === true) return routedSendToAgentGroupAck();
+      if (target.remoteRoom != null) return routedSendToAgentSharedRoomAck();
+      const sender = roster.find(agent => agent.id === agentId);
+      const senderName = typeof sender?.name === "string" && sender.name.trim().length > 0 ? sender.name.trim() : "An agent";
+      const targetName = typeof target.name === "string" && target.name.trim().length > 0 ? target.name.trim() : targetId;
+      const sentAt = now();
+      const outboundId = `peer-out-${randomUUID()}`;
+      const inboundId = `peer-in-${randomUUID()}`;
+      const toAgent = { id: targetId, name: targetName, kind: "agent" as const };
+      const fromAgent = { id: agentId, name: senderName };
+      await append(agentId, [{
+        provider,
+        role: "assistant",
+        content: message,
+        id: outboundId,
+        timestampMs: sentAt,
+        toAgent,
+        ...(images.length === 0 ? {} : { images }),
+      }]);
+      emitTranscript(agentId, "appended", {
+        kind: "send-message",
+        id: outboundId,
+        message: { type: "text", content: message },
+        toAgent,
+        timestampMs: sentAt,
+        ...(images.length === 0 ? {} : { images }),
+      });
+      await append(targetId, [{
+        provider,
+        role: "user",
+        content: message,
+        id: inboundId,
+        timestampMs: sentAt,
+        fromAgent,
+        ...(images.length === 0 ? {} : { images }),
+      }]);
+      emitTranscript(targetId, "appended", {
+        kind: "message",
+        id: inboundId,
+        role: "user",
+        content: message,
+        fromAgent,
+        isStreaming: false,
+        timestampMs: sentAt,
+        ...(images.length === 0 ? {} : { images }),
+      });
+      const wake = buildAgentInboundWakePrompt({
+        from: { id: agentId, name: senderName },
+        text: message,
+        ...(images.length === 0 ? {} : { images }),
+        ...(priority ? { priority: true } : {}),
+      });
+      if (priority) abortAgentTurn(targetId, "supersede");
+      enqueueTurn(targetId, provider, { agentId: targetId, prompt: wake, hidden: true, clientNonce: randomUUID() });
+      log(`send-to-agent ${targetId}${priority ? " priority" : ""}`);
+      return routedSendToAgentDeliveredAck(targetName, priority);
+    };
     const executeRoutedTool = async (definition: Record<string, any>, toolArgs: unknown, toolCallId: string) => {
       if (turnAbort?.aborted) {
         throw turnAbort.reason instanceof Error ? turnAbort.reason : new Error("The routed request timed out.");
@@ -479,6 +627,15 @@ export function createCoordinatorInferenceRouter(options: {
         activity: { kind: "tool", tool: name, callId: toolCallId, ...(action == null ? {} : { detail: action }) },
       });
       log(`tool-start ${name} ${toolCallId}${action == null ? "" : ` ${action}`}`);
+      if (isRoutedSendToAgentTool(definition)) {
+        const parsed = parseRoutedSendToAgentArgs(toolArgs);
+        if (parsed == null) return routedComputerMcpResult({ text: routedSendToAgentMissingAck(""), isError: true });
+        const ack = parsed.targetId === agentId
+          ? routedSendToAgentSelfAck()
+          : await deliverToAgent(parsed.targetId, parsed.message, parsed.images, parsed.priority);
+        log(`tool-finish ${name} ${Date.now() - started}ms`);
+        return routedComputerMcpResult({ text: ack });
+      }
       if (name === ROUTED_BOX_CHROME_TOOL_NAME && shouldSkipRoutedBoxChromeReload(routedBoxChromeUrl(toolArgs), chromeOpenByAgent.has(agentId))) {
         log("box-chrome-skip already-open");
         return routedComputerMcpResult({ text: routedBoxChromeAlreadyOpenMessage() });
@@ -545,12 +702,17 @@ export function createCoordinatorInferenceRouter(options: {
     log(`turn-start ${slot}`);
     try {
       const listedTools = await listRoutedTools();
-      const pluginTools = listedTools.some((tool) => !isRoutedComputerTool(asRecord(tool) ?? {}));
-      if (!pluginTools && !drive && promptLooksLikeComposioPluginUse(prompt)) {
+      const pluginTools = listedTools.some((tool) => {
+        const row = asRecord(tool) ?? {};
+        return !isRoutedComputerTool(row) && !isRoutedSendToAgentTool(row);
+      });
+      if (!hidden && !pluginTools && !drive && promptLooksLikeComposioPluginUse(prompt)) {
         await persistThenEmit(assistantId, COMPOSIO_TOOLS_MISSING_MESSAGE, assistantTimestampMs);
         log("turn-finish composio-tools-missing");
         return { accepted: true, clientNonce, provider };
       }
+      const roster = await loadRoster();
+      const systemExtra = renderAgentDirectorySystemPrompt(routedTeammatesOf(roster, agentId));
       if (drive) {
         const url = extractRoutedBrowserUrl(prompt);
         if (url != null && shouldSkipRoutedBoxChromeReload(url, chromeOpenByAgent.has(agentId))) {
@@ -598,7 +760,8 @@ export function createCoordinatorInferenceRouter(options: {
           maxSteps,
           slot,
           pluginTools,
-        } : { mcpServerUrl: session.bridge.url, onTextDelta, onProgress, abortSignal, maxSteps, slot, pluginTools });
+          systemExtra,
+        } : { mcpServerUrl: session.bridge.url, onTextDelta, onProgress, abortSignal, maxSteps, slot, pluginTools, systemExtra });
         let retries = 0;
         for (;;) {
           attemptHadProgress = false;
@@ -665,6 +828,27 @@ export function createCoordinatorInferenceRouter(options: {
     return { accepted: true, clientNonce, provider };
   };
 
+  const enqueueTurn = (
+    agentId: string,
+    provider: Exclude<SandInferenceProvider, "cursor">,
+    args: Record<string, unknown>,
+  ): Promise<unknown> => {
+    const previous = queues.get(agentId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => execute(provider, args)).catch(async (error) => {
+      const timestampMs = now();
+      const content = routedRouterErrorText(error);
+      if (agentId.length > 0) {
+        const id = `err-${randomUUID()}`;
+        await append(agentId, [{ provider, role: "assistant", content, id, timestampMs }]);
+        emitTranscript(agentId, "appended", { kind: "send-message", id, message: { type: "text", content }, timestampMs });
+      }
+    });
+    const queued = next.finally(() => { if (queues.get(agentId) === queued) queues.delete(agentId); });
+    queues.set(agentId, queued);
+    void queued.catch(() => undefined);
+    return queued;
+  };
+
   void load();
   return {
     provider(): SandInferenceProvider { return settings.getInferenceProvider(); },
@@ -726,19 +910,7 @@ export function createCoordinatorInferenceRouter(options: {
       const agentId = typeof record.agentId === "string" ? record.agentId : "";
       const clientNonce = typeof record.clientNonce === "string" ? record.clientNonce : randomUUID();
       if (agentId.length > 0) abortAgentTurn(agentId, "supersede");
-      const previous = queues.get(agentId) ?? Promise.resolve();
-      const next = previous.catch(() => undefined).then(() => execute(provider, { ...record, clientNonce })).catch(async (error) => {
-        const timestampMs = now();
-        const content = routedRouterErrorText(error);
-        if (agentId.length > 0) {
-          const id = `err-${randomUUID()}`;
-          await append(agentId, [{ provider, role: "assistant", content, id, timestampMs }]);
-          emitTranscript(agentId, "appended", { kind: "send-message", id, message: { type: "text", content }, timestampMs });
-        }
-      });
-      const queued = next.finally(() => { if (queues.get(agentId) === queued) queues.delete(agentId); });
-      queues.set(agentId, queued);
-      void queued.catch(() => undefined);
+      enqueueTurn(agentId, provider, { ...record, clientNonce });
       return { handled: true, value: { accepted: true, clientNonce, provider } };
     },
     overlayAgents,
