@@ -502,6 +502,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     "refreshFeatureFlags", "startRpcTraceWindow", "getAgentDefaultModel", "setAgentDefaultModel", "getComputerUseModel",
     "setComputerUseModel", "getHostPinnedAgents", "setHostPinnedAgents", "getHostSidebarSections", "setHostSidebarSections",
     "getAvailableModels", "getInferenceRouter", "setInferenceRouter", "listOpenRouterModels", "getBoxRuntime", "setBoxRuntime",
+    "setBoxAutoSuspendIdleMs", "suspendBox", "resumeBox",
     "getLocalProfile", "updateLocalProfile",
     "transcribeAudio", "getCursorAuthStatus", "loginCursor", "cancelCursorLogin", "logoutCursor", "updateCursorAccountName",
     "getCursorAvatar", "getCursorWeeklyUsage", "getCursorUsageSummary", "getCursorPrReviewPreferences", "getCursorPrivacyModeEnabled",
@@ -691,6 +692,9 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       setInferenceRouter: (provider, extra) => edge.setInferenceRouter({ provider, ...extra }),
       getBoxRuntime: () => edge.getBoxRuntime(),
       setBoxRuntime: (mode) => edge.setBoxRuntime({ mode }),
+      setBoxAutoSuspendIdleMs: (idleMs) => edge.setBoxAutoSuspendIdleMs({ idleMs }),
+      suspendBox: () => edge.suspendBox(),
+      resumeBox: () => edge.resumeBox(),
       getLocalProfile: () => edge.getLocalProfile(),
       async setLocalProfile(profile) {
         const status = await edge.updateLocalProfile(profile ?? {});

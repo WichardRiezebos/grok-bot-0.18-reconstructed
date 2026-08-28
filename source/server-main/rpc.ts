@@ -301,8 +301,11 @@ export function createRpcDispatcher(options: {
         };
       }
     },
-    getBoxRuntime: () => ({ mode: "docker", status: { available: true, running: true, ready: true, containerName: "box", image: "sand-box", detail: "Compose box service." } }),
+    getBoxRuntime: () => ({ mode: "docker", status: { available: true, running: true, ready: true, containerName: "box", image: "sand-box", detail: "Compose box service." }, idleMs: 0, suspended: false }),
     setBoxRuntime: () => stub("setBoxRuntime", "The Docker web runtime owns the box. Stop the Compose project to change it."),
+    setBoxAutoSuspendIdleMs: () => stub("setBoxAutoSuspendIdleMs", "The Docker web runtime owns the box."),
+    suspendBox: () => stub("suspendBox", "The Docker web runtime owns the box."),
+    resumeBox: () => stub("resumeBox", "The Docker web runtime owns the box."),
     transcribeAudio: () => stub("transcribeAudio"),
     getCursorAuthStatus: () => localAuth(),
     loginCursor: () => localAuth(),

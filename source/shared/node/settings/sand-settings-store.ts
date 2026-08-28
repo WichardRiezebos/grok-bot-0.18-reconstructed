@@ -12,6 +12,7 @@ import { isSandAgentModelSelection, type SandAgentModelSelection } from "../../a
 import { emptySandInferenceRouterUsage, isSandInferenceProvider, type SandInferenceProvider, type SandInferenceRouterUsage } from "../../inference-router.js";
 import { DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENROUTER_REASONING_EFFORT, normalizeOpenRouterModelId, normalizeOpenRouterReasoningEffort, type OpenRouterReasoningEffort } from "../../openrouter-models.js";
 import { DEFAULT_SAND_BOX_RUNTIME, isSandBoxRuntime, type SandBoxRuntime } from "../../box-runtime.js";
+import { normalizeBoxAutoSuspendIdleMs, type BoxAutoSuspendIdleMs } from "../../box-idle-suspend.js";
 import { normalizeLocalProfileEmail, normalizeLocalProfileName } from "../../local-profile.js";
 
 export const SETTINGS_VERSION = 1;
@@ -42,6 +43,7 @@ export interface SandStoredSettings {
   openRouterReasoningEffort?: OpenRouterReasoningEffort;
   openRouterComputerReasoningEffort?: OpenRouterReasoningEffort;
   boxRuntime?: SandBoxRuntime;
+  boxAutoSuspendIdleMs?: BoxAutoSuspendIdleMs;
   localProfileName?: string;
   localProfileEmail?: string;
   mcpCustomInstructionsAccountScope?: string; pinnedAgentIds?: string[]; sidebarSections?: SidebarSection[];
@@ -97,6 +99,7 @@ function parseSettings(value: unknown): SandStoredSettings | null {
   const openRouterComputerReasoningEffort = normalizeOpenRouterReasoningEffort(raw.openRouterComputerReasoningEffort);
   if (openRouterComputerReasoningEffort !== undefined) result.openRouterComputerReasoningEffort = openRouterComputerReasoningEffort;
   if (isSandBoxRuntime(raw.boxRuntime)) result.boxRuntime = raw.boxRuntime;
+  result.boxAutoSuspendIdleMs = normalizeBoxAutoSuspendIdleMs(raw.boxAutoSuspendIdleMs);
   const localProfileName = normalizeLocalProfileName(raw.localProfileName);
   if (localProfileName !== undefined) result.localProfileName = localProfileName;
   const localProfileEmail = normalizeLocalProfileEmail(raw.localProfileEmail);
@@ -173,6 +176,8 @@ export class SandSettingsStore {
   setThemePreference(value: SandThemePreference): void { this.update((s) => ({ ...s, themePreference: value })); }
   getBoxRuntime(): SandBoxRuntime { return "local-docker"; }
   setBoxRuntime(_value: SandBoxRuntime): void { this.update((s) => ({ ...s, boxRuntime: "local-docker" })); }
+  getBoxAutoSuspendIdleMs(): BoxAutoSuspendIdleMs { return normalizeBoxAutoSuspendIdleMs(this.load().boxAutoSuspendIdleMs); }
+  setBoxAutoSuspendIdleMs(value: BoxAutoSuspendIdleMs): void { this.update((s) => ({ ...s, boxAutoSuspendIdleMs: normalizeBoxAutoSuspendIdleMs(value) })); }
   getEgressTunnelEnabled(): boolean { return this.load().egressTunnelEnabled; }
   setEgressTunnelEnabled(value: boolean): void { this.update((s) => ({ ...s, egressTunnelEnabled: value })); }
   getWebauthnProxyEnabled(): boolean { return this.load().webauthnProxyEnabled; }

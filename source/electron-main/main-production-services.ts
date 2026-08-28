@@ -5,8 +5,9 @@ import { createCoordinatorMainLegs } from "./coordinator/coordinator-main-legs.j
 import { createEgressConnectionObserver } from "./box/remote-connector-egress.js";
 import { createDesktopGatewayDescriptorFastPath } from "./box/gateway-descriptor-store.js";
 import { createRemoteHostConnector, type SandRemoteHostConnector } from "./box/box-host-connector.js";
-import { createSettingsRoutedHostConnector } from "./box/local-docker-host-connector.js";
+import { createSettingsRoutedHostConnector, probeLocalDockerHealth, startLocalDockerBox, stopLocalDockerBox } from "./box/local-docker-host-connector.js";
 import { createSandClientPauseControl } from "./box/box-client-pause.js";
+import { createBoxIdleSuspendService, registerBoxIdleSuspendService } from "./box/box-idle-suspend.js";
 import { createSandMigrationWatcher } from "./box/box-migration-watcher.js";
 import type { RecreateResult } from "./box/box-recreate-commands.js";
 import { createProductionBoxRecovery, type BoxRecovery } from "./box/box-recovery.js";
@@ -477,6 +478,7 @@ export function createElectronMainProductionComposition(bindings: ElectronMainPr
   });
   type ProductionClientPauseControl = ReturnType<typeof createSandClientPauseControl<BoxConnectionInfo, { readonly preserveData: boolean; readonly force?: boolean }, RecreateResult, { readonly credential: string; readonly backendUrl: string; readonly expiresAtMs?: number }>>;
   let runtime: ElectronMainRuntime | undefined, settings: ProductionSettingsService | undefined, mainEdge: (MainEdge & Partial<ProductionDisposable>) | undefined, account: ProductionAccountService | undefined, cursorAccount: unknown, ensureTranscriptionManager: (() => Promise<unknown>) | undefined, experiments: ProductionExperimentsService | undefined, update: ProductionUpdateService | undefined, mcp: ProductionMcpService | undefined, telemetry: ProductionTelemetryService | undefined, notifications: ProductionNotificationsService | undefined, coordinator: ProductionCoordinatorService | undefined, egressTunnelController: EgressTunnelController | undefined, context: ProductionServiceContext | undefined, secretsStores: ReturnType<typeof createSecretsStores> | undefined, boxRecovery: ReturnType<typeof createProductionBoxRecovery> | undefined, clientPauseControl: ProductionClientPauseControl | undefined, boxVisibilityTracker: SandBoxVisibilityTracker | undefined, desktopMetricsRuntime: DesktopMetricsRuntime | undefined, productAnalytics: SandProductAnalytics | undefined, vncTrust: ReturnType<typeof registerElectronProductionVncTrust> | undefined;
+  let idleSuspend: ReturnType<typeof createBoxIdleSuspendService> | undefined;
   let sessionDeathSettlement: ReturnType<typeof wireDesktopUncleanExitSettlement> | undefined;
   const desktopLifecycle = createDesktopLifecycleReporter();
   const disposeLocalExecLifecycleReporter = installLocalExecLifecycleReporter(desktopLifecycle.reportDesktopLocalExecLifecycle);
@@ -644,6 +646,17 @@ export function createElectronMainProductionComposition(bindings: ElectronMainPr
         connectorEgress,
       );
       clientPauseControl = pauseControl;
+      idleSuspend = createBoxIdleSuspendService({
+        getIdleMs: () => requireValue(settings, "settings").settingsStore.getBoxAutoSuspendIdleMs(),
+        probe: () => probeLocalDockerHealth(requireValue(settings, "settings").settingsStore.settingsPath),
+        isMigrating: () => boxRecovery?.readBoxMigrationStatus() != null || boxVisibilityTracker?.isRecreateCoverOpen() === true,
+        stop: () => stopLocalDockerBox(),
+        start: () => startLocalDockerBox(requireValue(settings, "settings").settingsStore.settingsPath),
+        restartCoordinator: () => requireValue(coordinator, "coordinator").restartCoordinator(),
+        log: (message) => console.log(`[sand][box-idle] ${message}`),
+      });
+      registerBoxIdleSuspendService(idleSuspend);
+      track({ dispose() { idleSuspend?.dispose(); registerBoxIdleSuspendService(undefined); } });
       const rawRemoteConnector: SandRemoteHostConnector = createSettingsRoutedHostConnector(createRemoteHostConnector(
           backendClientOptions,
           env,
@@ -752,7 +765,10 @@ export function createElectronMainProductionComposition(bindings: ElectronMainPr
               token_source: failure.tokenInfo.source,
               resource: failure.resource,
             }),
-            onUserPresence: (isPresent) => requireValue(mainEdge, "main-edge").emit("vnc-user-presence", { isPresent }),
+            onUserPresence: (isPresent) => {
+              idleSuspend?.noteVncPresence(isPresent);
+              requireValue(mainEdge, "main-edge").emit("vnc-user-presence", { isPresent });
+            },
           });
           return vncTrust;
         },
@@ -806,6 +822,7 @@ export function createElectronMainProductionComposition(bindings: ElectronMainPr
       await experiments.ensureService();
       requireValue(clientPauseControl, "client-pause").reapplyAfterCoordinatorLaunch();
       boxRecovery.start();
+      idleSuspend?.start();
       requireValue(settings, "settings").initializeTheme();
       boxVisibilityTracker.noteAccountSlot(desktopStructuredLogAccountSlot(await account.getStatus()));
       if (options?.routeHostInput != null) {

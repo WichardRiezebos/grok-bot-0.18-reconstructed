@@ -354,6 +354,18 @@ export interface TelemetryDesktopBridge {
   noteSentryConversation(report: unknown): void;
 }
 
+export interface BoxRuntimeSnapshot {
+  readonly mode: string;
+  readonly status?: {
+    readonly available?: boolean;
+    readonly running?: boolean;
+    readonly ready?: boolean;
+    readonly detail?: string;
+  } | null;
+  readonly idleMs?: number;
+  readonly suspended?: boolean;
+}
+
 export interface AgentDesktopBridge {
   getPinnedAgents(): Promise<string[] | null>;
   setPinnedAgents(pinnedAgentIds: readonly string[]): Promise<string[] | null>;
@@ -366,6 +378,10 @@ export interface AgentDesktopBridge {
   getAvailableModels(): Promise<unknown>;
   getLocalProfile?(): Promise<{ readonly name: string; readonly email: string; readonly gravatarUrl: string | null }>;
   setLocalProfile?(profile: { readonly name?: string; readonly email?: string }): Promise<unknown>;
+  getBoxRuntime?(): Promise<BoxRuntimeSnapshot>;
+  setBoxAutoSuspendIdleMs?(idleMs: number): Promise<BoxRuntimeSnapshot>;
+  suspendBox?(): Promise<BoxRuntimeSnapshot>;
+  resumeBox?(): Promise<BoxRuntimeSnapshot>;
   clientPersistence: {
     read(key: string): Promise<string | null>;
     write(key: string, value: string): Promise<void>;

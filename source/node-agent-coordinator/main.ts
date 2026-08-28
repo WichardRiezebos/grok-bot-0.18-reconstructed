@@ -148,7 +148,9 @@ export async function composeCoordinator(dependencies: ComposeCoordinatorDepende
   }
 
   const gatewayClient = new CoordinatorGatewayClient({
-    resolveConnection: (signal) => hostSupervisor.ensureConnection(signal) as Promise<GatewayConnection>,
+    resolveConnection: (signal, options) => options?.demand === true
+      ? command(commands, "resolveGatewayConnection", { demand: true }) as Promise<GatewayConnection>
+      : hostSupervisor.ensureConnection(signal) as Promise<GatewayConnection>,
     onEvent: handleGatewaySseEvent,
     onTransportEvent: handleTransportEvent,
     onTransportRetry: () => hostSupervisor.invalidateHealthCache(),

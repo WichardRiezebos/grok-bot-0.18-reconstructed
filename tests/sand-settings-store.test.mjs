@@ -63,6 +63,51 @@ test("settings store drops the leftover qwen computer model so Computer inherits
   }
 });
 
+test("settings store clamps boxAutoSuspendIdleMs to the idle presets", async () => {
+  const loaded = await loadModule();
+  const directory = await mkdtemp(path.join(os.tmpdir(), "grok-settings-idle-"));
+  const settingsPath = path.join(directory, "settings.json");
+  try {
+    const store = new loaded.module.SandSettingsStore(settingsPath);
+    assert.equal(store.getBoxAutoSuspendIdleMs(), 30 * 60_000);
+
+    store.setBoxAutoSuspendIdleMs(0);
+    assert.equal(store.getBoxAutoSuspendIdleMs(), 0);
+    store.setBoxAutoSuspendIdleMs(15 * 60_000);
+    assert.equal(store.getBoxAutoSuspendIdleMs(), 15 * 60_000);
+    store.setBoxAutoSuspendIdleMs(60 * 60_000);
+    assert.equal(store.getBoxAutoSuspendIdleMs(), 60 * 60_000);
+    store.setBoxAutoSuspendIdleMs(2 * 60 * 60_000);
+    assert.equal(store.getBoxAutoSuspendIdleMs(), 2 * 60 * 60_000);
+    store.setBoxAutoSuspendIdleMs(20 * 60_000);
+    assert.equal(store.getBoxAutoSuspendIdleMs(), 15 * 60_000);
+    store.setBoxAutoSuspendIdleMs(-1);
+    assert.equal(store.getBoxAutoSuspendIdleMs(), 30 * 60_000);
+    store.setBoxAutoSuspendIdleMs(Number.NaN);
+    assert.equal(store.getBoxAutoSuspendIdleMs(), 30 * 60_000);
+
+    await writeFile(settingsPath, JSON.stringify({
+      version: 1,
+      mcpBoxServers: [],
+      autoUpdateWhenIdleOptIn: false,
+      egressTunnelEnabled: false,
+      webauthnProxyEnabled: true,
+      mcpCustomInstructions: {},
+      mcpCustomInstructionsByServerId: {},
+      mcpDisabledToolsByServerId: {},
+      conciergeConsent: "unset",
+      settingsMigrations: [],
+      boxAutoSuspendIdleMs: 45 * 60_000,
+    }));
+    const reloaded = new loaded.module.SandSettingsStore(settingsPath);
+    assert.equal(reloaded.getBoxAutoSuspendIdleMs(), 30 * 60_000);
+    assert.equal(JSON.parse(await readFile(settingsPath, "utf8")).boxAutoSuspendIdleMs, 30 * 60_000);
+  } finally {
+    await loaded.dispose();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("recordInferenceUsage re-reads settings before persisting the increment", async () => {
   const loaded = await loadModule();
   const directory = await mkdtemp(path.join(os.tmpdir(), "grok-settings-usage-"));

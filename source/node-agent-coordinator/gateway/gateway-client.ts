@@ -11,7 +11,7 @@ import {
   type IdleWatchdogPolicy,
   type RetryPolicy
 } from "../../internal/scheduling.js";
-import { findSandBoxBlockedMessage, SAND_CLIENT_PAUSE_BLOCKED_MESSAGE } from "../../shared/gateway-reachability.js";
+import { findSandBoxBlockedMessage, SAND_CLIENT_PAUSE_BLOCKED_MESSAGE, isBoxSuspendedError } from "../../shared/gateway-reachability.js";
 import {
   GATEWAY_API_PREFIX,
   GATEWAY_AUTH_SCHEME,
@@ -99,7 +99,7 @@ export function withAuth(headers: Record<string, string>, connection: GatewayCon
 }
 
 export interface CoordinatorGatewayClientOptions {
-  readonly resolveConnection: (signal?: AbortSignal) => Promise<GatewayConnection>;
+  readonly resolveConnection: (signal?: AbortSignal, options?: { readonly demand?: boolean }) => Promise<GatewayConnection>;
   readonly timing: GatewayClientTiming;
   readonly onEvent: (event: { readonly channel: string; readonly payload: unknown }) => void;
   readonly onTransportEvent?: (event: unknown) => void;
@@ -110,7 +110,7 @@ export interface CoordinatorGatewayClientOptions {
   readonly resolveTraceWindowTraceparent?: () => Promise<string | null | undefined>;
 }
 
-type RequestInit = { readonly signal?: AbortSignal; readonly requiredBaseUrl?: string };
+type RequestInit = { readonly signal?: AbortSignal; readonly requiredBaseUrl?: string; readonly demand?: boolean };
 
 export class CoordinatorGatewayClient {
   private isClosed = false;
@@ -205,10 +205,10 @@ export class CoordinatorGatewayClient {
     return { paused: this.clientPaused };
   }
 
-  async resolveConnection(signal?: AbortSignal): Promise<GatewayConnection> {
+  async resolveConnection(signal?: AbortSignal, options?: { readonly demand?: boolean }): Promise<GatewayConnection> {
     if (this.clientPaused) throw new SandGatewayUnreachableError("box_blocked", SAND_CLIENT_PAUSE_BLOCKED_MESSAGE, { causeSummary: "client-paused" });
     if (this.devInducedOffline) throw new SandGatewayUnreachableError("network", "gateway offline: induced by dev controls", { causeSummary: "dev-induced-offline" });
-    return await this.upstreamResolveConnection(signal);
+    return await this.upstreamResolveConnection(signal, options);
   }
 
   private notifyDisconnected(reason: string, cause: string | null): void {
@@ -250,7 +250,7 @@ export class CoordinatorGatewayClient {
     let fetchStartMonotonicMs = startMonotonicMs;
     let fetchStartEpochMs = 0;
     try {
-      connection = await this.resolveConnection(init?.signal);
+      connection = await this.resolveConnection(init?.signal, { demand: init?.demand !== false });
       if (init?.requiredBaseUrl != null && connection.baseUrl !== init.requiredBaseUrl) throw new GatewayEndpointChangedError();
       const root = this.traceWindowRoot();
       const child = root !== undefined && this.options.recordGatewayCommandSpan != null ? deriveChildTraceparent(root) : undefined;
@@ -370,7 +370,7 @@ export class CoordinatorGatewayClient {
     const clock = this.options.timing.clock;
     const connectStartEpochMs = clock.now();
     const connectStartMonotonicMs = clock.monotonicNow();
-    const connection = await this.resolveConnection();
+    const connection = await this.resolveConnection(undefined, { demand: true });
     state.baseUrl = connection.baseUrl;
     if (requiredBaseUrl != null && connection.baseUrl !== requiredBaseUrl) throw new Error("send retry aborted: the gateway endpoint changed mid-send");
     this.recordSendStage({ stage: "gateway-connect", attempt, clientNonce: args.clientNonce, traceparent: args.traceparent, startEpochMs: connectStartEpochMs, durationMs: clock.monotonicNow() - connectStartMonotonicMs });
@@ -396,8 +396,16 @@ export class CoordinatorGatewayClient {
   }
 
   private async foreverBoxStatusCommand(method: string, args: unknown, init?: RequestInit): Promise<unknown> {
-    const { result, connection } = await this.request(method, args, init);
-    return result == null ? null : proxifyForeverBoxStatus(result as ForeverBoxStatus, connection.vncProxy ?? null);
+    try {
+      const { result, connection } = await this.request(method, args, { ...init, demand: method !== "getForeverBoxStatus" });
+      return result == null ? null : proxifyForeverBoxStatus(result as ForeverBoxStatus, connection.vncProxy ?? null);
+    } catch (error) {
+      if (method === "getForeverBoxStatus" && isBoxSuspendedError(error)) {
+        const id = typeof args === "object" && args != null && typeof (args as { id?: unknown }).id === "string" ? (args as { id: string }).id : "";
+        return { agentId: id, state: "hibernated", vncUrl: null };
+      }
+      throw error;
+    }
   }
 
   private async runEventLoop(): Promise<void> {
@@ -428,7 +436,7 @@ export class CoordinatorGatewayClient {
       let handshake: { connection: GatewayConnection; reader: ReadableStreamDefaultReader<Uint8Array> };
       try {
         handshake = await this.options.timing.connectDeadline.run(async (deadlineSignal) => {
-          const resolved = await this.resolveConnection(deadlineSignal);
+          const resolved = await this.resolveConnection(deadlineSignal, { demand: false });
           connection = resolved;
           const response = await fetch(`${resolved.baseUrl}${GATEWAY_EVENTS_PATH}`, { headers: this.requestHeaders({ accept: "text/event-stream" }, resolved), signal: controller.signal });
           if (controller.signal.aborted || attemptGeneration !== this.reconnectGeneration) {

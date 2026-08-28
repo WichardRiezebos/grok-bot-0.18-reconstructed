@@ -272,6 +272,9 @@ export function createDesktopPreloadBridge(options: {
       listOpenRouterModels: () => edge("listOpenRouterModels"),
       getBoxRuntime: () => edge("getBoxRuntime"),
       setBoxRuntime: (mode: string) => edge("setBoxRuntime", { mode }),
+      setBoxAutoSuspendIdleMs: (idleMs: number) => edge("setBoxAutoSuspendIdleMs", { idleMs }),
+      suspendBox: () => edge("suspendBox"),
+      resumeBox: () => edge("resumeBox"),
       getLocalProfile: () => edge("getLocalProfile"),
       setLocalProfile: (profile: { readonly name?: string; readonly email?: string }) => edge("updateLocalProfile", profile),
       clientPersistence: {

@@ -12,7 +12,9 @@ import { DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, DEFAULT_OPENROUTER_MODEL,
 import { fetchOpenRouterCatalog, readOpenRouterApiKey } from "../shared/node/openrouter-models.js";
 import { getLocalInferenceCliStatus } from "../shared/node/inference-router-local.js";
 import { isSandBoxRuntime } from "../shared/box-runtime.js";
+import { normalizeBoxAutoSuspendIdleMs } from "../shared/box-idle-suspend.js";
 import { getLocalDockerStatus, startLocalDockerBox, stopLocalDockerBox } from "./box/local-docker-host-connector.js";
+import { getRegisteredBoxIdleSuspendService } from "./box/box-idle-suspend.js";
 
 export const MAIN_EDGE_UNSERVED = "main/unserved-method";
 export const MAIN_EDGE_UPDATE_UNAVAILABLE = "main/update-unavailable";
@@ -67,6 +69,14 @@ function invariant(condition: unknown, message: string): asserts condition { if 
 function invoke(target: UnknownRecord, method: string, ...args: unknown[]): unknown { const fn = target[method]; invariant(typeof fn === "function", `Missing main-edge dependency method ${method}.`); return Reflect.apply(fn, target, args); }
 function req(value: unknown): UnknownRecord { return typeof value === "object" && value != null && !Array.isArray(value) ? value as UnknownRecord : {}; }
 function detectTimeZone(): string | null { const value = Intl.DateTimeFormat().resolvedOptions().timeZone; return value.length > 0 ? value : null; }
+async function boxRuntimeSnapshot(deps: MainEdgeDeps) {
+  const mode = invoke(deps.settingsStore, "getBoxRuntime");
+  invariant(isSandBoxRuntime(mode), "Unknown box runtime.");
+  const idle = getRegisteredBoxIdleSuspendService();
+  const idleMs = normalizeBoxAutoSuspendIdleMs(invoke(deps.settingsStore, "getBoxAutoSuspendIdleMs"));
+  const status = await getLocalDockerStatus(String(Reflect.get(deps.settingsStore, "settingsPath")));
+  return { mode, status, idleMs, suspended: idle?.isSuspended() === true || idleMs > 0 && !status.running };
+}
 const sleep = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 export function createMainEdgeTrust() { return { appWindow: { kind: "require" as const, test: (sender: { isAppWindowTopFrame?: boolean }) => sender.isAppWindowTopFrame === true, denial: "The main edge is only accessible from the Sand app window's top frame." } }; }
@@ -239,8 +249,28 @@ export function createMainEdgeHandlers(deps: MainEdgeDeps): HandlerMap {
         };
       }
     },
-    getBoxRuntime: async () => { const mode = invoke(deps.settingsStore, "getBoxRuntime"); invariant(isSandBoxRuntime(mode), "Unknown box runtime."); return { mode, status: await getLocalDockerStatus(String(Reflect.get(deps.settingsStore, "settingsPath"))) }; },
-    setBoxRuntime: async (raw) => { const mode = req(raw).mode; invariant(isSandBoxRuntime(mode), "Unknown box runtime."); const settingsPath = String(Reflect.get(deps.settingsStore, "settingsPath")); const previous = invoke(deps.settingsStore, "getBoxRuntime"); invoke(deps.settingsStore, "setBoxRuntime", mode); try { if (mode === "local-docker") await startLocalDockerBox(settingsPath); else await stopLocalDockerBox(); } catch (error) { if (isSandBoxRuntime(previous)) invoke(deps.settingsStore, "setBoxRuntime", previous); throw error; } invoke(deps.boxRecovery, "restartCoordinator"); return { mode, status: await getLocalDockerStatus(settingsPath) }; },
+    getBoxRuntime: async () => await boxRuntimeSnapshot(deps),
+    setBoxRuntime: async (raw) => { const mode = req(raw).mode; invariant(isSandBoxRuntime(mode), "Unknown box runtime."); const settingsPath = String(Reflect.get(deps.settingsStore, "settingsPath")); const previous = invoke(deps.settingsStore, "getBoxRuntime"); invoke(deps.settingsStore, "setBoxRuntime", mode); try { if (mode === "local-docker") await startLocalDockerBox(settingsPath); else await stopLocalDockerBox(); } catch (error) { if (isSandBoxRuntime(previous)) invoke(deps.settingsStore, "setBoxRuntime", previous); throw error; } invoke(deps.boxRecovery, "restartCoordinator"); return await boxRuntimeSnapshot(deps); },
+    setBoxAutoSuspendIdleMs: async (raw) => {
+      const idleMs = normalizeBoxAutoSuspendIdleMs(req(raw).idleMs);
+      invoke(deps.settingsStore, "setBoxAutoSuspendIdleMs", idleMs);
+      getRegisteredBoxIdleSuspendService()?.noteIdleMsChanged();
+      return await boxRuntimeSnapshot(deps);
+    },
+    suspendBox: async () => {
+      const idle = getRegisteredBoxIdleSuspendService();
+      if (idle == null) await stopLocalDockerBox();
+      else await idle.suspend();
+      return await boxRuntimeSnapshot(deps);
+    },
+    resumeBox: async () => {
+      const idle = getRegisteredBoxIdleSuspendService();
+      if (idle == null) {
+        await startLocalDockerBox(String(Reflect.get(deps.settingsStore, "settingsPath")));
+        invoke(deps.boxRecovery, "restartCoordinator");
+      } else await idle.resume();
+      return await boxRuntimeSnapshot(deps);
+    },
 
     getEgressTunnelEnabled: () => invoke(deps.boxToggleStore, "getEgressTunnelEnabled"),
     setEgressTunnelEnabled: (raw) => { const enabled = req(raw).enabled === true; invoke(deps.boxToggleStore, "setEgressTunnelEnabled", enabled); invoke(egressController(deps), "setEnabled", enabled); deps.emitEgressTunnelChanged(enabled); return enabled; },
