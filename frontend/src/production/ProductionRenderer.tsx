@@ -93,6 +93,7 @@ import { WindowChrome } from "../recovered/features/window-chrome/view";
 import { createRootShellNavigationState, recordRootShellAgentSelection, resolveAdjacentAgentId, resolveIndexedAgentId, resolveRootShellNavigation, RootShellEmptyWorkspace, RootShellLoading } from "../recovered/features/window-chrome/root-shell-state";
 import { createGlobalKeyboardShortcutController, createRootShellShortcutActions } from "../recovered/features/window-chrome/global-keyboard-shortcuts";
 import { WindowStatusBadge } from "../recovered/features/window-chrome/status-badge";
+import { BrowserNotificationHost } from "../recovered/features/window-chrome/browser-notification-host";
 import { RootShellNotificationHost } from "../recovered/features/window-chrome/notification-host";
 import { AppAlertHost } from "../recovered/features/window-chrome/app-alert/view";
 import { WorkspaceIndicator } from "../recovered/features/window-chrome/workspace-indicator";
@@ -3424,6 +3425,7 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
       <WorkspaceIndicator isFullscreen={windowFullscreen} label={workspaceRoute == null ? activeAgent?.name ?? null : null} />
       {bridge == null ? null : <WindowStatusBadge isFullscreen={windowFullscreen} transport={transport} />}
       <RootShellNotificationHost bridge={bridge} client={client} />
+      <BrowserNotificationHost client={client} openAgent={openAgent} />
       <SettingsNoticeView
         notice={settingsNoticeSnapshot == null ? null : { kind: settingsNoticeSnapshot.kind, text: settingsNoticeSnapshot.message }}
         onDismiss={() => settingsNoticeController.reset()}

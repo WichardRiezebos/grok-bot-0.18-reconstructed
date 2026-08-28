@@ -1,4 +1,5 @@
 import type { CoordinatorSourceEventListener, RawPortCoordinatorSource } from "../../../runtime/coordinator-source";
+import { ensureBrowserNotificationPermission } from "../../window-chrome/browser-notifications";
 
 // @evidence src/app/dist/renderer/assets/index-UbX-y3il.js#byteOffset=2291210 (title availability)
 // @evidence src/app/dist/renderer/assets/index-UbX-y3il.js#byteOffset=2766045 (Agent Settings fields and notification toggle)
@@ -175,6 +176,7 @@ export function createAgentSettingsController(source: AgentSettingsSource, initi
       error = null;
       emit();
       try {
+        if (isEnabled) await ensureBrowserNotificationPermission();
         await source.setAgentNotifyOnUpdates({ id: current.id, isEnabled });
         if (disposed || requestGeneration !== generation) return false;
         current = { ...current, notifyOnUpdatesEnabled: isEnabled };
