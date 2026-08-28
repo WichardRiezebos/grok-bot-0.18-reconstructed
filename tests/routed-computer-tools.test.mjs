@@ -45,15 +45,24 @@ test("routed computer catalog includes Computer and request_box_help", async () 
     assert.equal(loaded.module.extractRoutedBrowserUrl("order cheese from plus.nl in basket"), "https://plus.nl/");
     assert.equal(loaded.module.extractRoutedBrowserUrl("open https://www.plus.nl/s?search=kaas"), "https://www.plus.nl/s?search=kaas");
     assert.equal(loaded.module.extractRoutedBrowserUrl("just say hi"), undefined);
+    assert.equal(loaded.module.isRoutedBrowserOriginHomeUrl("https://plus.nl/"), true);
+    assert.equal(loaded.module.isRoutedBrowserOriginHomeUrl("https://www.plus.nl/s?search=kaas"), false);
+    assert.equal(loaded.module.shouldSkipRoutedBoxChromeReload("https://plus.nl/", true), true);
+    assert.equal(loaded.module.shouldSkipRoutedBoxChromeReload("https://plus.nl/s?q=pasta", true), false);
+    assert.equal(loaded.module.shouldSkipRoutedBoxChromeReload("https://plus.nl/", false), false);
     assert.equal(
       loaded.module.buildBoxChromeCommand("https://plus.nl/"),
-      "box-chrome 'https://plus.nl/' && timeout 25 xdotool search --sync --onlyvisible --class box-chrome >/dev/null",
+      "{ xdotool search --onlyvisible --class box-chrome >/dev/null && exit 0; }; box-chrome 'https://plus.nl/' && timeout 25 xdotool search --sync --onlyvisible --class box-chrome >/dev/null",
     );
     assert.equal(
       loaded.module.buildBoxChromeCommand("https://plus.nl/", 2),
-      "DISPLAY=:2 box-chrome 'https://plus.nl/' && DISPLAY=:2 timeout 25 xdotool search --sync --onlyvisible --class box-chrome >/dev/null",
+      "{ DISPLAY=:2 xdotool search --onlyvisible --class box-chrome >/dev/null && exit 0; }; DISPLAY=:2 box-chrome 'https://plus.nl/' && DISPLAY=:2 timeout 25 xdotool search --sync --onlyvisible --class box-chrome >/dev/null",
     );
-    assert.ok(loaded.module.buildBoxChromeCommand(null).startsWith("box-chrome --new-window && "));
+    assert.equal(
+      loaded.module.buildBoxChromeCommand("https://plus.nl/s?search=kaas"),
+      "box-chrome 'https://plus.nl/s?search=kaas' && timeout 25 xdotool search --sync --onlyvisible --class box-chrome >/dev/null",
+    );
+    assert.ok(loaded.module.buildBoxChromeCommand(null).startsWith("{ xdotool search --onlyvisible --class box-chrome >/dev/null && exit 0; }; box-chrome --new-window && "));
     assert.equal(loaded.module.boxChromeDisplayPrefix(1), "DISPLAY=:1 ");
     assert.equal(loaded.module.boxChromeDisplayPrefix(undefined), "");
     assert.ok(loaded.module.ROUTED_COMPUTER_INPUT_SCHEMA.required.includes("x"));
@@ -178,7 +187,7 @@ test("routed Computer execute is distinct from MCP and returns MCP-shaped image 
     }, { agentId: "agent-1", name: "box_chrome", args: { url: "https://plus.nl/" } });
     assert.equal(chrome.result.case, "success");
     assert.deepEqual(shellCalls, [
-      "DISPLAY=:2 box-chrome 'https://plus.nl/' && DISPLAY=:2 timeout 25 xdotool search --sync --onlyvisible --class box-chrome >/dev/null",
+      "{ DISPLAY=:2 xdotool search --onlyvisible --class box-chrome >/dev/null && exit 0; }; DISPLAY=:2 box-chrome 'https://plus.nl/' && DISPLAY=:2 timeout 25 xdotool search --sync --onlyvisible --class box-chrome >/dev/null",
     ]);
     assert.match(chrome.result.value.content[0].content.value.text, /Opened Chrome/);
     assert.match(chrome.result.value.content[0].content.value.text, /window is now visible/);

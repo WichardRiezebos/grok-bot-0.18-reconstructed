@@ -122,7 +122,7 @@ export function openAiStrictSchemaGap(schema: unknown, path = "$"): string | nul
 export const ROUTED_COMPUTER_TOOL_DESCRIPTION = [
   "Drive this agent's box desktop — the live screen shown in the UI as this agent's screen.",
   "Actions: screenshot, click, move, drag, type, key, scroll, wait.",
-  "Chrome starts with no visible window. Call box_chrome with the destination URL before driving a site. Never claim a page is loaded, searched, or clicked unless the latest Computer screenshot shows that window.",
+  "Chrome starts with no visible window. Call box_chrome with the destination URL only when Chrome is not already on screen. Never reopen a site homepage — that wipes search, filters, and the basket. Once Chrome is visible, keep driving that window. Never claim a page is loaded, searched, or clicked unless the latest Computer screenshot shows that window.",
   "Work in a see-act-verify loop: screenshot (or read the screenshot returned after every Computer call), then act, then read the fresh screen.",
   "Use coordinates from the latest screenshot. Never click blind off a remembered layout.",
   "Once Chrome is visible, put known URLs in the address bar (key Ctrl+l, type the URL, key Return) rather than hunting through menus.",
@@ -135,7 +135,8 @@ export const ROUTED_COMPUTER_TOOL_DESCRIPTION = [
 export const ROUTED_BOX_CHROME_TOOL_DESCRIPTION = [
   "Open the visible box Chrome window on this agent's display — the live screen in the UI.",
   "Pass the destination URL when you know it so Chrome opens straight there; omit url for a blank window.",
-  "The desktop starts with no browser window. Call this before Computer clicks on a site.",
+  "The desktop starts with no browser window. Call this only when Chrome is not already visible.",
+  "Do not pass a site origin (plus.nl, example.com) again after Chrome is open — that reloads the homepage and loses search and basket state. Type in the page or put a deep URL in the address bar instead.",
   "Confirm with a Computer screenshot. Never claim the site is on screen until that screenshot shows Chrome.",
 ].join(" ");
 
@@ -368,6 +369,39 @@ export function routedBoxHelpHandoff(value: unknown): { readonly requestId: stri
   return { requestId, instruction };
 }
 
+export function routedBoxChromeAlreadyOpenMessage(): string {
+  return "Chrome is already visible on this desktop. Do not reopen the site homepage — that wipes search and basket. Screenshot with Computer and continue from the current page.";
+}
+
+export function parseRoutedBrowserUrl(value: string): URL | undefined {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  try {
+    const parsed = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+export function isRoutedBrowserOriginHomeUrl(url: string): boolean {
+  const parsed = parseRoutedBrowserUrl(url);
+  if (parsed == null) return false;
+  return (parsed.pathname === "/" || parsed.pathname === "") && parsed.search === "" && parsed.hash === "";
+}
+
+export function routedBoxChromeUrl(args: unknown): string | undefined {
+  const record = asRecord(args);
+  return typeof record?.url === "string" && record.url.trim().length > 0 ? record.url.trim() : undefined;
+}
+
+export function shouldSkipRoutedBoxChromeReload(url: string | undefined, chromeAlreadyOpen: boolean): boolean {
+  if (!chromeAlreadyOpen) return false;
+  if (url == null || url.length === 0) return true;
+  return isRoutedBrowserOriginHomeUrl(url);
+}
+
 export function extractRoutedBrowserUrl(text: string): string | undefined {
   const trimmed = text.trim();
   if (trimmed.length === 0) return undefined;
@@ -407,6 +441,12 @@ export function buildBoxChromeCommand(url?: string | null, windowIndex?: number 
   // Block until the Chrome window is actually visible so the model's first
   // screenshot after this tool does not race a ~15s cold start.
   const wait = `${prefix}timeout 25 xdotool search --sync --onlyvisible --class box-chrome >/dev/null`;
+  const visible = `${prefix}xdotool search --onlyvisible --class box-chrome >/dev/null`;
+  // Re-launching a site origin (plus.nl/) while Chrome is already up reloads
+  // the homepage and wipes search / basket. Deep URLs still navigate.
+  if (url == null || url.trim().length === 0 || isRoutedBrowserOriginHomeUrl(url)) {
+    return `{ ${visible} && exit 0; }; ${launch} && ${wait}`;
+  }
   return `${launch} && ${wait}`;
 }
 

@@ -746,6 +746,15 @@ test("computer turns auto-open box Chrome when the user named a site", async () 
     }
     const auto = remoteCalls.find((call) => call.method === "executeRoutedComputerTool" && call.args?.name === "box_chrome");
     assert.equal(auto?.args?.args?.url, "https://plus.nl/");
+    remoteCalls.length = 0;
+    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "keep going on plus.nl", clientNonce: "n2" });
+    for (let i = 0; i < 80; i++) {
+      const done = events.filter((event) => event.family === "transcript" && event.payload?.entry?.streaming === false).length >= 2;
+      if (done) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const secondAuto = remoteCalls.find((call) => call.method === "executeRoutedComputerTool" && call.args?.name === "box_chrome");
+    assert.equal(secondAuto, undefined);
     const roster = await router.dispatch("listAgents", {});
     const row = roster.value.find((agent) => agent.id === "agent-1");
     assert.equal(row.lastEntry.kind, "text");

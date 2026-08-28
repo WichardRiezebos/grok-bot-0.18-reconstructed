@@ -16,11 +16,14 @@ import {
   isRoutedComputerTool,
   mergeRoutedToolLists,
   nextComputerScreenshotStreak,
+  routedBoxChromeAlreadyOpenMessage,
+  routedBoxChromeUrl,
   routedBoxHelpHandoff,
   routedComputerActionName,
   routedComputerBlockedByHandoffMessage,
   routedComputerMcpResult,
   routedToolsIncludeComputer,
+  shouldSkipRoutedBoxChromeReload,
 } from "../shared/routed-computer-tools.js";
 import type { SandInferenceProvider } from "../shared/inference-router.js";
 import { SandSettingsStore } from "../shared/node/settings/sand-settings-store.js";
@@ -162,6 +165,7 @@ export function createCoordinatorInferenceRouter(options: {
   const now = options.now ?? Date.now;
   const queues = new Map<string, Promise<unknown>>();
   const streamingByAgent = new Map<string, { readonly id: string; readonly content: string; readonly timestampMs: number }>();
+  const chromeOpenByAgent = new Set<string>();
   let storeLock = Promise.resolve();
   let snapshot: Store = EMPTY_STORE;
   const remember = (store: Store): Store => {
@@ -271,6 +275,7 @@ export function createCoordinatorInferenceRouter(options: {
     }, -1);
     const turn = Math.max(remoteTurn, localTurn) + 1;
     const userEntry = { kind: "message", id: `t${turn}u`, role: "user", content: prompt, ...(richText === undefined ? {} : { richText }), isStreaming: false, timestampMs, clientNonce };
+    if ((beforeUser.agents[agentId] ?? []).length > 0) chromeOpenByAgent.add(agentId);
     const withUser = await append(agentId, [{ provider, role: "user", content: prompt, ...(richText === undefined ? {} : { richText }), id: userEntry.id, clientNonce, timestampMs }]);
     emitTranscript(agentId, "appended", userEntry);
     const turnActivity = await beginActivity(agentId);
@@ -390,6 +395,10 @@ export function createCoordinatorInferenceRouter(options: {
         activity: { kind: "tool", tool: name, callId: toolCallId, ...(action == null ? {} : { detail: action }) },
       });
       log(`tool-start ${name} ${toolCallId}${action == null ? "" : ` ${action}`}`);
+      if (name === ROUTED_BOX_CHROME_TOOL_NAME && shouldSkipRoutedBoxChromeReload(routedBoxChromeUrl(toolArgs), chromeOpenByAgent.has(agentId))) {
+        log("box-chrome-skip already-open");
+        return routedComputerMcpResult({ text: routedBoxChromeAlreadyOpenMessage() });
+      }
       if (isRoutedComputerTool(definition) && boxHandedOff) {
         log("tool-stop box-handoff");
         return routedComputerMcpResult({ text: routedComputerBlockedByHandoffMessage(), isError: true });
@@ -439,6 +448,7 @@ export function createCoordinatorInferenceRouter(options: {
           emitTranscript(agentId, "appended", handoffEntry);
           log(`box-handoff ${handoff.requestId}`);
         }
+        if (name === ROUTED_BOX_CHROME_TOOL_NAME) chromeOpenByAgent.add(agentId);
         log(`tool-finish ${name} ${Date.now() - started}ms`);
         return result;
       } catch (error) {
@@ -453,7 +463,9 @@ export function createCoordinatorInferenceRouter(options: {
       const hasComputer = routedToolsIncludeComputer(listedTools);
       if (hasComputer) {
         const url = extractRoutedBrowserUrl(prompt);
-        if (url != null) {
+        if (url != null && shouldSkipRoutedBoxChromeReload(url, chromeOpenByAgent.has(agentId))) {
+          log("box-chrome-auto-skip already-open");
+        } else if (url != null) {
           log(`box-chrome-auto ${url}`);
           turnActivity.reveal({ composing: false, activity: { kind: "tool", tool: ROUTED_BOX_CHROME_TOOL_NAME, callId: `box-chrome-auto-t${turn}` } });
           try {
@@ -464,6 +476,7 @@ export function createCoordinatorInferenceRouter(options: {
               toolCallId: `box-chrome-auto-t${turn}`,
               agentId,
             });
+            chromeOpenByAgent.add(agentId);
           } catch (error) {
             log(`box-chrome-auto-error ${error instanceof Error ? error.message : String(error)}`);
           }
