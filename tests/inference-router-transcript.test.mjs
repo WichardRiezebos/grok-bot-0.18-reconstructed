@@ -10,15 +10,19 @@ import { build } from "esbuild";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 async function loadModule() {
-  const temporary = await mkdtemp(path.join(os.tmpdir(), "grok-inference-router-transcript-"));
+  const cacheRoot = path.join(repoRoot, "node_modules/.cache");
+  await mkdir(cacheRoot, { recursive: true });
+  const temporary = await mkdtemp(path.join(cacheRoot, "grok-inference-router-transcript-"));
   const output = path.join(temporary, "inference-router.mjs");
   await build({
+    absWorkingDir: repoRoot,
     entryPoints: [path.join(repoRoot, "source/node-agent-coordinator/inference-router.ts")],
     outfile: output,
     bundle: true,
     format: "esm",
     platform: "node",
     target: "node22",
+    packages: "external",
   });
   const module = await import(`${pathToFileURL(output).href}?${Date.now()}`);
   return { module, dispose: () => rm(temporary, { recursive: true, force: true }) };
@@ -876,6 +880,248 @@ test("a persist failure mid-turn settles an error bubble without crashing", asyn
     assert.match(String(settled.payload.entry.message.content), /Router error|EISDIR|hello/i);
   } finally {
     process.off("unhandledRejection", onUnhandled);
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("Computer tools attach only on Drive turns", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-slot-gate-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), routerSettings());
+    const remoteCalls = [];
+    const providerCalls = [];
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: () => {},
+      dispatchRemote: async (method) => {
+        remoteCalls.push(method);
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") return [{ id: "agent-1" }];
+        if (method === "listRoutedComputerTools") {
+          return [{ name: "Computer", providerIdentifier: "grok-bot-computer", toolName: "Computer" }];
+        }
+        if (method === "listRoutedMcpTools") return [{ name: "Gmail_send", providerIdentifier: "plugin-gmail" }];
+        if (method === "executeRoutedComputerTool") return { ok: true };
+        return {};
+      },
+      runProviderText: async (_provider, _messages, options) => {
+        providerCalls.push({
+          slot: options.slot,
+          toolNames: (options.tools ?? []).map((tool) => tool.name),
+        });
+        return "ok";
+      },
+    });
+    const waitForCall = async (count) => {
+      for (let i = 0; i < 80; i++) {
+        if (providerCalls.length >= count) return;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error(`expected ${count} provider calls, got ${providerCalls.length}`);
+    };
+    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "hello", clientNonce: "n1" });
+    await waitForCall(1);
+    assert.equal(providerCalls.at(-1).slot, "think");
+    assert.equal(providerCalls.at(-1).toolNames.includes("Computer"), false);
+    assert.equal(providerCalls.at(-1).toolNames.includes("Gmail_send"), true);
+    assert.equal(remoteCalls.includes("listRoutedComputerTools"), false);
+
+    remoteCalls.length = 0;
+    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "order cheese from plus.nl", clientNonce: "n2" });
+    await waitForCall(2);
+    assert.equal(providerCalls.at(-1).slot, "drive");
+    assert.equal(providerCalls.at(-1).toolNames.includes("Computer"), true);
+    assert.equal(remoteCalls.includes("listRoutedComputerTools"), true);
+
+    remoteCalls.length = 0;
+    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "click the cookie banner", clientNonce: "n3" });
+    await waitForCall(3);
+    assert.equal(providerCalls.at(-1).slot, "drive");
+    assert.equal(providerCalls.at(-1).toolNames.includes("Computer"), true);
+
+    remoteCalls.length = 0;
+    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "hello again", clientNonce: "n4" });
+    await waitForCall(4);
+    assert.equal(providerCalls.at(-1).slot, "drive");
+    assert.equal(providerCalls.at(-1).toolNames.includes("Computer"), true);
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+const OPENROUTER_SETTINGS = {
+  version: 1,
+  mcpBoxServers: [],
+  autoUpdateWhenIdleOptIn: false,
+  egressTunnelEnabled: false,
+  webauthnProxyEnabled: true,
+  mcpCustomInstructions: {},
+  mcpCustomInstructionsByServerId: {},
+  mcpDisabledToolsByServerId: {},
+  conciergeConsent: "unset",
+  settingsMigrations: [],
+  inferenceProvider: "openrouter",
+};
+
+test("stopRoutedTurn with no in-flight turn reports stopped false", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-idle-stop-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), JSON.stringify(OPENROUTER_SETTINGS));
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: () => {},
+      dispatchRemote: async () => ({}),
+    });
+    const idle = await router.dispatch("stopRoutedTurn", { agentId: "agent-1" });
+    assert.deepEqual(idle, { handled: true, value: { stopped: false } });
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("stopRoutedTurn aborts an in-flight Drive turn with Stopped.", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-stop-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), JSON.stringify(OPENROUTER_SETTINGS));
+    const events = [];
+    let started;
+    const startedTurn = new Promise((resolve) => { started = resolve; });
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: (family, payload) => events.push({ family, payload }),
+      dispatchRemote: async (method) => {
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") return [{ id: "agent-1" }];
+        if (method === "listRoutedComputerTools") return [{ name: "observe_ui", providerIdentifier: "grok-bot-computer" }];
+        if (method === "listRoutedMcpTools") return [];
+        return {};
+      },
+      runProviderText: async (_provider, _messages, options) => {
+        options.onProgress?.("Using observe_ui…");
+        started();
+        await new Promise((_, reject) => {
+          const signal = options.abortSignal;
+          if (signal?.aborted) {
+            reject(signal.reason instanceof Error ? signal.reason : new Error("aborted"));
+            return;
+          }
+          signal?.addEventListener("abort", () => {
+            reject(signal.reason instanceof Error ? signal.reason : new Error("aborted"));
+          }, { once: true });
+        });
+        return "should-not-finish";
+      },
+    });
+    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "quote the heading on plus.nl", clientNonce: "n1" });
+    await Promise.race([startedTurn, new Promise((_, reject) => setTimeout(() => reject(new Error("turn did not start")), 2_000))]);
+    const stopStarted = Date.now();
+    const stop = await router.dispatch("stopRoutedTurn", { agentId: "agent-1" });
+    assert.deepEqual(stop, { handled: true, value: { stopped: true } });
+    let assistant = [];
+    for (let i = 0; i < 80; i++) {
+      assistant = events
+        .filter((event) => event.family === "transcript" && event.payload?.entry?.kind === "send-message")
+        .map((event) => event.payload.entry)
+        .filter((entry) => entry.streaming === false && entry.message?.content === "Stopped.");
+      if (assistant.length > 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.ok(Date.now() - stopStarted < 1_000, `stop settled in ${Date.now() - stopStarted}ms`);
+    assert.equal(assistant.at(-1)?.message?.content, "Stopped.");
+    const stillRunning = events
+      .filter((event) => event.family === "agents")
+      .flatMap((event) => event.payload.agents ?? [])
+      .filter((agent) => agent.id === "agent-1")
+      .at(-1);
+    assert.equal(stillRunning?.isRunning, false);
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("a second sendPrompt while Drive is running supersedes instead of overlapping", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-supersede-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), JSON.stringify(OPENROUTER_SETTINGS));
+    const events = [];
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    let calls = 0;
+    let firstStarted;
+    const firstTurn = new Promise((resolve) => { firstStarted = resolve; });
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: (family, payload) => events.push({ family, payload }),
+      dispatchRemote: async (method) => {
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") return [{ id: "agent-1" }];
+        if (method === "listRoutedComputerTools") return [{ name: "Computer", providerIdentifier: "grok-bot-computer" }];
+        if (method === "listRoutedMcpTools") return [];
+        if (method === "executeRoutedComputerTool") return { ok: true };
+        return {};
+      },
+      runProviderText: async (_provider, _messages, options) => {
+        calls += 1;
+        concurrent += 1;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        const mine = calls;
+        try {
+          if (mine === 1) {
+            firstStarted();
+            await new Promise((_, reject) => {
+              const signal = options.abortSignal;
+              if (signal?.aborted) {
+                reject(signal.reason instanceof Error ? signal.reason : new Error("aborted"));
+                return;
+              }
+              signal?.addEventListener("abort", () => {
+                reject(signal.reason instanceof Error ? signal.reason : new Error("aborted"));
+              }, { once: true });
+            });
+          }
+          return "second turn done";
+        } finally {
+          concurrent -= 1;
+        }
+      },
+    });
+    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "open plus.nl", clientNonce: "n1" });
+    await Promise.race([firstTurn, new Promise((_, reject) => setTimeout(() => reject(new Error("first turn did not start")), 2_000))]);
+    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "now quote the heading", clientNonce: "n2" });
+    let settled = [];
+    for (let i = 0; i < 80; i++) {
+      settled = events
+        .filter((event) => event.family === "transcript" && event.payload?.entry?.kind === "send-message")
+        .map((event) => event.payload.entry)
+        .filter((entry) => entry.streaming === false && String(entry.message?.content).includes("second turn done"));
+      if (settled.length > 0 && concurrent === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(maxConcurrent, 1);
+    assert.equal(calls, 2);
+    assert.equal(settled.at(-1)?.message?.content, "second turn done");
+    const stopped = events
+      .filter((event) => event.family === "transcript")
+      .map((event) => event.payload?.entry?.message?.content)
+      .filter((content) => content === "Stopped.");
+    assert.equal(stopped.length, 0);
+  } finally {
     await loaded.dispose();
     await rm(dataDir, { recursive: true, force: true });
   }

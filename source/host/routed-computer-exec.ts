@@ -30,13 +30,22 @@ import {
   ROUTED_BOX_HELP_TOOL_NAME,
   ROUTED_COMPUTER_SCREENSHOT_MIME,
   ROUTED_COMPUTER_TOOL_NAME,
+  boxChromeDisplayPrefix,
   buildBoxChromeCommand,
   cookieConsentBoxHelpMessage,
   isCookieConsentBoxHelp,
+  isRoutedUiTool,
   listRoutedComputerToolDefinitions,
   routedComputerMcpResult,
   type RoutedComputerImage,
 } from "../shared/routed-computer-tools.js";
+import {
+  SAND_UI_CDP_PORT_BASE,
+  SAND_UI_DRIVER_BOX_DIR,
+  SAND_UI_DRIVER_BOX_PATH,
+  SAND_UI_DRIVER_SOURCE,
+  SAND_UI_RESULT_MARKER,
+} from "./runner/tools/sand-ui-driver-source.js";
 
 export { buildBoxChromeCommand };
 
@@ -104,6 +113,38 @@ function screenshotImage(result: ComputerUseResult): RoutedComputerImage | undef
     : undefined;
 }
 
+export function parseSandUiDriverStdout(stdout: string): { readonly ok: boolean; readonly text: string } | undefined {
+  const index = stdout.lastIndexOf(SAND_UI_RESULT_MARKER);
+  if (index < 0) return undefined;
+  const line = stdout.slice(index + SAND_UI_RESULT_MARKER.length).trim().split("\n")[0] ?? "";
+  try {
+    const parsed = JSON.parse(line) as { ok?: unknown; text?: unknown };
+    return typeof parsed.text === "string" ? { ok: parsed.ok !== false, text: parsed.text } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function buildSandUiDriverCommand(
+  op: string,
+  args: unknown,
+  windowIndex?: number | null,
+  toolCallId = "",
+): string {
+  const display = windowIndex != null && Number.isInteger(windowIndex) && windowIndex >= 1 ? windowIndex : 0;
+  const prefix = boxChromeDisplayPrefix(windowIndex);
+  const request = Buffer.from(JSON.stringify({
+    op,
+    display,
+    cdpPort: SAND_UI_CDP_PORT_BASE + display,
+    args: args ?? {},
+    toolCallId,
+  }), "utf8").toString("base64");
+  const source = Buffer.from(SAND_UI_DRIVER_SOURCE, "utf8").toString("base64");
+  const install = `mkdir -p ${SAND_UI_DRIVER_BOX_DIR} && { test -s ${SAND_UI_DRIVER_BOX_PATH} || printf '%s' '${source}' | base64 -d > ${SAND_UI_DRIVER_BOX_PATH}; }`;
+  return `${prefix}${install} && ${prefix}node ${SAND_UI_DRIVER_BOX_PATH} ${request}`;
+}
+
 export interface RoutedComputerExecHost {
   readonly box: {
     ensureReady(context: unknown, agentId: string): Promise<{ readonly remoteAccessor?: unknown }>;
@@ -153,7 +194,7 @@ export async function executeRoutedComputerTool(
         });
       }
       return routedComputerMcpResult({
-        text: "Handed the box to the user. They have control now; wait for them to hand it back, then take a Computer screenshot and continue.",
+        text: "Handed the box to the user. They have control now; wait for them to hand it back, then call observe_ui and continue.",
         handoff: { requestId: outcome.requestId, instruction: args.instruction },
       });
     } catch (error) {
@@ -196,9 +237,51 @@ export async function executeRoutedComputerTool(
       }
       return routedComputerMcpResult({
         text: url.length > 0
-          ? `Opened Chrome on the box desktop at ${url}; the window is now visible. Confirm with a Computer screenshot before claiming the page is on screen.`
-          : "Opened Chrome on the box desktop; the window is now visible. Confirm with a Computer screenshot before claiming a page is on screen.",
+          ? `Opened Chrome on the box desktop at ${url}; the window is now visible. Confirm with observe_ui before claiming the page is on screen.`
+          : "Opened Chrome on the box desktop; the window is now visible. Confirm with observe_ui before claiming a page is on screen.",
       });
+    } catch (error) {
+      return routedComputerMcpResult({
+        text: error instanceof Error ? error.message : String(error),
+        isError: true,
+      });
+    }
+  }
+  if (name === "launch_browser" || isRoutedUiTool(name)) {
+    if (name === "launch_browser") {
+      return routedComputerMcpResult({
+        text: "launch_browser is disabled. Call box_chrome to open the existing box Chrome window the user can see.",
+        isError: true,
+      });
+    }
+    try {
+      const context = createContext().with(loggerKey, { log: () => {} });
+      const connection = await host.box.ensureReady(context, agentId);
+      const accessor = connection.remoteAccessor as ResourceAccessor<RemoteExecManager> | undefined;
+      if (accessor == null) {
+        return routedComputerMcpResult({ text: "The box desktop is not ready yet.", isError: true });
+      }
+      const windowIndex = host.box.getAgentWindowIndex?.(agentId);
+      const command = buildSandUiDriverCommand(name, record.args ?? {}, windowIndex, toolCallId);
+      const result = await accessor.get(shellExecutorResource).execute(context as never, buildHostShellArgs({
+        command,
+        name: "observe-ui",
+        workingDirectory: "/workspace",
+        toolCallId: toolCallId.length > 0 ? toolCallId : `ui-${name}-${agentId}`,
+      }));
+      if (result.result.case !== "success") {
+        return routedComputerMcpResult({ text: `${name} failed (${result.result.case || "unknown"}).`, isError: true });
+      }
+      const stdout = String((result.result.value as { stdout?: string }).stdout ?? "");
+      const parsed = parseSandUiDriverStdout(stdout);
+      if (parsed == null) {
+        const stderr = String((result.result.value as { stderr?: string }).stderr ?? "").trim().slice(0, 300);
+        return routedComputerMcpResult({
+          text: `${name} produced no result${stderr.length > 0 ? `: ${stderr}` : "."}`,
+          isError: true,
+        });
+      }
+      return routedComputerMcpResult({ text: parsed.text, isError: !parsed.ok });
     } catch (error) {
       return routedComputerMcpResult({
         text: error instanceof Error ? error.message : String(error),

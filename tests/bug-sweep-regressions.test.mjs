@@ -130,4 +130,7 @@ test("web profile saves emit cursor-auth-changed and skip Sentry", async () => {
   assert.match(shim, /window\.__SENTRY__RENDERER_INIT__ = true/);
   assert.match(shim, /listener\(undefined, payload\)/);
   assert.match(shim, /sand-rpc:main:e:cursor-auth-changed/);
+  assert.match(shim, /method: "stopRoutedTurn"/);
+  assert.match(shim, /aria-label", "Stop"/);
+  assert.match(shim, /noteRoutedSend/);
 });

@@ -127,6 +127,7 @@ export function createProductionCoordinatorAuxiliaryPorts(
         inferenceProvider: settings.getInferenceProvider(),
         openRouterModel: settings.getOpenRouterModel(),
         openRouterComputerModel: settings.getOpenRouterComputerModel() ?? null,
+        openRouterSummarizeModel: settings.getOpenRouterSummarizeModel() ?? null,
         openRouterReasoningEffort: settings.getOpenRouterReasoningEffort(),
         openRouterComputerReasoningEffort: settings.getOpenRouterComputerReasoningEffort(),
       }),

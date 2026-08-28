@@ -261,10 +261,11 @@ export function createDesktopPreloadBridge(options: {
       setComputerUseModel: (model: unknown) => edge("setComputerUseModel", { model }),
       getAvailableModels: () => edge("getAvailableModels"),
       getInferenceRouter: () => edge("getInferenceRouter"),
-      setInferenceRouter: (provider: string, extras?: { readonly model?: string; readonly computerModel?: string | null; readonly reasoningEffort?: string; readonly computerReasoningEffort?: string }) => edge("setInferenceRouter", {
+      setInferenceRouter: (provider: string, extras?: { readonly model?: string; readonly computerModel?: string | null; readonly summarizeModel?: string | null; readonly reasoningEffort?: string; readonly computerReasoningEffort?: string }) => edge("setInferenceRouter", {
         provider,
         ...(typeof extras?.model === "string" && extras.model.trim().length > 0 ? { model: extras.model.trim() } : {}),
         ...(extras != null && Object.prototype.hasOwnProperty.call(extras, "computerModel") ? { computerModel: extras.computerModel } : {}),
+        ...(extras != null && Object.prototype.hasOwnProperty.call(extras, "summarizeModel") ? { summarizeModel: extras.summarizeModel } : {}),
         ...(typeof extras?.reasoningEffort === "string" && extras.reasoningEffort.trim().length > 0 ? { reasoningEffort: extras.reasoningEffort.trim() } : {}),
         ...(typeof extras?.computerReasoningEffort === "string" && extras.computerReasoningEffort.trim().length > 0 ? { computerReasoningEffort: extras.computerReasoningEffort.trim() } : {}),
       }),

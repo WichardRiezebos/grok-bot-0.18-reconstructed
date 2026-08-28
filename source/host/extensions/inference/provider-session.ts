@@ -11,13 +11,12 @@ import type { SandInferenceProvider } from "../../../shared/inference-router.js"
 import { resolveClaudeCodeCliPath } from "../../../shared/node/inference-router-local.js";
 import { getSandRootDir, SAND_BOX_DATA_ROOT } from "../../host-paths.js";
 import { SandSettingsStore } from "../../../shared/node/settings/sand-settings-store.js";
-import { DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, DEFAULT_OPENROUTER_REASONING_EFFORT, injectOpenRouterReasoningIntoBody, resolveOpenRouterComputerModel, resolveOpenRouterModel, resolveOpenRouterReasoningEffort, type OpenRouterReasoningEffort } from "../../../shared/openrouter-models.js";
+import { DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, DEFAULT_OPENROUTER_REASONING_EFFORT, injectOpenRouterReasoningIntoBody, openRouterSlotFromSession, resolveOpenRouterComputerModel, resolveOpenRouterModel, resolveOpenRouterReasoningEffort, resolveOpenRouterSlotModel, resolveOpenRouterSummarizeModel, type OpenRouterReasoningEffort, type OpenRouterSlot } from "../../../shared/openrouter-models.js";
 import { boundOpenRouterRequestBody } from "../../../shared/openrouter-prompt-budget.js";
 import { injectOpenRouterCacheControlIntoBody, injectOpenRouterStreamUsageIntoBody, observeOpenRouterSseUsage } from "../../../shared/openrouter-prompt-cache.js";
 import {
   ROUTED_PLUGIN_MAX_STEPS,
   openRouterToolResultContent,
-  routedToolsIncludeComputer,
 } from "../../../shared/routed-computer-tools.js";
 import { BOX_SECRETS_FILENAME, getBoxSecretsStorePath } from "../secrets/secrets-service.js";
 import { streamCodexDirectResponses, type CodexDirectTool } from "./codex-direct-responses.js";
@@ -104,11 +103,27 @@ function configuredOpenRouterModel(): string {
 function configuredOpenRouterComputerModel(): string {
   try {
     const store = new SandSettingsStore(routedSettingsPath());
-    return resolveOpenRouterComputerModel(store.getOpenRouterComputerModel(), store.getOpenRouterModel());
-  } catch { return configuredOpenRouterModel(); }
+    return resolveOpenRouterComputerModel(store.getOpenRouterComputerModel());
+  } catch { return resolveOpenRouterComputerModel(undefined); }
 }
 
-function configuredOpenRouterReasoningEffort(computer: boolean): OpenRouterReasoningEffort {
+function configuredOpenRouterSummarizeModel(): string {
+  try {
+    const store = new SandSettingsStore(routedSettingsPath());
+    return resolveOpenRouterSummarizeModel(store.getOpenRouterSummarizeModel(), configuredOpenRouterModel());
+  } catch { return resolveOpenRouterSummarizeModel(undefined, configuredOpenRouterModel()); }
+}
+
+function configuredOpenRouterSlotModel(slot: OpenRouterSlot): string {
+  return resolveOpenRouterSlotModel(slot, {
+    think: configuredOpenRouterModel(),
+    drive: configuredOpenRouterComputerModel(),
+    summarize: configuredOpenRouterSummarizeModel(),
+  });
+}
+
+function configuredOpenRouterReasoningEffort(slot: OpenRouterSlot): OpenRouterReasoningEffort {
+  const computer = slot === "drive";
   const fallback = computer ? DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT : DEFAULT_OPENROUTER_REASONING_EFFORT;
   const env = computer ? process.env.SAND_OPENROUTER_COMPUTER_REASONING_EFFORT : process.env.SAND_OPENROUTER_REASONING_EFFORT;
   try {
@@ -358,11 +373,10 @@ function toToolSet(definitions: readonly Loose[] | undefined, executeTool?: Rout
   return Object.keys(tools).length === 0 ? undefined : tools;
 }
 
-function openRouterExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void, abortSignal?: AbortSignal, maxSteps?: number) {
-  const computer = routedToolsIncludeComputer(definitions ?? []);
-  const id = computer ? configuredOpenRouterComputerModel() : configuredOpenRouterModel();
+function openRouterExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void, abortSignal?: AbortSignal, maxSteps?: number, slot: OpenRouterSlot = "think") {
+  const id = configuredOpenRouterSlotModel(slot);
   const turnUsage: OpenRouterTurnUsage = { cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 };
-  const model: LanguageModelV1 = createOpenAI({ apiKey: openRouterCredential(), baseURL: "https://openrouter.ai/api/v1", compatibility: "compatible", name: "openrouter", headers: { "HTTP-Referer": "https://github.com/grok-bot-reconstructed", "X-Title": "Grok Bot Reconstructed" }, fetch: openRouterFetch(configuredOpenRouterReasoningEffort(computer), id, turnUsage) }).chat(id as any);
+  const model: LanguageModelV1 = createOpenAI({ apiKey: openRouterCredential(), baseURL: "https://openrouter.ai/api/v1", compatibility: "compatible", name: "openrouter", headers: { "HTTP-Referer": "https://github.com/grok-bot-reconstructed", "X-Title": "Grok Bot Reconstructed" }, fetch: openRouterFetch(configuredOpenRouterReasoningEffort(slot), id, turnUsage) }).chat(id as any);
   const tools = toToolSet(definitions, executeTool);
   const result = streamText({ model, system: GROK_ROUTER_SYSTEM_PROMPT, messages: messages as CoreMessage[], ...(tools === undefined ? {} : { tools }), toolCallStreaming: true, maxRetries: 0, maxSteps: resolvedMaxSteps(tools !== undefined, maxSteps), ...(abortSignal == null ? {} : { abortSignal }) });
   const extendedUsage = result.usage.then(value => ({ inputTokens: value.promptTokens, outputTokens: value.completionTokens, cacheReadTokens: turnUsage.cacheReadTokens, cacheWriteTokens: turnUsage.cacheWriteTokens, costUsd: turnUsage.costUsd, maxTokens: 0 }));
@@ -371,18 +385,19 @@ function openRouterExecutor(messages: readonly ProviderMessage[], invocationId: 
 }
 
 class ProviderPromptExecutor extends BasePromptExecutor<ProviderMessage> {
-  constructor(readonly provider: RoutedProvider, initialMessages?: readonly ProviderMessage[], readonly onUsage?: (usage: UsageRecord) => void) { super(new BasePromptBuilder(initialMessages)); }
+  constructor(readonly provider: RoutedProvider, initialMessages?: readonly ProviderMessage[], readonly onUsage?: (usage: UsageRecord) => void, readonly slot: OpenRouterSlot = "think") { super(new BasePromptBuilder(initialMessages)); }
   stream(_ctx: unknown, invocationId = crypto.randomUUID(), definitions?: readonly Loose[]) {
     if (this.provider === "codex") return codexExecutor(this.getMessages(), invocationId, definitions, undefined, this.onUsage);
     if (this.provider === "claude-code") return claudeExecutor(this.getMessages(), invocationId, this.onUsage);
-    return openRouterExecutor(this.getMessages(), invocationId, definitions, undefined, this.onUsage);
+    return openRouterExecutor(this.getMessages(), invocationId, definitions, undefined, this.onUsage, undefined, undefined, this.slot);
   }
 }
 
-export function createProviderPromptSession(provider: RoutedProvider): { getModelId(): string; getExecutor(state?: unknown): PromptExecutor } {
+export function createProviderPromptSession(provider: RoutedProvider, sessionOptions?: { readonly isComputerUseSubagent?: boolean; readonly isSummarizationSession?: boolean }): { getModelId(): string; getExecutor(state?: unknown): PromptExecutor } {
+  const slot = openRouterSlotFromSession(sessionOptions);
   return {
-    getModelId: () => provider === "codex" ? configuredCodexModel() : provider === "claude-code" ? "claude-code" : configuredOpenRouterModel(),
-    getExecutor: state => new ProviderPromptExecutor(provider, Array.isArray(state) ? state as ProviderMessage[] : undefined, usage => recordRoutedUsage(provider, usage)),
+    getModelId: () => provider === "codex" ? configuredCodexModel() : provider === "claude-code" ? "claude-code" : configuredOpenRouterSlotModel(slot),
+    getExecutor: state => new ProviderPromptExecutor(provider, Array.isArray(state) ? state as ProviderMessage[] : undefined, usage => recordRoutedUsage(provider, usage), slot),
   };
 }
 
@@ -438,15 +453,33 @@ export async function runRoutedProviderText(provider: RoutedProvider, messages: 
   readonly onStreamEvent?: (event: { readonly type: string; readonly toolName?: string; readonly elapsedMs: number }) => void;
   readonly abortSignal?: AbortSignal;
   readonly maxSteps?: number;
+  readonly slot?: OpenRouterSlot;
 }): Promise<string> {
   const invocationId = crypto.randomUUID();
   const onUsage = (usage: UsageRecord) => recordRoutedUsage(provider, usage);
   const abortSignal = options?.abortSignal;
+  const slot = options?.slot ?? "think";
+  if (provider === "openrouter" && slot === "drive") {
+    const { runPiDriveSession } = await import("./pi-drive-session.js");
+    return runPiDriveSession({
+      messages,
+      tools: options?.tools,
+      executeTool: options?.executeTool,
+      abortSignal,
+      maxSteps: options?.maxSteps,
+      modelId: configuredOpenRouterSlotModel("drive"),
+      apiKey: openRouterCredential(),
+      reasoningEffort: configuredOpenRouterReasoningEffort("drive"),
+      onTextDelta: options?.onTextDelta,
+      onProgress: options?.onProgress,
+      onStreamEvent: options?.onStreamEvent,
+    });
+  }
   const result = provider === "codex"
     ? codexExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage, options?.maxSteps)
     : provider === "claude-code"
       ? claudeExecutor(messages, invocationId, onUsage, options?.mcpServerUrl, options?.maxSteps)
-      : openRouterExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage, abortSignal, options?.maxSteps);
+      : openRouterExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage, abortSignal, options?.maxSteps, slot);
   try {
     const text = await collectRoutedText(result.fullStream, options?.onTextDelta, abortSignal, options?.onStreamEvent, options?.onProgress);
     if (abortSignal?.aborted) throw routedTurnTimeoutError(abortSignal);

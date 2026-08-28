@@ -250,7 +250,17 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     }
   }
 
+  let noteRoutedSend = () => {};
+  let noteRoutedAgents = () => {};
+
   function sendSocket(payload) {
+    try {
+      const parsed = typeof payload === "string" ? JSON.parse(payload) : null;
+      if (parsed && parsed.kind === "coordinator" && parsed.frame && parsed.frame.kind === "request" && parsed.frame.method === "sendPrompt") {
+        const agentId = parsed.frame.args && parsed.frame.args.agentId;
+        if (typeof agentId === "string") noteRoutedSend(agentId);
+      }
+    } catch {}
     if (socket != null && socket.readyState === WebSocket.OPEN) {
       socket.send(payload);
       return;
@@ -335,7 +345,14 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
         emitEvent(message.channel, message.payload);
         return;
       }
-      if (message.kind === "coordinator" && coordinatorPort != null) coordinatorPort._emit(message.frame);
+      if (message.kind === "coordinator" && coordinatorPort != null) {
+        try {
+          if (message.frame && message.frame.kind === "event" && message.frame.family === "agents") {
+            noteRoutedAgents(message.frame.payload);
+          }
+        } catch {}
+        coordinatorPort._emit(message.frame);
+      }
       if (message.kind === "coordinator-main" && coordinatorMainPort != null) coordinatorMainPort._emit(message.frame);
     });
   }
@@ -647,6 +664,109 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       setEnabled: async () => ({ enabled: false }),
     },
   };
+
+  function installComposerStop() {
+    let lastAgentId = "";
+    const running = new Set();
+    const overlay = document.createElement("button");
+    overlay.type = "button";
+    overlay.setAttribute("aria-label", "Stop");
+    overlay.dataset.testid = "grok-bot-composer-stop";
+    overlay.style.cssText = "display:none;position:fixed;z-index:2147483646;margin:0;border:0;border-radius:999px;background:#e5484d;color:#fff;width:36px;height:36px;padding:0;cursor:pointer;box-shadow:0 0 0 1px #0003";
+    overlay.innerHTML = '<span aria-hidden="true" style="display:block;width:10px;height:10px;margin:13px auto;background:currentColor;border-radius:1px"></span>';
+    function stopNow() {
+      const agentId = lastAgentId || [...running][0];
+      if (!agentId || coordinatorPort == null) return;
+      coordinatorPort.postMessage({
+        kind: "request",
+        requestId: "stop-" + Date.now() + "-" + Math.random().toString(16).slice(2),
+        method: "stopRoutedTurn",
+        args: { agentId },
+      });
+    }
+    overlay.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      stopNow();
+    });
+    const mount = () => {
+      if (document.body != null && overlay.parentNode == null) document.body.appendChild(overlay);
+    };
+    if (document.body != null) mount();
+    else document.addEventListener("DOMContentLoaded", mount);
+    noteRoutedSend = (agentId) => {
+      lastAgentId = agentId;
+      running.add(agentId);
+      paint();
+    };
+    noteRoutedAgents = (payload) => {
+      const agents = payload && Array.isArray(payload.agents) ? payload.agents : [];
+      running.clear();
+      for (const agent of agents) {
+        if (agent && agent.isRunning === true && typeof agent.id === "string") running.add(agent.id);
+      }
+      if (typeof payload?.activeAgentId === "string" && payload.activeAgentId.length > 0) {
+        lastAgentId = payload.activeAgentId;
+      }
+      paint();
+    };
+    const post = coordinatorPort.postMessage.bind(coordinatorPort);
+    coordinatorPort.postMessage = (data) => {
+      try {
+        if (data && data.kind === "request" && data.method === "sendPrompt" && data.args && typeof data.args.agentId === "string") {
+          lastAgentId = data.args.agentId;
+          running.add(lastAgentId);
+          paint();
+        }
+      } catch {}
+      return post(data);
+    };
+    const emit = coordinatorPort._emit.bind(coordinatorPort);
+    coordinatorPort._emit = (data) => {
+      try {
+        if (data && data.kind === "event" && data.family === "agents") {
+          const agents = data.payload && Array.isArray(data.payload.agents) ? data.payload.agents : [];
+          running.clear();
+          for (const agent of agents) {
+            if (agent && agent.isRunning === true && typeof agent.id === "string") running.add(agent.id);
+          }
+          if (typeof data.payload?.activeAgentId === "string" && data.payload.activeAgentId.length > 0) {
+            lastAgentId = data.payload.activeAgentId;
+          }
+          paint();
+        }
+      } catch {}
+      return emit(data);
+    };
+    function paint() {
+      const send = document.querySelector('[aria-label="Send message"]')
+        || document.querySelector(".sand-prompt-cta-cluster [aria-label=\"Start voice input\"]")
+        || document.querySelector(".sand-prompt-actions-trailing button:last-of-type");
+      const dictating = document.querySelector('[aria-label="Stop dictation"]') != null;
+      const show = running.size > 0 && send != null && !dictating;
+      if (!show) {
+        overlay.style.display = "none";
+        return;
+      }
+      const box = send.getBoundingClientRect();
+      overlay.style.display = "block";
+      overlay.style.left = `${box.left}px`;
+      overlay.style.top = `${box.top}px`;
+      overlay.style.width = `${Math.max(32, box.width)}px`;
+      overlay.style.height = `${Math.max(32, box.height)}px`;
+    }
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      if (running.size === 0 && lastAgentId.length === 0) return;
+      if (document.querySelector('[aria-label="Stop dictation"]') != null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      stopNow();
+    }, true);
+    setInterval(paint, 400);
+    new MutationObserver(paint).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["aria-label"] });
+  }
+  installComposerStop();
 
   window.desktop = desktop;
   window.coordinatorPort = {

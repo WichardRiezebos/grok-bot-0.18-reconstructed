@@ -52,6 +52,11 @@ test("settings store drops the leftover qwen computer model so Computer inherits
 
     store.setOpenRouterComputerModel("qwen/qwen3.7-flash");
     assert.equal(store.getOpenRouterComputerModel(), "qwen/qwen3.7-flash");
+    assert.equal(store.getOpenRouterSummarizeModel(), undefined);
+    store.setOpenRouterSummarizeModel("google/gemini-2.5-flash");
+    assert.equal(store.getOpenRouterSummarizeModel(), "google/gemini-2.5-flash");
+    store.setOpenRouterSummarizeModel(undefined);
+    assert.equal(store.getOpenRouterSummarizeModel(), undefined);
   } finally {
     await loaded.dispose();
     await rm(directory, { recursive: true, force: true });

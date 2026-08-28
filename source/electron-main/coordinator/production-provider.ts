@@ -177,6 +177,7 @@ export interface ProductionCoordinatorPorts<Status extends ProductionCoordinator
       readonly inferenceProvider: unknown;
       readonly openRouterModel: unknown;
       readonly openRouterComputerModel: unknown;
+      readonly openRouterSummarizeModel: unknown;
       readonly openRouterReasoningEffort: unknown;
       readonly openRouterComputerReasoningEffort: unknown;
     };

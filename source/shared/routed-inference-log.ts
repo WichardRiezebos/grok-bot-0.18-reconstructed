@@ -2,6 +2,7 @@ import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { ROUTED_COMPUTER_TOOL_NAME } from "./routed-computer-tools.js";
+import { routedAbortErrorFromSignal } from "./routed-turn-abort.js";
 
 export const ROUTED_INFERENCE_LOG_FILENAME = "routed-inference.log";
 
@@ -24,11 +25,11 @@ export async function awaitAbortRace<T>(
 ): Promise<T> {
   if (signal.aborted) {
     void work.catch(() => undefined);
-    throw timeoutError();
+    throw routedAbortErrorFromSignal(signal, timeoutError);
   }
   let onAbort: (() => void) | undefined;
   const aborted = new Promise<never>((_, reject) => {
-    onAbort = () => reject(timeoutError());
+    onAbort = () => reject(routedAbortErrorFromSignal(signal, timeoutError));
     signal.addEventListener("abort", onAbort, { once: true });
   });
   try {

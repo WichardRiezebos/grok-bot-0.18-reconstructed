@@ -1,16 +1,44 @@
-export const DEFAULT_OPENROUTER_MODEL = "openai/gpt-4.1";
+export const DEFAULT_OPENROUTER_MODEL = "x-ai/grok-4.6";
+export const DEFAULT_OPENROUTER_COMPUTER_MODEL = "anthropic/claude-sonnet-4.6";
+export const DEFAULT_OPENROUTER_SUMMARIZE_MODEL = "google/gemini-2.5-flash";
 export const DEFAULT_OPENROUTER_REASONING_EFFORT = "medium";
 export const DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT = "low";
 export const OPENROUTER_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
 export type OpenRouterReasoningEffort = (typeof OPENROUTER_REASONING_EFFORTS)[number];
+export const OPENROUTER_SLOTS = ["think", "drive", "summarize"] as const;
+export type OpenRouterSlot = (typeof OPENROUTER_SLOTS)[number];
 export const RECOMMENDED_OPENROUTER_MODEL_IDS = [
-  "x-ai/grok-4",
-  "anthropic/claude-sonnet-4.5",
-  "openai/gpt-4.1",
-  "google/gemini-2.5-pro",
-  "meta-llama/llama-4-maverick",
-  "qwen/qwen3.7-flash",
+  "x-ai/grok-4.6",
+  "anthropic/claude-sonnet-4.6",
+  "google/gemini-2.5-flash",
+  "anthropic/claude-opus-4.6",
+  "anthropic/claude-haiku-4.5",
+  "google/gemini-3.7-flash",
 ] as const;
+export const OPENROUTER_SLOT_PRESETS = {
+  high: {
+    model: "anthropic/claude-opus-4.6",
+    computerModel: "anthropic/claude-opus-4.6",
+    summarizeModel: "google/gemini-2.5-flash",
+    reasoningEffort: "medium",
+    computerReasoningEffort: "low",
+  },
+  med: {
+    model: "x-ai/grok-4.6",
+    computerModel: "anthropic/claude-sonnet-4.6",
+    summarizeModel: "google/gemini-2.5-flash",
+    reasoningEffort: "medium",
+    computerReasoningEffort: "low",
+  },
+  low: {
+    model: "google/gemini-3.7-flash",
+    computerModel: "anthropic/claude-haiku-4.5",
+    summarizeModel: "qwen/qwen3.8-flash",
+    reasoningEffort: "low",
+    computerReasoningEffort: "low",
+  },
+} as const;
+export type OpenRouterSlotPresetId = keyof typeof OPENROUTER_SLOT_PRESETS;
 export const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models?output_modalities=text";
 export const OPENROUTER_CATALOG_TIMEOUT_MS = 20_000;
 
@@ -33,13 +61,45 @@ export function resolveOpenRouterModel(stored: unknown, env = process.env.SAND_O
 
 export function resolveOpenRouterComputerModel(
   stored: unknown,
-  chatModel: string,
+  _chatModel?: string,
   env = process.env.SAND_OPENROUTER_COMPUTER_MODEL,
 ): string {
   return normalizeOpenRouterModelId(env)
     ?? normalizeOpenRouterModelId(stored)
-    ?? normalizeOpenRouterModelId(chatModel)
-    ?? DEFAULT_OPENROUTER_MODEL;
+    ?? DEFAULT_OPENROUTER_COMPUTER_MODEL;
+}
+
+export function resolveOpenRouterSummarizeModel(
+  stored: unknown,
+  thinkModel: string,
+  env = process.env.SAND_OPENROUTER_SUMMARIZE_MODEL,
+): string {
+  return normalizeOpenRouterModelId(env)
+    ?? normalizeOpenRouterModelId(stored)
+    ?? normalizeOpenRouterModelId(thinkModel)
+    ?? DEFAULT_OPENROUTER_SUMMARIZE_MODEL;
+}
+
+export function openRouterSlotFromSession(options?: {
+  readonly isComputerUseSubagent?: boolean;
+  readonly isSummarizationSession?: boolean;
+}): OpenRouterSlot {
+  if (options?.isSummarizationSession === true) return "summarize";
+  if (options?.isComputerUseSubagent === true) return "drive";
+  return "think";
+}
+
+export function resolveOpenRouterSlotModel(
+  slot: OpenRouterSlot,
+  args: {
+    readonly think: string;
+    readonly drive: string;
+    readonly summarize: string;
+  },
+): string {
+  if (slot === "drive") return args.drive;
+  if (slot === "summarize") return args.summarize;
+  return args.think;
 }
 
 export function isOpenRouterReasoningEffort(value: unknown): value is OpenRouterReasoningEffort {

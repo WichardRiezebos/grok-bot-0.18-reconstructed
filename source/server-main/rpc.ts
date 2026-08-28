@@ -17,6 +17,7 @@ import {
   resolveOpenRouterComputerModel,
   resolveOpenRouterModel,
   resolveOpenRouterReasoningEffort,
+  resolveOpenRouterSummarizeModel,
 } from "../shared/openrouter-models.js";
 import { MAIN_METHOD_TABLE } from "../shared/rpc/main.js";
 import { CLIENT_PERSISTENCE_CHANNELS } from "../shared/persistence.js";
@@ -90,6 +91,7 @@ export function createRpcDispatcher(options: {
       provider,
       model,
       computerModel: settings.getOpenRouterComputerModel() ?? null,
+      summarizeModel: settings.getOpenRouterSummarizeModel() ?? null,
       reasoningEffort: resolveOpenRouterReasoningEffort(settings.getOpenRouterReasoningEffort(), DEFAULT_OPENROUTER_REASONING_EFFORT),
       computerReasoningEffort: resolveOpenRouterReasoningEffort(settings.getOpenRouterComputerReasoningEffort(), DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT),
       usage: settings.getInferenceRouterUsage(),
@@ -213,6 +215,14 @@ export function createRpcDispatcher(options: {
           if (id !== undefined) settings.setOpenRouterComputerModel(id);
         }
       }
+      if (Object.prototype.hasOwnProperty.call(record, "summarizeModel")) {
+        const summarize = record.summarizeModel;
+        if (summarize == null || summarize === "" || summarize === "__inherit__") settings.setOpenRouterSummarizeModel(undefined);
+        else {
+          const id = normalizeOpenRouterModelId(summarize);
+          if (id !== undefined) settings.setOpenRouterSummarizeModel(id);
+        }
+      }
       const effort = normalizeOpenRouterReasoningEffort(record.reasoningEffort);
       if (effort !== undefined) settings.setOpenRouterReasoningEffort(effort);
       const computerEffort = normalizeOpenRouterReasoningEffort(record.computerReasoningEffort);
@@ -221,15 +231,17 @@ export function createRpcDispatcher(options: {
     },
     listOpenRouterModels: async () => {
       const model = resolveOpenRouterModel(settings.getOpenRouterModel());
-      const computerModel = resolveOpenRouterComputerModel(settings.getOpenRouterComputerModel(), model);
+      const computerModel = resolveOpenRouterComputerModel(settings.getOpenRouterComputerModel());
+      const summarizeModel = resolveOpenRouterSummarizeModel(settings.getOpenRouterSummarizeModel(), model);
       const apiKey = readOpenRouterApiKey(settings.settingsPath) ?? config.openRouterKey;
       try {
-        const models = await fetchOpenRouterCatalog({ ...(apiKey === undefined ? {} : { apiKey }), currentId: [model, computerModel] });
-        return { model, computerModel, models };
+        const models = await fetchOpenRouterCatalog({ ...(apiKey === undefined ? {} : { apiKey }), currentId: [model, computerModel, summarizeModel] });
+        return { model, computerModel, summarizeModel, models };
       } catch (error) {
         return {
           model,
           computerModel,
+          summarizeModel,
           models: [{ id: model, name: model, recommended: model === DEFAULT_OPENROUTER_MODEL }],
           error: error instanceof Error ? error.message : String(error),
         };

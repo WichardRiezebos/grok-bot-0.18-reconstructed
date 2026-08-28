@@ -8,7 +8,7 @@ import { sandWebauthnProxyMirroredEnablement } from "../shared/webauthn-proxy-av
 import { reportDesktopEdgeFailure } from "./desktop-edge-failures.js";
 import { isSandInferenceProvider, type SandInferenceRouterUsage } from "../shared/inference-router.js";
 import { openRouterUsageToCursorSummary } from "../shared/openrouter-usage-summary.js";
-import { DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENROUTER_REASONING_EFFORT, normalizeOpenRouterModelId, normalizeOpenRouterReasoningEffort, resolveOpenRouterComputerModel, resolveOpenRouterModel, resolveOpenRouterReasoningEffort } from "../shared/openrouter-models.js";
+import { DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENROUTER_REASONING_EFFORT, normalizeOpenRouterModelId, normalizeOpenRouterReasoningEffort, resolveOpenRouterComputerModel, resolveOpenRouterModel, resolveOpenRouterReasoningEffort, resolveOpenRouterSummarizeModel } from "../shared/openrouter-models.js";
 import { fetchOpenRouterCatalog, readOpenRouterApiKey } from "../shared/node/openrouter-models.js";
 import { getLocalInferenceCliStatus } from "../shared/node/inference-router-local.js";
 import { isSandBoxRuntime } from "../shared/box-runtime.js";
@@ -87,8 +87,17 @@ function storedOpenRouterComputerModel(deps: MainEdgeDeps): string | null {
     return normalizeOpenRouterModelId(stored) ?? null;
   } catch { return null; }
 }
+function storedOpenRouterSummarizeModel(deps: MainEdgeDeps): string | null {
+  try {
+    const stored = invoke(deps.settingsStore, "getOpenRouterSummarizeModel");
+    return normalizeOpenRouterModelId(stored) ?? null;
+  } catch { return null; }
+}
 function openRouterComputerModel(deps: MainEdgeDeps): string {
-  return resolveOpenRouterComputerModel(storedOpenRouterComputerModel(deps), openRouterModel(deps));
+  return resolveOpenRouterComputerModel(storedOpenRouterComputerModel(deps));
+}
+function openRouterSummarizeModel(deps: MainEdgeDeps): string {
+  return resolveOpenRouterSummarizeModel(storedOpenRouterSummarizeModel(deps), openRouterModel(deps));
 }
 function storedOpenRouterReasoningEffort(deps: MainEdgeDeps): string {
   try { return resolveOpenRouterReasoningEffort(invoke(deps.settingsStore, "getOpenRouterReasoningEffort"), DEFAULT_OPENROUTER_REASONING_EFFORT); }
@@ -109,6 +118,7 @@ function inferenceRouterSnapshot(deps: MainEdgeDeps, extra: UnknownRecord = {}):
     provider: isSandInferenceProvider(provider) ? provider : "openrouter",
     model: openRouterModel(deps),
     computerModel: storedOpenRouterComputerModel(deps),
+    summarizeModel: storedOpenRouterSummarizeModel(deps),
     reasoningEffort: storedOpenRouterReasoningEffort(deps),
     computerReasoningEffort: storedOpenRouterComputerReasoningEffort(deps),
     ...extra,
@@ -169,6 +179,14 @@ export function createMainEdgeHandlers(deps: MainEdgeDeps): HandlerMap {
           if (computerId !== undefined) invoke(deps.settingsStore, "setOpenRouterComputerModel", computerId);
         }
       }
+      if (Object.prototype.hasOwnProperty.call(record, "summarizeModel")) {
+        const summarize = record.summarizeModel;
+        if (summarize == null || summarize === "" || summarize === "__inherit__") invoke(deps.settingsStore, "setOpenRouterSummarizeModel", undefined);
+        else {
+          const summarizeId = normalizeOpenRouterModelId(summarize);
+          if (summarizeId !== undefined) invoke(deps.settingsStore, "setOpenRouterSummarizeModel", summarizeId);
+        }
+      }
       const reasoningEffort = normalizeOpenRouterReasoningEffort(record.reasoningEffort);
       if (reasoningEffort !== undefined) invoke(deps.settingsStore, "setOpenRouterReasoningEffort", reasoningEffort);
       const computerReasoningEffort = normalizeOpenRouterReasoningEffort(record.computerReasoningEffort);
@@ -178,6 +196,7 @@ export function createMainEdgeHandlers(deps: MainEdgeDeps): HandlerMap {
         inferenceProvider: "openrouter",
         openRouterModel: model,
         openRouterComputerModel: storedOpenRouterComputerModel(deps),
+        openRouterSummarizeModel: storedOpenRouterSummarizeModel(deps),
         openRouterReasoningEffort: storedOpenRouterReasoningEffort(deps),
         openRouterComputerReasoningEffort: storedOpenRouterComputerReasoningEffort(deps),
       };
@@ -200,18 +219,21 @@ export function createMainEdgeHandlers(deps: MainEdgeDeps): HandlerMap {
     listOpenRouterModels: async () => {
       const model = openRouterModel(deps);
       const computerModel = openRouterComputerModel(deps);
+      const summarizeModel = openRouterSummarizeModel(deps);
       const settingsPath = typeof Reflect.get(deps.settingsStore, "settingsPath") === "string" ? String(Reflect.get(deps.settingsStore, "settingsPath")) : undefined;
       const apiKey = readOpenRouterApiKey(settingsPath);
       try {
-        const models = await fetchOpenRouterCatalog({ ...(apiKey === undefined ? {} : { apiKey }), currentId: [model, computerModel] });
-        return { model, computerModel, models };
+        const models = await fetchOpenRouterCatalog({ ...(apiKey === undefined ? {} : { apiKey }), currentId: [model, computerModel, summarizeModel] });
+        return { model, computerModel, summarizeModel, models };
       } catch (error) {
         return {
           model,
           computerModel,
+          summarizeModel,
           models: [
             { id: model, name: model, recommended: model === DEFAULT_OPENROUTER_MODEL },
             ...(computerModel === model ? [] : [{ id: computerModel, name: computerModel, recommended: false }]),
+            ...(summarizeModel === model || summarizeModel === computerModel ? [] : [{ id: summarizeModel, name: summarizeModel, recommended: false }]),
           ],
           error: error instanceof Error ? error.message : String(error),
         };

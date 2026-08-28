@@ -19,6 +19,7 @@ export interface HostSettingsUpdate {
   sidebarSections?: SidebarSection[]; hasSeenOnboarding?: boolean; featureFlagOverrides?: Record<string, boolean>;   inferenceProvider?: unknown;
   openRouterModel?: unknown;
   openRouterComputerModel?: unknown | null;
+  openRouterSummarizeModel?: unknown | null;
   openRouterReasoningEffort?: unknown;
   openRouterComputerReasoningEffort?: unknown;
 }
@@ -35,7 +36,7 @@ export class SettingsService {
     const agentDefaultModel = this.store.getAgentDefaultModel(); const computerUseModel = this.store.getComputerUseModel();
     const scope = this.store.getMcpCustomInstructionsAccountScope(); const pinnedAgentIds = this.store.getPinnedAgentIds();
     const sidebarSections = this.store.getSidebarSections(); const hasSeenOnboarding = this.store.getHasSeenOnboarding();
-    return { notifications: this.store.getNotificationConfig(), mcpCustomInstructions: this.store.getMcpCustomInstructions(), mcpCustomInstructionsByServerId: this.store.getMcpCustomInstructionsByServerId(), mcpDisabledToolsByServerId: this.store.getMcpDisabledToolsByServerId(), ...(scope === undefined ? {} : { mcpCustomInstructionsAccountScope: scope }), mcpBoxServers: this.store.getMcpBoxServers(), autoReviewInstructions: this.store.getAutoReviewInstructions(), localToolPermission: this.store.getLocalToolPermission(), webauthnProxyEnabled: this.store.getWebauthnProxyEnabled(), inferenceProvider: this.store.getInferenceProvider(), openRouterModel: this.store.getOpenRouterModel(), openRouterComputerModel: this.store.getOpenRouterComputerModel() ?? null, openRouterReasoningEffort: this.store.getOpenRouterReasoningEffort(), openRouterComputerReasoningEffort: this.store.getOpenRouterComputerReasoningEffort(), inferenceRouterUsage: this.store.getInferenceRouterUsage(), ...(userTimeZone === undefined ? {} : { userTimeZone }), ...(userTimeZoneOverride === undefined ? {} : { userTimeZoneOverride }), ...(agentDefaultModel === undefined ? {} : { agentDefaultModel }), ...(computerUseModel === undefined ? {} : { computerUseModel }), ...(pinnedAgentIds === undefined ? {} : { pinnedAgentIds }), sidebarSections: sidebarSections ?? [], ...(hasSeenOnboarding === undefined ? {} : { hasSeenOnboarding }) };
+    return { notifications: this.store.getNotificationConfig(), mcpCustomInstructions: this.store.getMcpCustomInstructions(), mcpCustomInstructionsByServerId: this.store.getMcpCustomInstructionsByServerId(), mcpDisabledToolsByServerId: this.store.getMcpDisabledToolsByServerId(), ...(scope === undefined ? {} : { mcpCustomInstructionsAccountScope: scope }), mcpBoxServers: this.store.getMcpBoxServers(), autoReviewInstructions: this.store.getAutoReviewInstructions(), localToolPermission: this.store.getLocalToolPermission(), webauthnProxyEnabled: this.store.getWebauthnProxyEnabled(), inferenceProvider: this.store.getInferenceProvider(), openRouterModel: this.store.getOpenRouterModel(), openRouterComputerModel: this.store.getOpenRouterComputerModel() ?? null, openRouterSummarizeModel: this.store.getOpenRouterSummarizeModel() ?? null, openRouterReasoningEffort: this.store.getOpenRouterReasoningEffort(), openRouterComputerReasoningEffort: this.store.getOpenRouterComputerReasoningEffort(), inferenceRouterUsage: this.store.getInferenceRouterUsage(), ...(userTimeZone === undefined ? {} : { userTimeZone }), ...(userTimeZoneOverride === undefined ? {} : { userTimeZoneOverride }), ...(agentDefaultModel === undefined ? {} : { agentDefaultModel }), ...(computerUseModel === undefined ? {} : { computerUseModel }), ...(pinnedAgentIds === undefined ? {} : { pinnedAgentIds }), sidebarSections: sidebarSections ?? [], ...(hasSeenOnboarding === undefined ? {} : { hasSeenOnboarding }) };
   }
   setHostSettings(update: HostSettingsUpdate) {
     const previousUserTimeZone = this.store.getUserTimeZone(); this.store.setNotificationConfig(update.notifications ?? {});
@@ -61,6 +62,11 @@ export class SettingsService {
       const openRouterComputerModel = normalizeOpenRouterModelId(update.openRouterComputerModel);
       if (openRouterComputerModel !== undefined) this.store.setOpenRouterComputerModel(openRouterComputerModel);
     }
+    if (update.openRouterSummarizeModel === null) this.store.setOpenRouterSummarizeModel(undefined);
+    else {
+      const openRouterSummarizeModel = normalizeOpenRouterModelId(update.openRouterSummarizeModel);
+      if (openRouterSummarizeModel !== undefined) this.store.setOpenRouterSummarizeModel(openRouterSummarizeModel);
+    }
     const openRouterReasoningEffort = normalizeOpenRouterReasoningEffort(update.openRouterReasoningEffort);
     if (openRouterReasoningEffort !== undefined) this.store.setOpenRouterReasoningEffort(openRouterReasoningEffort);
     const openRouterComputerReasoningEffort = normalizeOpenRouterReasoningEffort(update.openRouterComputerReasoningEffort);
@@ -81,6 +87,7 @@ export class SettingsService {
   getInferenceProvider(): SandInferenceProvider { return this.store.getInferenceProvider(); }
   getOpenRouterModel(): string { return this.store.getOpenRouterModel(); }
   getOpenRouterComputerModel(): string | undefined { return this.store.getOpenRouterComputerModel(); }
+  getOpenRouterSummarizeModel(): string | undefined { return this.store.getOpenRouterSummarizeModel(); }
   getOpenRouterReasoningEffort() { return this.store.getOpenRouterReasoningEffort(); }
   getOpenRouterComputerReasoningEffort() { return this.store.getOpenRouterComputerReasoningEffort(); }
   getInferenceRouterUsage() { return this.store.getInferenceRouterUsage(); }

@@ -2,6 +2,18 @@ export const ROUTED_COMPUTER_PROVIDER_IDENTIFIER = "grok-bot-computer";
 export const ROUTED_COMPUTER_TOOL_NAME = "Computer";
 export const ROUTED_BOX_HELP_TOOL_NAME = "request_box_help";
 export const ROUTED_BOX_CHROME_TOOL_NAME = "box_chrome";
+export const ROUTED_UI_FIND_ROOTS_TOOL_NAME = "find_roots";
+export const ROUTED_UI_OBSERVE_TOOL_NAME = "observe_ui";
+export const ROUTED_UI_SEARCH_TOOL_NAME = "search_ui";
+export const ROUTED_UI_ACT_TOOL_NAME = "act_ui";
+export const ROUTED_UI_WAIT_TOOL_NAME = "wait_for";
+export const ROUTED_UI_TOOL_NAMES = [
+  ROUTED_UI_FIND_ROOTS_TOOL_NAME,
+  ROUTED_UI_OBSERVE_TOOL_NAME,
+  ROUTED_UI_SEARCH_TOOL_NAME,
+  ROUTED_UI_ACT_TOOL_NAME,
+  ROUTED_UI_WAIT_TOOL_NAME,
+] as const;
 export const ROUTED_COMPUTER_SCREENSHOT_MIME = "image/webp";
 
 export const ROUTED_PLUGIN_MAX_STEPS = 8;
@@ -120,16 +132,10 @@ export function openAiStrictSchemaGap(schema: unknown, path = "$"): string | nul
 }
 
 export const ROUTED_COMPUTER_TOOL_DESCRIPTION = [
-  "Drive this agent's box desktop — the live screen shown in the UI as this agent's screen.",
-  "Actions: screenshot, click, move, drag, type, key, scroll, wait.",
-  "Chrome starts with no visible window. Call box_chrome with the destination URL only when Chrome is not already on screen. Never reopen a site homepage — that wipes search, filters, and the basket. Once Chrome is visible, keep driving that window. Never claim a page is loaded, searched, or clicked unless the latest Computer screenshot shows that window.",
-  "Work in a see-act-verify loop: screenshot (or read the screenshot returned after every Computer call), then act, then read the fresh screen.",
-  "Use coordinates from the latest screenshot. Never click blind off a remembered layout.",
-  "Once Chrome is visible, put known URLs in the address bar (key Ctrl+l, type the URL, key Return) rather than hunting through menus.",
-  "Do not screenshot in a loop. After at most two screenshots, click, type, or navigate — or stop and tell the user what you see.",
-  "Cookie banners, GDPR consent, and Accept / Accepteren / Akkoord buttons are yours: click them from the latest screenshot. If a click misses, Tab to the button then Return. After two misses, continue without the banner.",
-  "The user is looking at this chat, not the box screen. Never ask them to click, dismiss, or type on the box unless you have already called request_box_help for login, 2FA, captcha, or payment.",
-  "You cannot enter the user's password, 2FA, captcha, or payment confirmation. Hand those steps to the user with request_box_help immediately; do not keep driving Computer toward checkout.",
+  "Last-resort pixel desktop for pictureOnly nodes that observe_ui cannot target.",
+  "Prefer find_roots / observe_ui / act_ui. Actions: screenshot, click, move, drag, type, key, scroll, wait.",
+  "Never claim a page is loaded, searched, or clicked unless observe_ui or this screenshot shows it.",
+  "Do not screenshot in a loop. Cookie banners are yours: click them with act_ui, not request_box_help.",
 ].join(" ");
 
 export const ROUTED_BOX_CHROME_TOOL_DESCRIPTION = [
@@ -137,7 +143,7 @@ export const ROUTED_BOX_CHROME_TOOL_DESCRIPTION = [
   "Pass the destination URL when you know it so Chrome opens straight there; omit url for a blank window.",
   "The desktop starts with no browser window. Call this only when Chrome is not already visible.",
   "Do not pass a site origin (plus.nl, example.com) again after Chrome is open — that reloads the homepage and loses search and basket state. Type in the page or put a deep URL in the address bar instead.",
-  "Confirm with a Computer screenshot. Never claim the site is on screen until that screenshot shows Chrome.",
+  "Confirm with observe_ui. Never claim the site is on screen until that outline shows the page.",
 ].join(" ");
 
 export const ROUTED_BOX_CHROME_INPUT_SCHEMA = strictObject({
@@ -149,9 +155,80 @@ export const ROUTED_BOX_CHROME_INPUT_SCHEMA = strictObject({
 
 export const ROUTED_BOX_HELP_TOOL_DESCRIPTION = [
   "Hand the box desktop to the user for a step only they can do: a login, SSO, passkey, 2FA, captcha, or payment confirmation.",
-  "Do not use this for cookie banners, GDPR consent, or ordinary site popups — click those with Computer.",
+  "Do not use this for cookie banners, GDPR consent, or ordinary site popups — click those with act_ui.",
   "Pass one short instruction (no paragraph). The box is surfaced with a hand-back button.",
-  "You never see their password or 2FA. After they hand the box back, take a Computer screenshot and continue.",
+  "You never see their password or 2FA. After they hand the box back, call observe_ui and continue.",
+].join(" ");
+
+const uiActionObject = strictObject({
+  action: { type: "string", enum: ["press", "click", "setText", "typeText", "keypress", "scroll"] },
+  ref: { type: "string", description: "Element ref from the owning state, e.g. @e12." },
+  text: { type: "string" },
+  key: { type: "string" },
+  x: { type: "integer" },
+  y: { type: "integer" },
+}, ["action"]);
+
+export const ROUTED_UI_FIND_ROOTS_INPUT_SCHEMA = strictObject({
+  query: { type: "string", description: "Optional filter over window or page titles." },
+});
+
+export const ROUTED_UI_OBSERVE_INPUT_SCHEMA = strictObject({
+  root: { type: "string", description: "Exact @r root from find_roots. Omit to observe the frontmost Chrome page." },
+  maxDepth: { type: "integer", minimum: 1, maximum: 12 },
+});
+
+export const ROUTED_UI_SEARCH_INPUT_SCHEMA = strictObject({
+  stateId: { type: "string", description: "stateId returned by observe_ui or act_ui." },
+  text: { type: "string" },
+  role: { type: "string" },
+}, ["stateId"]);
+
+export const ROUTED_UI_ACT_INPUT_SCHEMA = strictObject({
+  stateId: { type: "string", description: "Frozen stateId whose @e refs this action uses." },
+  actions: {
+    type: "array",
+    minItems: 1,
+    maxItems: 8,
+    items: uiActionObject,
+  },
+  expect: strictObject({
+    text: { type: "string" },
+    until: { type: "string", enum: ["present", "absent"] },
+    timeoutMs: { type: "integer", minimum: 0, maximum: 15_000 },
+  }),
+}, ["stateId", "actions"]);
+
+export const ROUTED_UI_WAIT_INPUT_SCHEMA = strictObject({
+  text: { type: "string", description: "Substring to wait for in the accessibility outline or document.title." },
+  stateId: { type: "string" },
+  root: { type: "string" },
+  timeoutMs: { type: "integer", minimum: 0, maximum: 30_000 },
+});
+
+export const ROUTED_UI_FIND_ROOTS_TOOL_DESCRIPTION = [
+  "List the box Chrome pages the user can see as @r roots (CDP pages on this agent's display).",
+  "Do not launch a second browser. If no page is listed, call box_chrome to open the existing box Chrome window.",
+].join(" ");
+
+export const ROUTED_UI_OBSERVE_TOOL_DESCRIPTION = [
+  "Capture the accessibility outline of a Chrome page on this agent's box desktop.",
+  "Returns a stateId and @e refs. Quote only names and titles from this outline — never invent products or headings.",
+  "Call this (or find_roots then this) before claiming what is on screen.",
+].join(" ");
+
+export const ROUTED_UI_SEARCH_TOOL_DESCRIPTION = [
+  "Search a previously observed stateId for text, role, or both. Does not recapture. Requires stateId.",
+].join(" ");
+
+export const ROUTED_UI_ACT_TOOL_DESCRIPTION = [
+  "Act on a frozen observe_ui state: press/click/setText/typeText/keypress/scroll using that state's @e refs.",
+  "Example: act_ui({ stateId, actions: [{ action: \"press\", ref: \"@e12\" }] }).",
+  "Never call launch_browser. Use the existing box Chrome window only.",
+].join(" ");
+
+export const ROUTED_UI_WAIT_TOOL_DESCRIPTION = [
+  "Wait until the given text appears (or disappears) in the live accessibility outline or document.title.",
 ].join(" ");
 
 export type RoutedToolDefinition = {
@@ -162,36 +239,38 @@ export type RoutedToolDefinition = {
   readonly inputSchema: unknown;
 };
 
+function uiTool(
+  name: string,
+  description: string,
+  inputSchema: unknown,
+): RoutedToolDefinition {
+  return { name, providerIdentifier: ROUTED_COMPUTER_PROVIDER_IDENTIFIER, toolName: name, description, inputSchema };
+}
+
 export function listRoutedComputerToolDefinitions(): readonly RoutedToolDefinition[] {
   return [
-    {
-      name: ROUTED_COMPUTER_TOOL_NAME,
-      providerIdentifier: ROUTED_COMPUTER_PROVIDER_IDENTIFIER,
-      toolName: ROUTED_COMPUTER_TOOL_NAME,
-      description: ROUTED_COMPUTER_TOOL_DESCRIPTION,
-      inputSchema: ROUTED_COMPUTER_INPUT_SCHEMA,
-    },
-    {
-      name: ROUTED_BOX_HELP_TOOL_NAME,
-      providerIdentifier: ROUTED_COMPUTER_PROVIDER_IDENTIFIER,
-      toolName: ROUTED_BOX_HELP_TOOL_NAME,
-      description: ROUTED_BOX_HELP_TOOL_DESCRIPTION,
-      inputSchema: ROUTED_BOX_HELP_INPUT_SCHEMA,
-    },
-    {
-      name: ROUTED_BOX_CHROME_TOOL_NAME,
-      providerIdentifier: ROUTED_COMPUTER_PROVIDER_IDENTIFIER,
-      toolName: ROUTED_BOX_CHROME_TOOL_NAME,
-      description: ROUTED_BOX_CHROME_TOOL_DESCRIPTION,
-      inputSchema: ROUTED_BOX_CHROME_INPUT_SCHEMA,
-    },
+    uiTool(ROUTED_UI_FIND_ROOTS_TOOL_NAME, ROUTED_UI_FIND_ROOTS_TOOL_DESCRIPTION, ROUTED_UI_FIND_ROOTS_INPUT_SCHEMA),
+    uiTool(ROUTED_UI_OBSERVE_TOOL_NAME, ROUTED_UI_OBSERVE_TOOL_DESCRIPTION, ROUTED_UI_OBSERVE_INPUT_SCHEMA),
+    uiTool(ROUTED_UI_SEARCH_TOOL_NAME, ROUTED_UI_SEARCH_TOOL_DESCRIPTION, ROUTED_UI_SEARCH_INPUT_SCHEMA),
+    uiTool(ROUTED_UI_ACT_TOOL_NAME, ROUTED_UI_ACT_TOOL_DESCRIPTION, ROUTED_UI_ACT_INPUT_SCHEMA),
+    uiTool(ROUTED_UI_WAIT_TOOL_NAME, ROUTED_UI_WAIT_TOOL_DESCRIPTION, ROUTED_UI_WAIT_INPUT_SCHEMA),
+    uiTool(ROUTED_BOX_CHROME_TOOL_NAME, ROUTED_BOX_CHROME_TOOL_DESCRIPTION, ROUTED_BOX_CHROME_INPUT_SCHEMA),
+    uiTool(ROUTED_BOX_HELP_TOOL_NAME, ROUTED_BOX_HELP_TOOL_DESCRIPTION, ROUTED_BOX_HELP_INPUT_SCHEMA),
+    uiTool(ROUTED_COMPUTER_TOOL_NAME, ROUTED_COMPUTER_TOOL_DESCRIPTION, ROUTED_COMPUTER_INPUT_SCHEMA),
   ];
+}
+
+export function isRoutedUiTool(name: string): boolean {
+  return (ROUTED_UI_TOOL_NAMES as readonly string[]).includes(name);
 }
 
 export function isRoutedComputerTool(definition: { readonly providerIdentifier?: unknown; readonly name?: unknown; readonly toolName?: unknown }): boolean {
   if (definition.providerIdentifier === ROUTED_COMPUTER_PROVIDER_IDENTIFIER) return true;
   const name = typeof definition.name === "string" ? definition.name : typeof definition.toolName === "string" ? definition.toolName : "";
-  return name === ROUTED_COMPUTER_TOOL_NAME || name === ROUTED_BOX_HELP_TOOL_NAME || name === ROUTED_BOX_CHROME_TOOL_NAME;
+  return name === ROUTED_COMPUTER_TOOL_NAME
+    || name === ROUTED_BOX_HELP_TOOL_NAME
+    || name === ROUTED_BOX_CHROME_TOOL_NAME
+    || isRoutedUiTool(name);
 }
 
 export type RoutedComputerImage = { readonly data: string; readonly mimeType: string };
@@ -400,6 +479,14 @@ export function shouldSkipRoutedBoxChromeReload(url: string | undefined, chromeA
   if (!chromeAlreadyOpen) return false;
   if (url == null || url.length === 0) return true;
   return isRoutedBrowserOriginHomeUrl(url);
+}
+
+const ROUTED_GUI_INTENT_RE = /\b(click|screenshot|browse|shop|order|checkout|cookie|desktop|website|browser|open chrome|type in|scroll)\b/i;
+
+export function turnNeedsRoutedComputer(prompt: string, chromeAlreadyOpen = false): boolean {
+  if (chromeAlreadyOpen) return true;
+  if (extractRoutedBrowserUrl(prompt) != null) return true;
+  return ROUTED_GUI_INTENT_RE.test(prompt);
 }
 
 export function extractRoutedBrowserUrl(text: string): string | undefined {

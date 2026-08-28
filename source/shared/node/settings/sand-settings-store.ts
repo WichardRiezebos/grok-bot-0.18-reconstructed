@@ -38,6 +38,7 @@ export interface SandStoredSettings {
   inferenceProvider?: SandInferenceProvider; inferenceRouterUsage?: SandInferenceRouterUsage;
   openRouterModel?: string;
   openRouterComputerModel?: string;
+  openRouterSummarizeModel?: string;
   openRouterReasoningEffort?: OpenRouterReasoningEffort;
   openRouterComputerReasoningEffort?: OpenRouterReasoningEffort;
   boxRuntime?: SandBoxRuntime;
@@ -89,6 +90,8 @@ function parseSettings(value: unknown): SandStoredSettings | null {
   if (openRouterModel !== undefined) result.openRouterModel = openRouterModel;
   const openRouterComputerModel = normalizeOpenRouterModelId(raw.openRouterComputerModel);
   if (openRouterComputerModel !== undefined) result.openRouterComputerModel = openRouterComputerModel;
+  const openRouterSummarizeModel = normalizeOpenRouterModelId(raw.openRouterSummarizeModel);
+  if (openRouterSummarizeModel !== undefined) result.openRouterSummarizeModel = openRouterSummarizeModel;
   const openRouterReasoningEffort = normalizeOpenRouterReasoningEffort(raw.openRouterReasoningEffort);
   if (openRouterReasoningEffort !== undefined) result.openRouterReasoningEffort = openRouterReasoningEffort;
   const openRouterComputerReasoningEffort = normalizeOpenRouterReasoningEffort(raw.openRouterComputerReasoningEffort);
@@ -243,6 +246,14 @@ export class SandSettingsStore {
     this.update((s) => {
       const { openRouterComputerModel: _old, ...rest } = s;
       return model === undefined ? rest : { ...rest, openRouterComputerModel: model };
+    });
+  }
+  getOpenRouterSummarizeModel(): string | undefined { return this.load().openRouterSummarizeModel; }
+  setOpenRouterSummarizeModel(value: string | undefined): void {
+    const model = normalizeOpenRouterModelId(value);
+    this.update((s) => {
+      const { openRouterSummarizeModel: _old, ...rest } = s;
+      return model === undefined ? rest : { ...rest, openRouterSummarizeModel: model };
     });
   }
   getOpenRouterReasoningEffort(): OpenRouterReasoningEffort {
