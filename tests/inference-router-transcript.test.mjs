@@ -126,7 +126,7 @@ test("routed turn error settles the in-flight assistant without a second bubble"
     assert.equal(assistant.at(-1).streaming, false);
     assert.match(assistant.at(-1).message.content, /Opened plus\.nl/);
     assert.match(assistant.at(-1).message.content, /aborted due to timeout/);
-    assert.equal(assistant.some((entry) => entry.streaming === true && String(entry.message.content).includes("Using Computer…")), true);
+    assert.equal(assistant.some((entry) => String(entry.message.content).includes("Using Computer…")), false);
     const running = events
       .filter((event) => event.family === "agents")
       .flatMap((event) => event.payload.agents ?? [])
@@ -196,11 +196,15 @@ test("routed turn settles the first acknowledgment and final text, not tool-step
       if (settled.length >= 2) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    assert.deepEqual([...new Set(settled.map((entry) => entry.id))], ["t0s0", "t0s2"]);
+    assert.deepEqual([...new Set(settled.map((entry) => entry.id))].sort(), ["t0s0", "t0s2"]);
     assert.equal(settled[0].message.content, "I'll check plus.nl.");
     assert.equal(settled[1].message.content, "Found the lunch deal.");
     assert.equal(settled.some((entry) => String(entry.message?.content).includes("Clicking lunch")), false);
     assert.equal(settled.some((entry) => entry.id === "t0s1"), false);
+    const streamed = events
+      .filter((event) => event.family === "transcript" && event.payload?.entry?.kind === "send-message")
+      .map((event) => event.payload.entry);
+    assert.equal(streamed.some((entry) => String(entry.message?.content).includes("Clicking lunch")), false);
     assert.deepEqual(
       loaded.module.coalesceRoutedProviderMessages([
         { role: "user", content: "lunch" },
@@ -588,13 +592,23 @@ test("tail merge includes the in-progress streaming entry and drops it after set
       dispatchRemote: async (method) => {
         if (method === "getAgentTranscriptTail") return { entries: [] };
         if (method === "listAgents") return [{ id: "agent-1" }];
-        if (method === "listRoutedComputerTools" || method === "listRoutedMcpTools") return [];
+        if (method === "listRoutedComputerTools") return [];
+        if (method === "listRoutedMcpTools") {
+          return [{ name: "GMAIL_FETCH_EMAILS", providerIdentifier: "composio--gmail", toolName: "GMAIL_FETCH_EMAILS" }];
+        }
+        if (method === "executeRoutedMcpTool") return { ok: true };
         return {};
       },
       runProviderText: async (_provider, _messages, options) => {
+        await options.executeTool(
+          { name: "GMAIL_FETCH_EMAILS", providerIdentifier: "composio--gmail", toolName: "GMAIL_FETCH_EMAILS" },
+          {},
+          "call-1",
+        );
+        options.onStreamEvent?.({ type: "step-finish", elapsedMs: 4 });
         options.onTextDelta?.("partial reply", "partial reply");
         midTail = await router.dispatch("getAgentTranscriptTail", { id: "agent-1" });
-        options.onStreamEvent?.({ type: "step-finish", elapsedMs: 4 });
+        options.onStreamEvent?.({ type: "step-finish", elapsedMs: 8 });
         return "partial reply";
       },
     });
@@ -823,15 +837,11 @@ test("a turn that ends on a tool step settles the streamed bubble", async () => 
       },
     });
     await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "click it", clientNonce: "n1" });
-    let lastForSlot = null;
-    for (let i = 0; i < 80; i++) {
-      const forSlot = events.filter((event) => event.family === "transcript" && event.payload?.entry?.id === "t0s0");
-      lastForSlot = forSlot.at(-1)?.payload?.entry ?? null;
-      if (lastForSlot?.streaming === false) break;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    assert.equal(lastForSlot?.streaming, false);
-    assert.equal(events.some((event) => event.family === "transcript" && event.payload?.entry?.id === "t0s0" && event.payload?.entry?.streaming === true), true);
+    const messages = events
+      .filter((event) => event.family === "transcript" && event.payload?.entry?.kind === "send-message")
+      .map((event) => event.payload.entry);
+    assert.equal(messages.some((entry) => entry.streaming === true), false);
+    assert.equal(messages.some((entry) => String(entry.message?.content).includes("I've clicked Submit.")), false);
   } finally {
     await loaded.dispose();
     await rm(dataDir, { recursive: true, force: true });

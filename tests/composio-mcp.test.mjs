@@ -101,7 +101,9 @@ test("capComposioModelTools prefers Gmail and respects the model limit", () => {
         { name: "GITHUB_CREATE_ISSUE", toolName: "GITHUB_CREATE_ISSUE", providerIdentifier: "composio", description: "gh", inputSchema: {}, toolkit: "github" },
       ];
       const capped = loaded.module.capComposioModelTools(tools, 2);
-      assert.deepEqual(capped.map((tool) => tool.name), ["GMAIL_FETCH_EMAILS", "GMAIL_SETTINGS"]);
+      assert.deepEqual(capped.map((tool) => tool.name), ["GMAIL_FETCH_EMAILS", "GITHUB_CREATE_ISSUE"]);
+      const gmailOnly = loaded.module.capComposioModelTools(tools.filter((tool) => tool.toolkit === "gmail"), 2);
+      assert.deepEqual(gmailOnly.map((tool) => tool.name), ["GMAIL_FETCH_EMAILS", "GMAIL_SETTINGS"]);
     } finally {
       await loaded.dispose();
     }
@@ -214,8 +216,11 @@ test("Connect ck_ keys list tools through local HTTP MCP, not Cursor", async () 
       async executeTool() { throw new Error("Cursor dashboard should not execute composio"); },
     }, () => "ck_example");
     const servers = await wrapped.listTools(["composio"]);
-    assert.equal(servers[0]?.status, "connected");
+    assert.equal(servers.length, 2);
+    assert.equal(servers[0]?.serverIdentifier, "composio--gmail");
+    assert.equal(servers[1]?.serverIdentifier, "composio--slack");
     assert.ok(servers[0]?.tools.some((tool) => tool.name === "GMAIL_FETCH_EMAILS"));
+    assert.ok(servers[1]?.tools.some((tool) => tool.name === "SLACK_SEND_MESSAGE"));
   } finally {
     globalThis.fetch = previousFetch;
     await loaded.dispose();
@@ -253,6 +258,137 @@ test("mergeInstalledMcpServers keeps Composio when the gateway is empty", async 
     }]);
     assert.equal(routed[0].providerIdentifier, "composio");
   } finally {
+    await loaded.dispose();
+  }
+});
+
+test("listComposioBackendServers unpacks Gmail and Linear rows", async () => {
+  const loaded = await loadModule();
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("connected_accounts")) {
+      return jsonResponse({
+        items: [
+          { id: "ca_gmail", status: "ACTIVE", user_id: "user-1", toolkit: { slug: "gmail" } },
+          { id: "ca_linear", status: "ACTIVE", user_id: "user-1", toolkit: { slug: "linear" } },
+        ],
+      });
+    }
+    if (url.includes("toolkit_slug=linear")) {
+      return jsonResponse({ items: [{ slug: "LINEAR_CREATE_ISSUE", description: "Create", toolkit: { slug: "linear" } }] });
+    }
+    if (url.includes("/api/v3.1/tools")) {
+      return jsonResponse({ items: [{ slug: "GMAIL_FETCH_EMAILS", description: "Fetch", toolkit: { slug: "gmail" } }] });
+    }
+    return jsonResponse({}, 404);
+  };
+  try {
+    loaded.module.resetComposioCachesForTests();
+    const servers = await loaded.module.listComposioBackendServers("ak_unpack");
+    const installed = loaded.module.toInstalledComposioServers(servers);
+    assert.deepEqual(installed.map((row) => row.name), ["Gmail", "Linear"]);
+    assert.deepEqual(installed.map((row) => row.serverIdentifier), ["composio--gmail", "composio--linear"]);
+    const gmailTools = loaded.module.toInstalledComposioServerTools(servers.filter((server) => server.serverIdentifier === "composio--gmail"));
+    const linearTools = loaded.module.toInstalledComposioServerTools(servers.filter((server) => server.serverIdentifier === "composio--linear"));
+    assert.equal(gmailTools[0].name, "GMAIL_FETCH_EMAILS");
+    assert.equal(linearTools[0].name, "LINEAR_CREATE_ISSUE");
+    const routed = loaded.module.flattenComposioRoutedTools(servers);
+    assert.equal(routed.find((tool) => tool.name === "GMAIL_FETCH_EMAILS")?.providerIdentifier, "composio--gmail");
+    const wrapped = loaded.module.wrapBackendMcpExecWithComposio({
+      async listTools() { throw new Error("Cursor dashboard should not list composio"); },
+      async executeTool() { throw new Error("Cursor dashboard should not execute composio"); },
+    }, () => "ak_unpack");
+    const listed = await wrapped.listTools(["composio"]);
+    assert.equal(listed.length, 2);
+    const gmailOnly = await wrapped.listTools(["composio--gmail"]);
+    assert.equal(gmailOnly.length, 1);
+    assert.equal(gmailOnly[0].serverIdentifier, "composio--gmail");
+    const gateway = [{ id: "9", name: "Composio", serverIdentifier: "composio", status: "error" }];
+    const merged = loaded.module.mergeInstalledMcpServers(gateway, installed);
+    assert.equal(merged.some((row) => row.name === "Composio"), false);
+    assert.equal(merged.some((row) => row.name === "Gmail"), true);
+    assert.equal(merged.some((row) => row.name === "Linear"), true);
+  } finally {
+    globalThis.fetch = previousFetch;
+    await loaded.dispose();
+  }
+});
+
+test("Composio webhook HMAC and payload parse", async () => {
+  const loaded = await loadModule();
+  try {
+    const { createHmac } = await import("node:crypto");
+    const payload = JSON.stringify({ metadata: { trigger_slug: "GMAIL_NEW_GMAIL_MESSAGE" }, data: { id: "msg-1" } });
+    const webhookId = "msg_1";
+    const webhookTimestamp = String(Math.floor(Date.now() / 1000));
+    const secret = "whsec_test";
+    const signature = `v1,${createHmac("sha256", secret).update(`${webhookId}.${webhookTimestamp}.${payload}`).digest("base64")}`;
+    assert.equal(loaded.module.verifyComposioWebhookSignature({
+      payload, signature, webhookId, webhookTimestamp, secret,
+    }), true);
+    assert.equal(loaded.module.verifyComposioWebhookSignature({
+      payload, signature: "v1,nope", webhookId, webhookTimestamp, secret,
+    }), false);
+    assert.deepEqual(loaded.module.parseComposioWebhookPayload(payload), {
+      triggerSlug: "GMAIL_NEW_GMAIL_MESSAGE",
+      data: { id: "msg-1" },
+    });
+    assert.deepEqual(loaded.module.composioRoutineEvent("GMAIL_NEW_GMAIL_MESSAGE", { id: "msg-1" }), {
+      source: "composio",
+      triggerSlug: "GMAIL_NEW_GMAIL_MESSAGE",
+      data: { id: "msg-1" },
+    });
+  } finally {
+    await loaded.dispose();
+  }
+});
+
+test("ensureComposioWebhookAndTriggers subscribes and upserts Gmail", async () => {
+  const loaded = await loadModule();
+  const previousFetch = globalThis.fetch;
+  const calls = [];
+  let stored;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    calls.push({ url, method: init?.method ?? "GET", body: String(init?.body ?? "") });
+    if (url.includes("/org/webhooks") && (init?.method ?? "GET") === "GET") {
+      return jsonResponse({ items: [] });
+    }
+    if (url.includes("/org/webhooks")) {
+      return jsonResponse({ secret: "whsec_saved", webhook_url: "https://bot.example/webhooks/composio" });
+    }
+    if (url.includes("connected_accounts")) {
+      return jsonResponse({
+        items: [{ id: "ca_gmail", status: "ACTIVE", user_id: "user-1", toolkit: { slug: "gmail" } }],
+      });
+    }
+    if (url.includes("trigger_instances") && url.includes("upsert")) {
+      return jsonResponse({ id: "ti_1" });
+    }
+    if (url.includes("trigger_instances")) {
+      return jsonResponse({ items: [] });
+    }
+    return jsonResponse({}, 404);
+  };
+  try {
+    loaded.module.resetComposioCachesForTests();
+    const result = await loaded.module.ensureComposioWebhookAndTriggers({
+      apiKey: "ak_triggers",
+      webhookUrl: "https://bot.example/webhooks/composio",
+      persistSecret: (secret) => { stored = secret; },
+    });
+    assert.equal(result.enabled, true);
+    assert.equal(stored, "whsec_saved");
+    assert.ok(calls.some((call) => call.url.includes("/org/webhooks") && call.method === "POST"));
+    assert.ok(calls.some((call) => call.url.includes("GMAIL_NEW_GMAIL_MESSAGE") && call.url.includes("upsert")));
+    const skipped = await loaded.module.ensureComposioWebhookAndTriggers({
+      apiKey: "ak_triggers",
+      webhookUrl: "http://127.0.0.1:8080/webhooks/composio",
+    });
+    assert.equal(skipped.enabled, false);
+  } finally {
+    globalThis.fetch = previousFetch;
     await loaded.dispose();
   }
 });

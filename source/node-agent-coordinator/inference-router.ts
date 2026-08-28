@@ -393,6 +393,7 @@ export function createCoordinatorInferenceRouter(options: {
     let persistFailed: unknown;
     let stepUsedTool = false;
     let finishedSteps = 0;
+    let toolsCompleted = 0;
     let attemptHadProgress = false;
     let lastStreamEmitAt = 0;
     let lastSettled: { readonly id: string; readonly content: string; readonly timestampMs: number } | undefined;
@@ -421,17 +422,21 @@ export function createCoordinatorInferenceRouter(options: {
     const settleStep = () => {
       const usedTool = stepUsedTool;
       const snapshot = visibleText;
+      const alreadyShown = assistantStreamStarted;
       stepUsedTool = false;
       finishedSteps += 1;
-      if (snapshot.trim().length === 0) {
-        if (assistantStreamStarted) emitAssistant("", false);
+      if (usedTool) {
+        if (snapshot.trim().length > 0) {
+          log(`discard-narration ${snapshot.replaceAll("\n", " ").slice(0, 200)}`);
+          visibleText = "";
+        }
+        toolsCompleted += 1;
+        if (alreadyShown) emitAssistant("", false);
         clearStreaming(assistantId);
         return;
       }
-      if (usedTool) {
-        log(`discard-narration ${snapshot.replaceAll("\n", " ").slice(0, 200)}`);
-        visibleText = "";
-        if (assistantStreamStarted) emitAssistant("", false);
+      if (snapshot.trim().length === 0) {
+        if (alreadyShown) emitAssistant("", false);
         clearStreaming(assistantId);
         return;
       }
@@ -452,15 +457,11 @@ export function createCoordinatorInferenceRouter(options: {
       visibleText += delta;
       attemptHadProgress = true;
       turnActivity.reveal({ composing: false });
-      emitStreaming(visibleText);
+      if (toolsCompleted > 0) emitStreaming(visibleText);
     };
     const onProgress = (line: string) => {
       const tool = /^Using (.+)…$/u.exec(line)?.[1] ?? "tool";
       turnActivity.reveal({ composing: false, activity: { kind: "tool", tool, callId: "progress" } });
-      const content = visibleText.length === 0 ? line : `${visibleText}\n\n${line}`;
-      rememberStreaming(content);
-      lastStreamEmitAt = Date.now();
-      emitAssistant(content, true);
     };
     let screenshotStreak = 0;
     let boxHandedOff = false;
@@ -603,6 +604,7 @@ export function createCoordinatorInferenceRouter(options: {
           attemptHadProgress = false;
           stepUsedTool = false;
           finishedSteps = 0;
+          toolsCompleted = 0;
           visibleText = "";
           lastStreamEmitAt = 0;
           persistFailed = undefined;
@@ -626,7 +628,7 @@ export function createCoordinatorInferenceRouter(options: {
       if (persistFailed != null) throw persistFailed;
       if (visibleText.trim().length > 0) {
         await persistThenEmit(assistantId, visibleText, assistantTimestampMs);
-      } else if (content.trim().length > 0 && assistantSlot === 0 && !assistantStreamStarted) {
+      } else if (content.trim().length > 0 && assistantSlot === 0 && !assistantStreamStarted && finishedSteps === 0) {
         await persistThenEmit(assistantId, content, assistantTimestampMs);
       } else {
         clearStreaming();

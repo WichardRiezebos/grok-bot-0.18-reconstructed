@@ -61,6 +61,7 @@ export const SAND_GATEWAY_COMMANDS = {
   updateAgentAutomation: (api: GatewayApi, body: string) => api.updateAgentAutomation(parseCommandArgs(body)),
   deleteAgentAutomation: (api: GatewayApi, body: string) => api.deleteAgentAutomation(parseCommandArgs(body)),
   runAgentAutomationNow: (api: GatewayApi, body: string) => api.runAgentAutomationNow(parseCommandArgs(body)),
+  fireComposioTrigger: (api: GatewayApi, body: string) => api.fireComposioTrigger(parseCommandArgs(body)),
   broadcastToAgents: (api: GatewayApi, body: string) => api.broadcastToAgents(parseCommandArgs(body)),
   getAgentWorkflows: (api: GatewayApi, body: string) => api.getAgentWorkflows(parseCommandArgs(body)),
   createAgentWorkflow: (api: GatewayApi, body: string) => api.createAgentWorkflow(parseCommandArgs(body)),

@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -9,8 +10,23 @@ export const COMPOSIO_CONNECTED_ACCOUNTS_URL = "https://backend.composio.dev/api
 export const COMPOSIO_TOOL_ROUTER_SESSION_URL = "https://backend.composio.dev/api/v3.1/tool_router/session";
 export const COMPOSIO_TOOLS_URL = "https://backend.composio.dev/api/v3.1/tools";
 export const COMPOSIO_TOOL_EXECUTE_URL = "https://backend.composio.dev/api/v3.1/tools/execute";
+export const COMPOSIO_WEBHOOK_SUBSCRIPTIONS_URL = "https://backend.composio.dev/api/v3/org/webhooks";
+export const COMPOSIO_TRIGGER_INSTANCES_URL = "https://backend.composio.dev/api/v3.1/trigger_instances";
+export const COMPOSIO_WEBHOOK_SECRET_NAME = "COMPOSIO_WEBHOOK_SECRET";
 export const COMPOSIO_MODEL_TOOL_LIMIT = 32;
+export const COMPOSIO_WEBHOOK_TOLERANCE_SECONDS = 300;
 export const COMPOSIO_TOOLS_MISSING_MESSAGE = "Composio is saved but tools did not load. Open Plugins → Yours to see the connector, or save the key again in Settings after the computer is running.";
+export const DEFAULT_COMPOSIO_TRIGGER_SLUGS: Readonly<Record<string, string>> = { gmail: "GMAIL_NEW_GMAIL_MESSAGE" };
+const TOOLKIT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  gmail: "Gmail",
+  linear: "Linear",
+  github: "GitHub",
+  slack: "Slack",
+  notion: "Notion",
+  googledrive: "Google Drive",
+  googlecalendar: "Google Calendar",
+  outlook: "Outlook",
+};
 
 type ComposioMcpRuntimeConfig = { mcpServers: Record<string, { type: "http"; url: string; headers: Record<string, string> }> };
 
@@ -86,6 +102,33 @@ export function isComposioProjectKey(apiKey: string): boolean {
 export function isComposioServerIdentifier(identifier: string | undefined): boolean {
   if (identifier == null || identifier.length === 0) return false;
   return identifier === COMPOSIO_MCP_SERVER_NAME || identifier.startsWith(`${COMPOSIO_MCP_SERVER_NAME}--`);
+}
+
+export function composioServerIdentifierForToolkit(toolkit: string): string {
+  const slug = toolkit.trim().toLowerCase();
+  return slug.length === 0 || slug === COMPOSIO_MCP_SERVER_NAME
+    ? COMPOSIO_MCP_SERVER_NAME
+    : `${COMPOSIO_MCP_SERVER_NAME}--${slug}`;
+}
+
+export function composioToolkitFromServerIdentifier(identifier: string): string {
+  if (identifier.startsWith(`${COMPOSIO_MCP_SERVER_NAME}--`)) {
+    return identifier.slice(`${COMPOSIO_MCP_SERVER_NAME}--`.length);
+  }
+  return COMPOSIO_MCP_SERVER_NAME;
+}
+
+export function composioToolkitDisplayName(toolkit: string): string {
+  const slug = toolkit.trim().toLowerCase();
+  if (slug === COMPOSIO_MCP_SERVER_NAME || slug.length === 0) return "Composio";
+  const mapped = TOOLKIT_DISPLAY_NAMES[slug];
+  if (mapped != null) return mapped;
+  return slug.replace(/(^|[_-])(\w)/gu, (_all, _sep: string, letter: string) => letter.toUpperCase()).replace(/_/gu, " ");
+}
+
+export function toolkitSlugFromToolName(name: string): string {
+  const prefix = name.split("_", 1)[0]?.toLowerCase() ?? "";
+  return prefix.length > 0 ? prefix : COMPOSIO_MCP_SERVER_NAME;
 }
 
 export function promptLooksLikeComposioPluginUse(prompt: string): boolean {
@@ -185,14 +228,43 @@ export function capComposioModelTools(
   tools: readonly ComposioToolDefinition[],
   limit = COMPOSIO_MODEL_TOOL_LIMIT,
 ): ComposioToolDefinition[] {
-  const gmail = tools.filter((tool) => tool.toolkit === GMAIL_TOOLKIT || tool.name.startsWith("GMAIL_"));
-  const rest = tools.filter((tool) => !gmail.includes(tool));
   const gmailRank = (name: string) => {
     if (/FETCH|SEARCH|LIST|GET_PROFILE|SEND/u.test(name)) return 0;
     return 1;
   };
-  gmail.sort((left, right) => gmailRank(left.name) - gmailRank(right.name) || left.name.localeCompare(right.name));
-  return [...gmail, ...rest].slice(0, limit);
+  const rank = (tool: ComposioToolDefinition) => (
+    tool.toolkit === GMAIL_TOOLKIT || tool.name.startsWith("GMAIL_") ? gmailRank(tool.name) : 1
+  );
+  const grouped = new Map<string, ComposioToolDefinition[]>();
+  for (const tool of tools) {
+    const slug = tool.toolkit.length > 0 ? tool.toolkit : toolkitSlugFromToolName(tool.name);
+    const bucket = grouped.get(slug) ?? [];
+    bucket.push(tool);
+    grouped.set(slug, bucket);
+  }
+  const toolkits = [...grouped.keys()].sort((left, right) => {
+    if (left === GMAIL_TOOLKIT) return -1;
+    if (right === GMAIL_TOOLKIT) return 1;
+    if (left === COMPOSIO_MCP_SERVER_NAME) return 1;
+    if (right === COMPOSIO_MCP_SERVER_NAME) return -1;
+    return left.localeCompare(right);
+  });
+  for (const toolkit of toolkits) {
+    grouped.get(toolkit)?.sort((left, right) => rank(left) - rank(right) || left.name.localeCompare(right.name));
+  }
+  const taken = Object.fromEntries(toolkits.map((toolkit) => [toolkit, 0]));
+  const capped: ComposioToolDefinition[] = [];
+  while (capped.length < limit && toolkits.some((toolkit) => (taken[toolkit] ?? 0) < (grouped.get(toolkit)?.length ?? 0))) {
+    for (const toolkit of toolkits) {
+      if (capped.length >= limit) break;
+      const bucket = grouped.get(toolkit) ?? [];
+      const index = taken[toolkit] ?? 0;
+      if (index >= bucket.length) continue;
+      capped.push(bucket[index]!);
+      taken[toolkit] = index + 1;
+    }
+  }
+  return capped;
 }
 
 function toolFromComposioItem(item: Record<string, unknown>, account?: ComposioConnectedAccount): ComposioToolDefinition | undefined {
@@ -204,10 +276,11 @@ function toolFromComposioItem(item: Record<string, unknown>, account?: ComposioC
   const description = typeof item.description === "string" && item.description.length > 0
     ? item.description
     : typeof item.human_description === "string" ? item.human_description : slug;
+  const identifier = composioServerIdentifierForToolkit(toolkit);
   return {
     name: slug,
     toolName: slug,
-    providerIdentifier: COMPOSIO_MCP_SERVER_NAME,
+    providerIdentifier: identifier,
     description,
     inputSchema: inputSchemaFrom(item.input_parameters ?? item.input_schema ?? item.parameters),
     toolkit,
@@ -357,13 +430,14 @@ export async function listComposioConnectMcpTools(apiKey: string): Promise<Compo
   for (const row of rows) {
     const item = asRecord(row);
     if (item == null || typeof item.name !== "string" || item.name.length === 0) continue;
+    const toolkit = toolkitSlugFromToolName(item.name);
     tools.push({
       name: item.name,
       toolName: item.name,
-      providerIdentifier: COMPOSIO_MCP_SERVER_NAME,
+      providerIdentifier: composioServerIdentifierForToolkit(toolkit),
       description: typeof item.description === "string" ? item.description : item.name,
       inputSchema: inputSchemaFrom(item.inputSchema),
-      toolkit: COMPOSIO_MCP_SERVER_NAME,
+      toolkit,
     });
   }
   return capComposioModelTools(tools);
@@ -398,21 +472,50 @@ function mcpExecText(text: string): ComposioMcpExecResult {
   };
 }
 
-function backendServerFromTools(tools: readonly ComposioToolDefinition[], status: "connected" | "error", statusDetail?: string) {
+function backendServerFromTools(
+  tools: readonly ComposioToolDefinition[],
+  status: "connected" | "error",
+  statusDetail?: string,
+  toolkit = COMPOSIO_MCP_SERVER_NAME,
+) {
+  const identifier = composioServerIdentifierForToolkit(toolkit);
   return {
-    serverIdentifier: COMPOSIO_MCP_SERVER_NAME,
-    rowServerIdentifier: COMPOSIO_MCP_SERVER_NAME,
+    serverIdentifier: identifier,
+    rowServerIdentifier: identifier,
     accountLabel: "default",
+    toolkit,
+    displayName: composioToolkitDisplayName(toolkit),
     status,
     ...(statusDetail == null ? {} : { statusDetail }),
     tools: tools.map((tool) => ({
       name: tool.name,
       toolName: tool.toolName,
-      providerIdentifier: tool.providerIdentifier,
+      providerIdentifier: composioServerIdentifierForToolkit(tool.toolkit || toolkit),
       description: tool.description,
       inputSchema: tool.inputSchema,
     })),
   };
+}
+
+function groupToolsByToolkit(tools: readonly ComposioToolDefinition[]): Map<string, ComposioToolDefinition[]> {
+  const grouped = new Map<string, ComposioToolDefinition[]>();
+  for (const tool of tools) {
+    const slug = tool.toolkit.length > 0 ? tool.toolkit : toolkitSlugFromToolName(tool.name);
+    const bucket = grouped.get(slug) ?? [];
+    bucket.push(tool);
+    grouped.set(slug, bucket);
+  }
+  return grouped;
+}
+
+function orderedToolkits(slugs: readonly string[]): string[] {
+  return [...slugs].sort((left, right) => {
+    if (left === GMAIL_TOOLKIT) return -1;
+    if (right === GMAIL_TOOLKIT) return 1;
+    if (left === COMPOSIO_MCP_SERVER_NAME) return 1;
+    if (right === COMPOSIO_MCP_SERVER_NAME) return -1;
+    return left.localeCompare(right);
+  });
 }
 
 export async function listComposioBackendServers(apiKey: string | undefined): Promise<Array<ReturnType<typeof backendServerFromTools>>> {
@@ -422,7 +525,10 @@ export async function listComposioBackendServers(apiKey: string | undefined): Pr
       ? await listComposioPlatformTools(apiKey)
       : await listComposioConnectMcpTools(apiKey);
     if (tools.length === 0) return [backendServerFromTools([], "error", COMPOSIO_TOOLS_MISSING_MESSAGE)];
-    return [backendServerFromTools(tools, "connected")];
+    const grouped = groupToolsByToolkit(tools);
+    return orderedToolkits([...grouped.keys()]).map((toolkit) => (
+      backendServerFromTools(grouped.get(toolkit) ?? [], "connected", undefined, toolkit)
+    ));
   } catch (error) {
     return [backendServerFromTools([], "error", error instanceof Error ? error.message : String(error))];
   }
@@ -441,7 +547,7 @@ export function toInstalledComposioServers(
 ): Record<string, unknown>[] {
   return servers.map((server, index) => ({
     id: String(index + 1),
-    name: "Composio",
+    name: server.displayName ?? composioToolkitDisplayName(composioToolkitFromServerIdentifier(server.serverIdentifier)),
     serverIdentifier: server.serverIdentifier,
     accountKey: "default",
     rowServerIdentifier: server.rowServerIdentifier,
@@ -478,7 +584,7 @@ export function flattenComposioRoutedTools(
   return servers.flatMap((server) =>
     server.tools.map((tool) => ({
       name: tool.name,
-      providerIdentifier: tool.providerIdentifier,
+      providerIdentifier: tool.providerIdentifier.length > 0 ? tool.providerIdentifier : server.serverIdentifier,
       toolName: tool.toolName,
       description: tool.description,
       inputSchema: tool.inputSchema,
@@ -486,33 +592,30 @@ export function flattenComposioRoutedTools(
   );
 }
 
+function nextUnusedId(used: Set<string>, preferred: string): string {
+  if (preferred.length > 0 && !used.has(preferred)) return preferred;
+  let next = 1;
+  while (used.has(String(next))) next += 1;
+  return String(next);
+}
+
 export function mergeInstalledMcpServers(
   gatewayServers: readonly unknown[],
   localServers: readonly Record<string, unknown>[],
 ): unknown[] {
-  const gateway = [...gatewayServers];
-  if (localServers.length === 0) return gateway;
-  const local = localServers[0];
-  if (local == null) return gateway;
-  const existingIndex = gateway.findIndex((row) => isComposioInstalledRow(row));
-  if (existingIndex >= 0) {
-    const existing = gateway[existingIndex];
-    const existingRecord = existing != null && typeof existing === "object" && !Array.isArray(existing)
-      ? existing as Record<string, unknown>
-      : {};
-    gateway[existingIndex] = { ...existingRecord, ...local, id: existingRecord.id ?? local.id };
-    return gateway;
-  }
+  if (localServers.length === 0) return [...gatewayServers];
+  const gateway = gatewayServers.filter((row) => !isComposioInstalledRow(row));
   const used = new Set(
     gateway.map((row) => (row != null && typeof row === "object" && "id" in row ? String((row as { id: unknown }).id) : "")),
   );
-  let id = typeof local.id === "string" && local.id.length > 0 ? local.id : "1";
-  if (used.has(id)) {
-    let next = 1;
-    while (used.has(String(next))) next += 1;
-    id = String(next);
+  const merged = [...gateway];
+  for (const local of localServers) {
+    const preferred = typeof local.id === "string" ? local.id : "";
+    const id = nextUnusedId(used, preferred);
+    used.add(id);
+    merged.push({ ...local, id });
   }
-  return [{ ...local, id }, ...gateway];
+  return merged;
 }
 
 export async function executeComposioBackendTool(
@@ -543,8 +646,11 @@ export function wrapBackendMcpExecWithComposio(
       const composioIds = serverIdentifiers.filter((id) => isComposioServerIdentifier(id));
       const otherIds = serverIdentifiers.filter((id) => !isComposioServerIdentifier(id));
       const local = composioIds.length === 0 ? [] : await listComposioBackendServers(readKey());
+      const filtered = composioIds.includes(COMPOSIO_MCP_SERVER_NAME)
+        ? local
+        : local.filter((server) => composioIds.includes(server.serverIdentifier));
       const remote = otherIds.length === 0 ? [] : await inner.listTools(otherIds);
-      return [...local, ...remote];
+      return [...filtered, ...remote];
     },
     async executeTool(args: { serverIdentifier?: string; toolName?: string; name?: string; args?: unknown; toolCallId?: string; agentId?: string }) {
       if (isComposioServerIdentifier(args.serverIdentifier)) {
@@ -553,6 +659,147 @@ export function wrapBackendMcpExecWithComposio(
       return await inner.executeTool(args);
     },
   };
+}
+
+export function isPublicComposioWebhookBase(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    return !["127.0.0.1", "localhost", "::1"].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+export function verifyComposioWebhookSignature(args: {
+  readonly payload: string;
+  readonly signature: string;
+  readonly webhookId: string;
+  readonly webhookTimestamp: string;
+  readonly secret: string;
+  readonly nowMs?: number;
+}): boolean {
+  if (args.secret.length === 0 || args.webhookId.length === 0 || args.webhookTimestamp.length === 0 || args.signature.length === 0) {
+    return false;
+  }
+  const timestamp = Number.parseInt(args.webhookTimestamp, 10);
+  if (!Number.isFinite(timestamp)) return false;
+  const nowSeconds = Math.floor((args.nowMs ?? Date.now()) / 1000);
+  if (Math.abs(nowSeconds - timestamp) > COMPOSIO_WEBHOOK_TOLERANCE_SECONDS) return false;
+  const digest = createHmac("sha256", args.secret).update(`${args.webhookId}.${args.webhookTimestamp}.${args.payload}`).digest("base64");
+  const expected = Buffer.from(digest);
+  for (const part of args.signature.split(" ")) {
+    const encoded = part.includes(",") ? part.slice(part.indexOf(",") + 1) : part;
+    const received = Buffer.from(encoded);
+    if (received.length === expected.length && timingSafeEqual(received, expected)) return true;
+  }
+  return false;
+}
+
+export function parseComposioWebhookPayload(payload: string): { triggerSlug: string; data: unknown } | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload) as unknown;
+  } catch {
+    return undefined;
+  }
+  const record = asRecord(parsed);
+  if (record == null) return undefined;
+  const metadata = asRecord(record.metadata);
+  const triggerSlug = typeof metadata?.trigger_slug === "string" ? metadata.trigger_slug
+    : typeof record.triggerSlug === "string" ? record.triggerSlug
+      : typeof record.trigger_slug === "string" ? record.trigger_slug
+        : "";
+  if (triggerSlug.length === 0) return undefined;
+  return { triggerSlug, data: record.data ?? record.payload ?? record };
+}
+
+export function composioRoutineEvent(triggerSlug: string, data: unknown): Record<string, unknown> {
+  return {
+    source: "composio",
+    triggerSlug,
+    ...(data != null && typeof data === "object" && !Array.isArray(data) ? { data } : data != null ? { data } : {}),
+  };
+}
+
+async function jsonFromComposio(response: Response): Promise<Record<string, unknown> | undefined> {
+  const text = await response.text();
+  if (text.length === 0) return undefined;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return asRecord(parsed);
+  } catch {
+    return undefined;
+  }
+}
+
+async function subscribeComposioWebhook(apiKey: string, webhookUrl: string): Promise<string | undefined> {
+  const listed = await fetch(COMPOSIO_WEBHOOK_SUBSCRIPTIONS_URL, { headers: { "x-api-key": apiKey } });
+  if (listed.ok) {
+    const body = await jsonFromComposio(listed);
+    const items = Array.isArray(body?.items) ? body.items : Array.isArray(body?.webhooks) ? body.webhooks : [];
+    for (const item of items) {
+      const record = asRecord(item);
+      const url = typeof record?.webhook_url === "string" ? record.webhook_url : typeof record?.url === "string" ? record.url : "";
+      const secret = typeof record?.secret === "string" ? record.secret : "";
+      if (url === webhookUrl && secret.length > 0) return secret;
+    }
+  }
+  const created = await fetch(COMPOSIO_WEBHOOK_SUBSCRIPTIONS_URL, {
+    method: "POST",
+    headers: { "x-api-key": apiKey, "content-type": "application/json" },
+    body: JSON.stringify({ webhook_url: webhookUrl, enabled_events: ["composio.trigger.message"] }),
+  });
+  if (!created.ok) return undefined;
+  const body = await jsonFromComposio(created);
+  const secret = typeof body?.secret === "string" ? body.secret : "";
+  return secret.length > 0 ? secret : undefined;
+}
+
+async function upsertDefaultTriggerInstances(apiKey: string, accounts: readonly ComposioConnectedAccount[]): Promise<void> {
+  const existing = await fetch(`${COMPOSIO_TRIGGER_INSTANCES_URL}?limit=100`, { headers: { "x-api-key": apiKey } });
+  const existingSlugs = new Set<string>();
+  if (existing.ok) {
+    const body = await jsonFromComposio(existing);
+    const items = Array.isArray(body?.items) ? body.items : Array.isArray(body?.triggers) ? body.triggers : [];
+    for (const item of items) {
+      const record = asRecord(item);
+      const slug = typeof record?.trigger_slug === "string" ? record.trigger_slug
+        : typeof record?.slug === "string" ? record.slug
+          : "";
+      const status = typeof record?.status === "string" ? record.status.toUpperCase() : "ACTIVE";
+      if (slug.length > 0 && status !== "DISABLED") existingSlugs.add(`${record?.connected_account_id ?? ""}:${slug}`);
+    }
+  }
+  for (const account of accounts) {
+    const slug = DEFAULT_COMPOSIO_TRIGGER_SLUGS[account.toolkit];
+    if (slug == null) continue;
+    if (existingSlugs.has(`${account.id}:${slug}`)) continue;
+    await fetch(`${COMPOSIO_TRIGGER_INSTANCES_URL}/${encodeURIComponent(slug)}/upsert`, {
+      method: "POST",
+      headers: { "x-api-key": apiKey, "content-type": "application/json" },
+      body: JSON.stringify({
+        connected_account_id: account.id,
+        user_id: account.userId,
+        trigger_config: {},
+      }),
+    }).catch(() => undefined);
+  }
+}
+
+export async function ensureComposioWebhookAndTriggers(args: {
+  readonly apiKey: string;
+  readonly webhookUrl: string;
+  readonly persistSecret?: (secret: string) => void;
+}): Promise<{ secret?: string; enabled: boolean }> {
+  if (!isComposioProjectKey(args.apiKey) || !isPublicComposioWebhookBase(args.webhookUrl)) {
+    return { enabled: false };
+  }
+  const secret = await subscribeComposioWebhook(args.apiKey, args.webhookUrl);
+  if (secret != null && secret.length > 0) args.persistSecret?.(secret);
+  const accounts = await listComposioConnectedAccounts(args.apiKey);
+  await upsertDefaultTriggerInstances(args.apiKey, accounts);
+  return { ...(secret == null ? {} : { secret }), enabled: true };
 }
 
 export function resetComposioCachesForTests(): void {

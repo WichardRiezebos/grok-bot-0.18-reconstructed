@@ -3,6 +3,7 @@ import {
   parseCoordinatorAgentThreadRequest,
   parseCoordinatorTranscriptWindowRequest,
 } from "../shared/rpc/coordinator.js";
+import { triggerMatchesEvent } from "./automations/automation-trigger.js";
 import {
   executeRoutedComputerTool,
   listRoutedComputerToolDefinitions,
@@ -427,6 +428,25 @@ export function createHostGatewayApi(
         args.id,
         args.automationId
       );
+    },
+    fireComposioTrigger: async (args: any) => {
+      const triggerSlug = typeof args?.triggerSlug === "string" ? args.triggerSlug.trim() : "";
+      if (triggerSlug.length === 0) return { fired: 0 };
+      const event = {
+        source: "composio",
+        triggerSlug,
+        ...(args?.data != null && typeof args.data === "object" ? { data: args.data } : {}),
+      };
+      const rows = await method(manager, "listAllAutomations")();
+      let fired = 0;
+      for (const row of Array.isArray(rows) ? rows : []) {
+        const automation = row?.automation;
+        if (automation == null || automation.isEnabled === false) continue;
+        if (automation.trigger == null || !triggerMatchesEvent(automation.trigger, event)) continue;
+        void method(manager, "runAutomationForEvent")(row.agentId, automation, event);
+        fired += 1;
+      }
+      return { fired };
     },
     broadcastToAgents: async (args: any) => {
       markActive("user_action");

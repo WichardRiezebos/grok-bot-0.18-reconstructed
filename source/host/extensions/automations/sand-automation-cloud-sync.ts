@@ -211,6 +211,8 @@ function listenerTriggers(listener: EventTrigger): BackendCloudTrigger[] {
     case "sentry":
     case "pagerduty":
       return [backendCloudTrigger(listener)];
+    case "composio":
+      return [];
   }
 }
 

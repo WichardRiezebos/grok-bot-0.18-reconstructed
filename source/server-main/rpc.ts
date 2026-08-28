@@ -107,11 +107,16 @@ export function createRpcDispatcher(options: {
 
   const localComposioInstalled = async () => {
     const apiKey = composioApiKeyFrom(process.env, loadSecrets(options.secretsPath));
-    if (apiKey == null) return { servers: [] as Record<string, unknown>[], tools: [] as ReturnType<typeof toInstalledComposioServerTools> };
+    if (apiKey == null) {
+      return {
+        servers: [] as Record<string, unknown>[],
+        backend: [] as Awaited<ReturnType<typeof listComposioBackendServers>>,
+      };
+    }
     const backend = await listComposioBackendServers(apiKey);
     return {
       servers: toInstalledComposioServers(backend),
-      tools: toInstalledComposioServerTools(backend),
+      backend,
     };
   };
 
@@ -409,7 +414,13 @@ export function createRpcDispatcher(options: {
       const local = await localComposioInstalled();
       const merged = mergeInstalledMcpServers(gateway, local.servers);
       const match = merged.find((row) => row != null && typeof row === "object" && String((row as JsonMap).id) === serverId);
-      if (local.servers.length > 0 && match != null && isComposioInstalledRow(match)) return local.tools;
+      if (local.backend.length > 0 && match != null && isComposioInstalledRow(match)) {
+        const identifier = String((match as JsonMap).serverIdentifier ?? "");
+        const servers = identifier.length === 0
+          ? local.backend
+          : local.backend.filter((server) => server.serverIdentifier === identifier);
+        return toInstalledComposioServerTools(servers.length > 0 ? servers : local.backend);
+      }
       try {
         const tools = await postGatewayCommand(config, "listMcpServerTools", payload ?? {});
         return Array.isArray(tools) ? tools : [];

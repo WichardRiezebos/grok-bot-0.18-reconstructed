@@ -6,12 +6,21 @@ import { fileURLToPath } from "node:url";
 import * as Ws from "ws";
 
 import { SandSettingsStore } from "../shared/node/settings/sand-settings-store.js";
+import {
+  COMPOSIO_WEBHOOK_SECRET_NAME,
+  composioApiKeyFrom,
+  ensureComposioWebhookAndTriggers,
+  isPublicComposioWebhookBase,
+  parseComposioWebhookPayload,
+  verifyComposioWebhookSignature,
+} from "../shared/node/composio-mcp.js";
 import type { RuntimeConfig } from "./config.js";
 import { persistencePathFor, secretsPathFor, settingsPathFor } from "./config.js";
 import { forkCoordinator, type CoordinatorSession } from "./coordinator-parent.js";
 import type { DebugState } from "./debug-log.js";
 import { createDebugState, noteLog } from "./debug-log.js";
 import { renderDebugPage, renderFallbackApp } from "./debug-page.js";
+import { postGatewayCommand } from "./gateway-rpc.js";
 import { probeBoxHealth, buildRuntimeHealth, failureEnvelope } from "./health.js";
 import { createRpcDispatcher, initialRendererState } from "./rpc.js";
 import { loadSecrets, persistSecrets } from "./secrets-file.js";
@@ -76,6 +85,24 @@ function sendHtml(res: ServerResponse, status: number, body: string, headers?: R
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
   res.end(`${JSON.stringify(body)}\n`);
+}
+
+function readRequestBody(req: IncomingMessage, limit = 1_000_000): Promise<string> {
+  return new Promise((resolveBody, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > limit) {
+        reject(new Error("payload too large"));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolveBody(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
 }
 
 function stripCrossOrigin(html: string): string {
@@ -172,6 +199,21 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
   };
   startCoordinator();
 
+  const webhookBase = config.publicUrl.replace(/\/$/u, "");
+  const composioKey = composioApiKeyFrom(process.env, loadSecrets(secretsPathFor(config.dataDir)));
+  if (composioKey != null && isPublicComposioWebhookBase(webhookBase)) {
+    void ensureComposioWebhookAndTriggers({
+      apiKey: composioKey,
+      webhookUrl: `${webhookBase}/webhooks/composio`,
+      persistSecret: (secret) => {
+        const current = loadSecrets(secretsPathFor(config.dataDir));
+        persistSecrets(secretsPathFor(config.dataDir), { ...current, [COMPOSIO_WEBHOOK_SECRET_NAME]: secret });
+      },
+    }).catch((error) => {
+      noteLog(debug, "control", `composio triggers ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
   const emit = (event: string, payload: unknown) => {
     const frame = JSON.stringify({ kind: "event", channel: `sand-rpc:main:e:${event}`, payload });
     for (const socket of sockets) {
@@ -212,6 +254,31 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
       if (!authorize(req, true)) return send(res, 401, "unauthorized");
       const health = await buildRuntimeHealth(config, debug);
       return sendJson(res, health.ok ? 200 : 503, health);
+    }
+
+    if (req.method === "POST" && pathName === "/webhooks/composio") {
+      const payload = await readRequestBody(req).catch(() => "");
+      const secrets = loadSecrets(secretsPathFor(config.dataDir));
+      const secret = process.env.COMPOSIO_WEBHOOK_SECRET?.trim() || secrets[COMPOSIO_WEBHOOK_SECRET_NAME]?.trim() || "";
+      const webhookId = String(req.headers["webhook-id"] ?? "");
+      const webhookTimestamp = String(req.headers["webhook-timestamp"] ?? "");
+      const signature = String(req.headers["webhook-signature"] ?? "");
+      if (secret.length === 0 || webhookId.length === 0 || webhookTimestamp.length === 0 || signature.length === 0
+        || !verifyComposioWebhookSignature({ payload, signature, webhookId, webhookTimestamp, secret })) {
+        return send(res, 401, "unauthorized");
+      }
+      const parsed = parseComposioWebhookPayload(payload);
+      if (parsed == null) return sendJson(res, 400, { ok: false, error: "invalid payload" });
+      try {
+        await postGatewayCommand(config, "fireComposioTrigger", {
+          triggerSlug: parsed.triggerSlug,
+          data: parsed.data,
+        });
+      } catch (error) {
+        noteLog(debug, "control", `composio webhook ${error instanceof Error ? error.message : String(error)}`);
+        return sendJson(res, 502, { ok: false });
+      }
+      return sendJson(res, 200, { ok: true });
     }
 
     if (req.method === "GET" && pathName === "/debug") {

@@ -311,6 +311,7 @@ test("Router settings use the trusted backend and display recorded inference usa
   assert.match(pluginsBrowser, /No tools loaded for this connector/);
   assert.match(gatewayProtocol, /listInstalledMcpServers/);
   assert.match(gatewayProtocol, /listMcpServerTools/);
+  assert.match(gatewayProtocol, /fireComposioTrigger/);
   assert.match(webShim, /sand:vnc-viewer-visible/);
   assert.match(webShim, /refreshNoVncIframe/);
   assert.match(webShim, /IntersectionObserver/);

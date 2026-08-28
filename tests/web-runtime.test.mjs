@@ -225,7 +225,7 @@ test("listRoutedMcpTools includes Gmail from control Composio without the box", 
     }), createDebugState());
     const tools = await executors.listRoutedMcpTools();
     assert.ok(tools.some((tool) => tool.name === "GMAIL_FETCH_EMAILS"));
-    assert.equal(tools.find((tool) => tool.name === "GMAIL_FETCH_EMAILS")?.providerIdentifier, "composio");
+    assert.equal(tools.find((tool) => tool.name === "GMAIL_FETCH_EMAILS")?.providerIdentifier, "composio--gmail");
     assert.equal(gatewayCalls.some((call) => call.url.includes("listSandMcpTools")), false);
     const executed = await executors.executeRoutedMcpTool({
       providerIdentifier: "composio",
@@ -1199,8 +1199,9 @@ test("getMcpState returns local Composio when the gateway is empty", async () =>
       restartCoordinator: () => {},
     });
     const state = await dispatch("sand-rpc:main:m:getMcpState", {});
-    assert.equal(state.servers[0].name, "Composio");
+    assert.equal(state.servers[0].name, "Gmail");
     assert.equal(state.servers[0].status, "connected");
+    assert.equal(state.servers[0].serverIdentifier, "composio--gmail");
     assert.ok(state.servers[0].toolCount > 0);
     const tools = await dispatch("sand-rpc:main:m:listMcpServerTools", { serverId: state.servers[0].id });
     assert.ok(tools.some((tool) => tool.name === "GMAIL_FETCH_EMAILS"));
@@ -1215,5 +1216,68 @@ test("getMcpState returns local Composio when the gateway is empty", async () =>
     await configLoaded.dispose();
     await debugLoaded.dispose();
     await settingsLoaded.dispose();
+  }
+});
+
+test("POST /webhooks/composio verifies HMAC and forwards fireComposioTrigger", async () => {
+  const loaded = await loadModule("source/server-main/http-server.ts");
+  const configLoaded = await loadModule("source/server-main/config.ts");
+  const dataDir = await mkdtemp(path.join(tmpdir(), "grok-composio-hook-"));
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.COMPOSIO_API_KEY;
+  delete process.env.COMPOSIO_API_KEY;
+  const gatewayCalls = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("box:1340") || url.includes("/api/fireComposioTrigger")) {
+      gatewayCalls.push({ url, body: String(init?.body ?? "") });
+      return new Response(JSON.stringify({ fired: 1 }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return previousFetch(input, init);
+  };
+  const secret = "whsec_hook";
+  await writeFile(path.join(dataDir, "box-secrets.json"), JSON.stringify({ version: 1, secrets: { COMPOSIO_WEBHOOK_SECRET: secret } }));
+  const { createHmac } = await import("node:crypto");
+  const { resolveRuntimeConfig } = configLoaded.module;
+  const { startRuntimeServer } = loaded.module;
+  const server = startRuntimeServer(resolveRuntimeConfig({
+    GROK_BOT_LISTEN_HOST: "127.0.0.1",
+    GROK_BOT_LISTEN_PORT: "0",
+    GROK_BOT_DATA_DIR: dataDir,
+    GROK_BOT_STATIC_ROOT: path.join(repoRoot, "source", "server-main"),
+    SAND_HOST_GATEWAY_URL: "http://box:1340",
+  }), { fork: mockFork });
+  try {
+    await server.ready;
+    const payload = JSON.stringify({ metadata: { trigger_slug: "GMAIL_NEW_GMAIL_MESSAGE" }, data: { id: "m1" } });
+    const webhookId = "msg_hook";
+    const webhookTimestamp = String(Math.floor(Date.now() / 1000));
+    const signature = `v1,${createHmac("sha256", secret).update(`${webhookId}.${webhookTimestamp}.${payload}`).digest("base64")}`;
+    const denied = await fetch(`${server.url}/webhooks/composio`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: payload,
+    });
+    assert.equal(denied.status, 401);
+    const accepted = await fetch(`${server.url}/webhooks/composio`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "webhook-id": webhookId,
+        "webhook-timestamp": webhookTimestamp,
+        "webhook-signature": signature,
+      },
+      body: payload,
+    });
+    assert.equal(accepted.status, 200);
+    assert.ok(gatewayCalls.some((call) => call.url === "http://box:1340/api/fireComposioTrigger" && call.body.includes("GMAIL_NEW_GMAIL_MESSAGE")));
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey == null) delete process.env.COMPOSIO_API_KEY;
+    else process.env.COMPOSIO_API_KEY = previousKey;
+    await server.close();
+    await loaded.dispose();
+    await configLoaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
   }
 });
