@@ -1,6 +1,6 @@
 import { dirname } from "node:path";
 
-import { isSandAgentLimitError } from "../../../shared/agents/agents.js";
+import { isSandAgentLimitError, isSandEmptyRosterError, SandEmptyRosterError } from "../../../shared/agents/agents.js";
 import { errorLogTag } from "../../../shared/errors.js";
 import type {
   TranscriptEntry,
@@ -88,7 +88,12 @@ export class SessionRuntime {
   }
 
   async ensureLoaded(): Promise<TranscriptEntry[]> {
-    const session = await this.ensureSession();
+    const session = await this.tryEnsureSession();
+    if (session == null) {
+      this.loaded = false;
+      this.tm.roster.emit({ type: "cleared" });
+      return [];
+    }
     if (!this.loaded) {
       const entries = (await this.tm.sessionStore.getTranscriptEntries(
         session,
@@ -414,7 +419,7 @@ export class SessionRuntime {
     try {
       return await this.ensureSession();
     } catch (error) {
-      if (isSandAgentLimitError(error)) return null;
+      if (isSandAgentLimitError(error) || isSandEmptyRosterError(error)) return null;
       throw error;
     }
   }
@@ -438,7 +443,7 @@ export class SessionRuntime {
         ...agents.map((agent) => agent.id),
         ...recordIds,
       ]),
-    ];
+    ].filter((id) => !this.deletedAgentIds.has(id));
     let session: LiveTranscriptSession | null = null;
     for (const id of orderedIds) {
       try {
@@ -450,15 +455,11 @@ export class SessionRuntime {
         );
       }
     }
-    const resolvedSession =
-      session ??
-      ((await this.tm.sessionStore.createFallbackSession((id: string) =>
-        this.openSessionOnce(id),
-      )) as LiveTranscriptSession);
-    this.setActiveSession(resolvedSession);
-    await this.tm.sessionStore.markSessionViewed(resolvedSession);
-    this.tm.runLifecycle.watchActiveSession(resolvedSession);
-    return resolvedSession;
+    if (session == null) throw new SandEmptyRosterError();
+    this.setActiveSession(session);
+    await this.tm.sessionStore.markSessionViewed(session);
+    this.tm.runLifecycle.watchActiveSession(session);
+    return session;
   }
 
   setActiveSession(session: LiveTranscriptSession): void {

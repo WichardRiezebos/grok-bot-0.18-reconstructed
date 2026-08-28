@@ -1126,3 +1126,44 @@ test("a second sendPrompt while Drive is running supersedes instead of overlappi
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test("deleteAgents drops overlay transcripts so the tail cannot resurrect them", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-delete-overlay-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), routerSettings());
+    const storePath = path.join(dataDir, "inference-router-transcript.json");
+    await writeFile(storePath, JSON.stringify({
+      schemaVersion: 2,
+      agents: {
+        "agent-1": [{ provider: "openrouter", role: "user", content: "keep me", id: "t0u", timestampMs: 1 }],
+        "agent-2": [{ provider: "openrouter", role: "user", content: "other chat", id: "t0u", timestampMs: 2 }],
+      },
+    }));
+    const remote = [];
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: () => {},
+      dispatchRemote: async (method, args) => {
+        remote.push({ method, args });
+        if (method === "openAgentTail" || method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") return [{ id: "agent-2" }];
+        if (method === "deleteAgents") return { transcript: [] };
+        return {};
+      },
+    });
+    const deleted = await router.dispatch("deleteAgents", { ids: ["agent-1"] });
+    assert.equal(deleted.handled, true);
+    assert.equal(remote.some((call) => call.method === "deleteAgents"), true);
+    const tail = await router.dispatch("openAgentTail", { id: "agent-1", limit: 200 });
+    assert.equal(tail.handled, true);
+    assert.deepEqual(tail.value.entries, []);
+    const kept = await router.dispatch("openAgentTail", { id: "agent-2", limit: 200 });
+    assert.equal(kept.value.entries.some((entry) => entry.id === "t0u" && entry.content === "other chat"), true);
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

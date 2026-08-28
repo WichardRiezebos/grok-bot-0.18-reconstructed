@@ -104,6 +104,9 @@ test("Router settings use the trusted backend and display recorded inference usa
   assert.match(rendererPatch, /getDesktopEnvironment/);
   assert.match(rendererPatch, /runtime==="docker"/);
   assert.match(rendererPatch, /function RLocalProfile/);
+  assert.match(rendererPatch, /function RLocalProfile\(\)\{const z=H\.c\(/);
+  assert.match(rendererPatch, /function RInputValue/);
+  assert.match(rendererPatch, /draftName:RInputValue\(i\)/);
   assert.match(rendererPatch, /gravatar\.com\/avatar/);
   assert.match(rendererPatch, /desktop\.agent\.getLocalProfile/);
   assert.match(rendererPatch, /desktop\.agent\.setLocalProfile/);
@@ -284,12 +287,17 @@ test("Router settings use the trusted backend and display recorded inference usa
   assert.match(coordinator, /richText: entry\.richText/);
   assert.match(coordinator, /awaitRoutedRetryBackoff\(options\.composingDelayMs \?\? 1_200, turnAbort\)/);
   assert.match(coordinator, /method === "stopRoutedTurn"/);
+  assert.match(coordinator, /method === "deleteAgent" \|\| method === "deleteAgents"/);
+  assert.match(coordinator, /await dropAgents\(ids\)/);
   assert.match(coordinator, /abortAgentTurn\(agentId, "supersede"\)/);
   assert.match(coordinatorRpc, /stopRoutedTurn/);
   assert.match(composer, /aria-label="Stop"/);
   assert.match(composer, /onStop\?\(\): void \| Promise<void>/);
   assert.match(webShim, /method: "stopRoutedTurn"/);
   assert.match(webShim, /grok-bot-composer-stop/);
+  assert.match(webShim, /nativeComposerStop/);
+  assert.match(webShim, /sand-fill-primary/);
+  assert.doesNotMatch(webShim, /#e5484d/);
   assert.match(coordinator, /method === "reactToMessage"/);
   assert.match(coordinator, /reaction\.by === "me"/);
   assert.match(coordinator, /currentActivity: surface\.activity/);

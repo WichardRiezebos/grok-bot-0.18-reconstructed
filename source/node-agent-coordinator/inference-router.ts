@@ -209,6 +209,32 @@ export function createCoordinatorInferenceRouter(options: {
     await persist(next);
     return next;
   });
+  const dropAgents = async (agentIds: readonly string[]): Promise<void> => withStore(async () => {
+    const ids = agentIds.filter(id => id.length > 0);
+    if (ids.length === 0) return;
+    for (const id of ids) {
+      abortAgentTurn(id, "stop");
+      streamingByAgent.delete(id);
+      chromeOpenByAgent.delete(id);
+      queues.delete(id);
+    }
+    const current = await load();
+    const agents = { ...current.agents };
+    let changed = false;
+    for (const id of ids) {
+      if (id in agents) {
+        delete agents[id];
+        changed = true;
+      }
+    }
+    if (changed) await persist({ schemaVersion: 2, agents });
+  });
+  const deletedAgentIdsFromArgs = (method: string, args: unknown): string[] => {
+    const record = asRecord(args) ?? {};
+    if (method === "deleteAgent") return typeof record.id === "string" ? [record.id] : [];
+    if (!Array.isArray(record.ids)) return [];
+    return record.ids.filter((id): id is string => typeof id === "string" && id.length > 0);
+  };
   const emitTranscript = (agentId: string, type: "appended" | "updated", entry: Record<string, unknown>) => options.postEvent("transcript", { type, entry, agentId });
   type RoutedActivity = { kind: "thinking" } | { kind: "tool"; tool: string; callId: string; detail?: string };
   type TurnActivity = { stop(): void; reveal(next: { composing?: boolean; activity?: RoutedActivity }): void };
@@ -650,6 +676,12 @@ export function createCoordinatorInferenceRouter(options: {
         const stopped = abortAgentTurn(agentId, "stop");
         appendRoutedInferenceLog(options.dataDir, `${provider} ${agentId} turn-abort ${stopped ? "stop" : "idle"}`);
         return { handled: true, value: { stopped } };
+      }
+      if (method === "deleteAgent" || method === "deleteAgents") {
+        const ids = deletedAgentIdsFromArgs(method, args);
+        const remote = await options.dispatchRemote(method, args);
+        await dropAgents(ids);
+        return { handled: true, value: remote };
       }
       if (method !== "sendPrompt" || provider === "cursor") return { handled: false };
       const record = asRecord(args) ?? {};

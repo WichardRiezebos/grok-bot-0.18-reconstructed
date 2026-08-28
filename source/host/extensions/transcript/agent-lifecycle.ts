@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { isSandAgentLimitError } from "../../../shared/agents/agents.js";
 import { errorLogTag } from "../../../shared/errors.js";
 import {
   cloneAgentDir,
@@ -397,12 +396,19 @@ export class AgentLifecycle {
     this.tm.boxHandoff.awaitingSink.clear(active.id);
     this.tm.roster.emitAsyncTasksForAgent(active.id);
     const nextAgent = (await this.tm.sessionStore.listAgents(active.id)).find(
-      (agent: any) => !ids.has(agent.id),
+      (agent: any) =>
+        !ids.has(agent.id) &&
+        !this.tm.sessions.deletedAgentIds.has(agent.id) &&
+        this.tm.sessionStore.agentDirExists(agent.id),
     );
     const successorIds = [
       ...(nextAgent == null ? [] : [nextAgent.id]),
       ...(await this.tm.sessionStore.listAgentRecordIds()).filter(
-        (id: string) => !ids.has(id) && id !== nextAgent?.id,
+        (id: string) =>
+          !ids.has(id) &&
+          id !== nextAgent?.id &&
+          !this.tm.sessions.deletedAgentIds.has(id) &&
+          this.tm.sessionStore.agentDirExists(id),
       ),
     ];
     for (const successorId of successorIds) {
@@ -433,29 +439,14 @@ export class AgentLifecycle {
       await this.tm.roster.emitAgents();
       return { transcript: entries };
     }
-    try {
-      const next = await this.tm.sessionStore.createFallbackSession(
-        (id: string) => this.tm.sessions.openSessionOnce(id),
-      );
-      await this.tm.sessionStore.markSessionViewed(next);
-      this.tm.sessions.invalidateDeferredActivation();
-      this.tm.sessions.setActiveSession(next);
-      this.tm.runLifecycle.watchActiveSession(next);
-      this.tm.sessions.clearActiveTranscript(next.id);
-      this.tm.sessions.loaded = true;
-      this.tm.roster.emit({ type: "cleared" });
-      await this.tm.roster.emitAgents();
-      return { transcript: getTranscript() };
-    } catch (error) {
-      if (!isSandAgentLimitError(error)) throw error;
-      this.tm.sessions.activeSession = undefined;
-      this.tm.unwatchActiveSession();
-      this.tm.sessions.clearActiveTranscript(null);
-      this.tm.sessions.loaded = false;
-      this.tm.roster.emit({ type: "cleared" });
-      await this.tm.roster.emitAgents();
-      return { transcript: getTranscript() };
-    }
+    this.tm.sessions.invalidateDeferredActivation();
+    this.tm.sessions.activeSession = undefined;
+    this.tm.unwatchActiveSession();
+    this.tm.sessions.clearActiveTranscript(null);
+    this.tm.sessions.loaded = false;
+    this.tm.roster.emit({ type: "cleared" });
+    await this.tm.roster.emitAgents();
+    return { transcript: getTranscript() };
   }
 
   async interruptAgentForDeletion(agentId: string): Promise<void> {

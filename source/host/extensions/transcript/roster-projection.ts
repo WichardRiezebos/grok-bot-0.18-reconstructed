@@ -96,11 +96,14 @@ export class RosterProjection {
   async listAgents(): Promise<any[]> {
     const session = await this.tm.sessions.tryEnsureSession();
     const announcedId =
-      this.tm.sessions.getAnnouncedActiveAgentId() ?? session?.id;
+      this.tm.sessions.getAnnouncedActiveAgentId() ?? session?.id ?? "";
     const stamp = this.rosterEmit.reserveSnapshotStamp();
     const agents = this.rosterEmit.applySnapshotStamp(
       this.tm.runLifecycle.withRunStates(
-        await this.tm.sessionStore.listAgents(announcedId),
+        (await this.tm.sessionStore.listAgents(announcedId || undefined)).filter(
+          (agent: { id?: string }) =>
+            typeof agent.id !== "string" || !this.tm.sessions.deletedAgentIds.has(agent.id),
+        ),
       ),
       stamp,
     );
@@ -275,8 +278,8 @@ export class RosterProjection {
       this.emitOutline({ type: "snapshot", agentId, items });
       return items;
     }
-    const session = await this.tm.sessions.ensureSession();
-    if (session.id === agentId) {
+    const session = await this.tm.sessions.tryEnsureSession();
+    if (session != null && session.id === agentId) {
       const generation = this.activeOutlineGeneration;
       const items = await this.loadActiveOutline(session);
       if (this.activeOutlineGeneration === generation) {

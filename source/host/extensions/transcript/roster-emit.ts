@@ -106,18 +106,21 @@ export class RosterEmit {
     if (this.tm.disposed) return;
     const session = await this.tm.sessions.tryEnsureSession();
     const announcedId =
-      this.tm.sessions.getAnnouncedActiveAgentId() ?? session?.id;
+      this.tm.sessions.getAnnouncedActiveAgentId() ?? session?.id ?? "";
     const stamp = this.reserveSnapshotStamp();
     const agents = this.applySnapshotStamp(
       this.tm.runLifecycle.withRunStates(
-        await this.tm.sessionStore.listAgents(announcedId),
+        (await this.tm.sessionStore.listAgents(announcedId || undefined)).filter(
+          (agent: { id?: string }) =>
+            typeof agent.id !== "string" || !this.tm.sessions.deletedAgentIds.has(agent.id),
+        ),
       ),
       stamp,
     );
     this.cachedAgentSummaries = agents;
     this.rosterCacheSeeded = true;
     this.emitter.emit("agents", {
-      activeAgentId: announcedId ?? "",
+      activeAgentId: announcedId,
       agents,
       ordered: this.replicaWriter.nextStamp(ROSTER_REPLICA_KEY),
       coverage: { kind: "complete-roster" },

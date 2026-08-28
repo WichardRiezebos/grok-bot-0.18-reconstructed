@@ -3125,6 +3125,10 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
     await client.call("deleteAgents", { ids: [agentId] });
     const remaining = agentsRef.current.filter((agent) => agent.id !== agentId);
     setAgents(remaining);
+    setEntriesByAgent((current) => {
+      const { [agentId]: _removed, ...rest } = current;
+      return rest;
+    });
     completeRosterAgentIdsRef.current = remaining.map((agent) => agent.id);
     selectionStore.reconcile({ agentIds: remaining.map((agent) => agent.id), isRosterComplete: true });
   };

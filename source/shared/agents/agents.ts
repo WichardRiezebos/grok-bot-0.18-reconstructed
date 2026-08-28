@@ -64,3 +64,16 @@ export class SandAgentLimitError extends Error {
 export function isSandAgentLimitError(error: unknown): boolean {
   return error instanceof Error && error.message === SAND_AGENT_LIMIT_MESSAGE;
 }
+
+export const SAND_EMPTY_ROSTER_MESSAGE = "No agents remain";
+
+export class SandEmptyRosterError extends Error {
+  constructor() {
+    super(SAND_EMPTY_ROSTER_MESSAGE);
+    this.name = "SandEmptyRosterError";
+  }
+}
+
+export function isSandEmptyRosterError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "SandEmptyRosterError" || error.message === SAND_EMPTY_ROSTER_MESSAGE);
+}

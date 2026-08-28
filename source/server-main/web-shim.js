@@ -672,8 +672,8 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     overlay.type = "button";
     overlay.setAttribute("aria-label", "Stop");
     overlay.dataset.testid = "grok-bot-composer-stop";
-    overlay.style.cssText = "display:none;position:fixed;z-index:2147483646;margin:0;border:0;border-radius:999px;background:#e5484d;color:#fff;width:36px;height:36px;padding:0;cursor:pointer;box-shadow:0 0 0 1px #0003";
-    overlay.innerHTML = '<span aria-hidden="true" style="display:block;width:10px;height:10px;margin:13px auto;background:currentColor;border-radius:1px"></span>';
+    overlay.style.cssText = "display:none;position:fixed;z-index:40;margin:0;border:0;border-radius:50%;background:var(--sand-fill-primary,#111);color:var(--sand-text-on-color,#fff);width:30px;height:30px;padding:0;cursor:pointer";
+    overlay.innerHTML = '<span aria-hidden="true" style="display:block;width:10px;height:10px;margin:10px auto;background:currentColor;border-radius:2px"></span>';
     function stopNow() {
       const agentId = lastAgentId || [...running][0];
       if (!agentId || coordinatorPort == null) return;
@@ -738,7 +738,14 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       } catch {}
       return emit(data);
     };
+    function nativeComposerStop() {
+      return Array.from(document.querySelectorAll('[aria-label="Stop"]')).find((node) => node !== overlay) ?? null;
+    }
     function paint() {
+      if (nativeComposerStop() != null) {
+        overlay.style.display = "none";
+        return;
+      }
       const send = document.querySelector('[aria-label="Send message"]')
         || document.querySelector(".sand-prompt-cta-cluster [aria-label=\"Start voice input\"]")
         || document.querySelector(".sand-prompt-actions-trailing button:last-of-type");
@@ -752,13 +759,14 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       overlay.style.display = "block";
       overlay.style.left = `${box.left}px`;
       overlay.style.top = `${box.top}px`;
-      overlay.style.width = `${Math.max(32, box.width)}px`;
-      overlay.style.height = `${Math.max(32, box.height)}px`;
+      overlay.style.width = `${Math.max(30, box.width)}px`;
+      overlay.style.height = `${Math.max(30, box.height)}px`;
     }
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       if (running.size === 0 && lastAgentId.length === 0) return;
       if (document.querySelector('[aria-label="Stop dictation"]') != null) return;
+      if (nativeComposerStop() != null) return;
       event.preventDefault();
       event.stopPropagation();
       stopNow();

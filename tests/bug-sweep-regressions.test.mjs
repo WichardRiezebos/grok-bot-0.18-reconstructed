@@ -134,3 +134,22 @@ test("web profile saves emit cursor-auth-changed and skip Sentry", async () => {
   assert.match(shim, /aria-label", "Stop"/);
   assert.match(shim, /noteRoutedSend/);
 });
+
+test("deleting the last bot does not mint a fallback Grok", async () => {
+  const lifecycle = await readFile(path.join(repoRoot, "source/host/extensions/transcript/agent-lifecycle.ts"), "utf8");
+  const sessions = await readFile(path.join(repoRoot, "source/host/extensions/transcript/session-runtime.ts"), "utf8");
+  const agents = await readFile(path.join(repoRoot, "source/shared/agents/agents.ts"), "utf8");
+  assert.match(agents, /class SandEmptyRosterError/);
+  assert.match(sessions, /throw new SandEmptyRosterError/);
+  assert.doesNotMatch(sessions, /createFallbackSession/);
+  assert.doesNotMatch(lifecycle, /createFallbackSession/);
+  assert.match(lifecycle, /deletedAgentIds\.has\(id\)/);
+  assert.match(lifecycle, /agentDirExists\(id\)/);
+  assert.match(lifecycle, /type: "cleared"/);
+});
+
+test("renderer drops transcript entries when a bot is deleted", async () => {
+  const renderer = await readFile(path.join(repoRoot, "frontend/src/production/ProductionRenderer.tsx"), "utf8");
+  assert.match(renderer, /setEntriesByAgent\(\(current\) => \{/);
+  assert.match(renderer, /\[agentId\]: _removed/);
+});
