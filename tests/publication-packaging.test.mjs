@@ -290,6 +290,8 @@ test("Router settings use the trusted backend and display recorded inference usa
   assert.match(coordinator, /method === "deleteAgent" \|\| method === "deleteAgents"/);
   assert.match(coordinator, /await dropAgents\(ids\)/);
   assert.match(coordinator, /abortAgentTurn\(agentId, "supersede"\)/);
+  assert.match(coordinator, /stampLiveTurnState/);
+  assert.match(coordinator, /controller\.signal\.aborted/);
   assert.match(coordinatorRpc, /stopRoutedTurn/);
   assert.match(composer, /aria-label="Stop"/);
   assert.match(composer, /onStop\?\(\): void \| Promise<void>/);
@@ -297,6 +299,9 @@ test("Router settings use the trusted backend and display recorded inference usa
   assert.match(webShim, /grok-bot-composer-stop/);
   assert.match(webShim, /nativeComposerStop/);
   assert.match(webShim, /sand-fill-primary/);
+  assert.match(webShim, /sand:vnc-viewer-visible/);
+  assert.match(webShim, /refreshNoVncIframe/);
+  assert.match(webShim, /IntersectionObserver/);
   assert.doesNotMatch(webShim, /#e5484d/);
   assert.match(coordinator, /method === "reactToMessage"/);
   assert.match(coordinator, /reaction\.by === "me"/);

@@ -1,5 +1,6 @@
 import { GATEWAY_AUTH_SCHEME } from "../shared/gateway-wire.js";
 import { noteLog } from "./debug-log.js";
+import { postGatewayCommand } from "./gateway-rpc.js";
 import { unavailable } from "./unavailable.js";
 import type { DebugState } from "./debug-log.js";
 import type { RuntimeConfig } from "./config.js";
@@ -15,10 +16,22 @@ export function createHeadlessExecutors(config: RuntimeConfig, debug: DebugState
       ...(config.gatewayToken.length > 0 ? { token: config.gatewayToken } : {}),
     }),
     listRoutedMcpTools: async () => {
-      debug.stubs.push({ at: new Date().toISOString(), method: "listRoutedMcpTools", detail: "empty — box MCP via gateway" });
-      return [];
+      try {
+        const tools = await postGatewayCommand(config, "listRoutedMcpTools", {});
+        return Array.isArray(tools) ? tools : [];
+      } catch (error) {
+        noteLog(debug, "control", `listRoutedMcpTools ${error instanceof Error ? error.message : String(error)}`);
+        return [];
+      }
     },
-    executeRoutedMcpTool: async () => noteStub("executeRoutedMcpTool", "Desktop MCP routing is unavailable in Docker."),
+    executeRoutedMcpTool: async (args: unknown) => {
+      try {
+        return await postGatewayCommand(config, "executeRoutedMcpTool", args ?? {});
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`Connect plugin failed (${detail}).`);
+      }
+    },
     mintLocalExecDaemonCredential: async () => {
       debug.stubs.push({ at: new Date().toISOString(), method: "mintLocalExecDaemonCredential", detail: "The Mac local-exec daemon is unavailable in Docker." });
       return null;

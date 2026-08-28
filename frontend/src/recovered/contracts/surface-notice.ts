@@ -24,7 +24,8 @@ export type SettingsNoticeOperation =
   | "settings-update-check"
   | "settings-update-install"
   | "settings-update-auto-update-when-idle"
-  | "settings-update-track";
+  | "settings-update-track"
+  | "settings-computer-update";
 
 export type PluginsNoticeOperation =
   | "plugins-load"

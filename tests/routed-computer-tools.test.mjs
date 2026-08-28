@@ -55,7 +55,7 @@ test("routed computer catalog includes Computer and request_box_help", async () 
     assert.equal(loaded.module.extractRoutedBrowserUrl("just say hi"), undefined);
     assert.equal(loaded.module.turnNeedsRoutedComputer("hello"), false);
     assert.equal(loaded.module.turnNeedsRoutedComputer("plus.nl"), true);
-    assert.equal(loaded.module.turnNeedsRoutedComputer("hello", true), true);
+    assert.equal(loaded.module.turnNeedsRoutedComputer("hello", true), false);
     assert.equal(loaded.module.turnNeedsRoutedComputer("click the cookie banner"), true);
     assert.equal(loaded.module.isRoutedBrowserOriginHomeUrl("https://plus.nl/"), true);
     assert.equal(loaded.module.isRoutedBrowserOriginHomeUrl("https://www.plus.nl/s?search=kaas"), false);

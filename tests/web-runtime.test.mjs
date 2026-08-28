@@ -141,6 +141,12 @@ test("headless executors point at the box gateway and record stubs", async () =>
   const loaded = await loadModule("source/server-main/executors.ts");
   const configLoaded = await loadModule("source/server-main/config.ts");
   const debugLoaded = await loadModule("source/server-main/debug-log.ts");
+  const previousFetch = globalThis.fetch;
+  const gatewayCalls = [];
+  globalThis.fetch = async (input, init) => {
+    gatewayCalls.push({ url: String(input), body: String(init?.body ?? "") });
+    return new Response(JSON.stringify([{ name: "GMAIL_SEND_EMAIL" }]), { status: 200, headers: { "content-type": "application/json" } });
+  };
   try {
     const { resolveRuntimeConfig } = configLoaded.module;
     const { createDebugState } = debugLoaded.module;
@@ -153,14 +159,17 @@ test("headless executors point at the box gateway and record stubs", async () =>
     const debug = createDebugState();
     const executors = createHeadlessExecutors(config, debug);
     assert.deepEqual(executors.resolveGatewayConnection(), { baseUrl: "http://box:1340", token: "gate-9999" });
-    assert.deepEqual(await executors.listRoutedMcpTools(), []);
+    const tools = await executors.listRoutedMcpTools();
+    assert.equal(tools[0]?.name, "GMAIL_SEND_EMAIL");
+    assert.ok(gatewayCalls.some((call) => call.url === "http://box:1340/api/listRoutedMcpTools"));
     await assert.rejects(() => executors.requestWebAuthnConsent(), /WebAuthn is unavailable/);
     await assert.rejects(() => executors.spawnLocalExecDaemon(), /local-exec/);
     const stubs = debug.stubs.snapshot().map((row) => row.method);
     assert.ok(stubs.includes("requestWebAuthnConsent"));
     assert.ok(stubs.includes("spawnLocalExecDaemon"));
-    assert.ok(stubs.includes("listRoutedMcpTools"));
+    assert.equal(stubs.includes("listRoutedMcpTools"), false);
   } finally {
+    globalThis.fetch = previousFetch;
     await loaded.dispose();
     await configLoaded.dispose();
     await debugLoaded.dispose();
@@ -199,6 +208,63 @@ test("runtime health JSON has the stable docker shape", async () => {
     await loaded.dispose();
     await configLoaded.dispose();
     await debugLoaded.dispose();
+  }
+});
+
+test("updateComputer posts to the box gateway and restarts the coordinator", async () => {
+  const loaded = await loadModule("source/server-main/rpc.ts");
+  const configLoaded = await loadModule("source/server-main/config.ts");
+  const debugLoaded = await loadModule("source/server-main/debug-log.ts");
+  const settingsLoaded = await loadModule("source/shared/node/settings/sand-settings-store.ts");
+  const dataDir = await mkdtemp(path.join(tmpdir(), "grok-rpc-update-"));
+  const previousFetch = globalThis.fetch;
+  const gatewayCalls = [];
+  globalThis.fetch = async (input, init) => {
+    const headers = init?.headers ?? {};
+    gatewayCalls.push({
+      url: String(input),
+      body: String(init?.body ?? ""),
+      auth: headers.authorization ?? headers.Authorization,
+    });
+    return new Response(JSON.stringify({ agentId: "agent-1", state: "running", started: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  let restarted = 0;
+  try {
+    const { resolveRuntimeConfig } = configLoaded.module;
+    const { createDebugState } = debugLoaded.module;
+    const debug = createDebugState();
+    const dispatch = loaded.module.createRpcDispatcher({
+      config: resolveRuntimeConfig({
+        SAND_HOST_GATEWAY_URL: "http://box:1340",
+        SAND_GATEWAY_TOKEN: "gate-9999",
+      }),
+      debug,
+      settings: new settingsLoaded.module.SandSettingsStore(path.join(dataDir, "settings.json")),
+      secretsPath: path.join(dataDir, "box-secrets.json"),
+      persistencePath: path.join(dataDir, "client-persistence.json"),
+      restartCoordinator: () => { restarted += 1; },
+    });
+    const result = await dispatch("sand-rpc:main:m:updateComputer", { id: "agent-1", force: false });
+    assert.deepEqual(result, { status: "dev-fallback-finished" });
+    assert.equal(restarted, 1);
+    assert.ok(gatewayCalls.some((call) => call.url === "http://box:1340/api/updateForeverBox"));
+    assert.ok(gatewayCalls.some((call) => call.auth === "Bearer gate-9999"));
+    assert.equal(debug.stubs.snapshot().some((row) => row.method === "updateComputer"), false);
+    await assert.rejects(
+      () => dispatch("sand-rpc:main:m:forceRecreateComputer", {}),
+      /Reset the box container from your host instead/,
+    );
+    assert.ok(debug.stubs.snapshot().some((row) => row.method === "forceRecreateComputer"));
+  } finally {
+    globalThis.fetch = previousFetch;
+    await rm(dataDir, { recursive: true, force: true });
+    await loaded.dispose();
+    await configLoaded.dispose();
+    await debugLoaded.dispose();
+    await settingsLoaded.dispose();
   }
 });
 
@@ -336,6 +402,13 @@ test("ungated /health, /debug, and websocket RPC", async () => {
     assert.match(shimSource, /sand:vnc-session/);
     assert.match(shimSource, /rfb_connect/);
     assert.match(shimSource, /watchAdoptedWebview/);
+    assert.match(shimSource, /attachVncVisibility/);
+    assert.match(shimSource, /refreshNoVncIframe/);
+    assert.match(shimSource, /sand:vnc-viewer-visible/);
+    assert.match(shimSource, /IntersectionObserver/);
+    assert.match(shimSource, /:not\(\.sand-lshs6z\)/);
+    assert.match(shimSource, /iframeLooksConnected/);
+    assert.doesNotMatch(shimSource, /layer:has\(webview\[data-grok-bot-vnc-connected/);
     assert.match(shimSource, /dom-ready/);
     assert.match(shimSource, /did-finish-load/);
     assert.match(shimSource, /sand-box-vnc-pool__connecting/);

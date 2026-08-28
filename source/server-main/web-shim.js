@@ -25,7 +25,7 @@ html, body, #root, .sand-shell, #root > *, .sand-shell > *,
 .sand-empty { padding-top: 0 !important; }
 .sand-agents-sidebar__header { height: auto !important; min-height: 0 !important; padding-top: 8px !important; }
 webview { display: block !important; width: 100% !important; height: 100% !important; border: 0 !important; }
-.sand-box-vnc-pool__layer:has(webview[data-grok-bot-vnc-connected="1"]) {
+.sand-box-vnc-pool__layer:not(.sand-lshs6z) {
   visibility: visible !important;
   opacity: 1 !important;
   pointer-events: auto !important;
@@ -75,6 +75,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
   }
 
   const VNC_SESSION_CHANNEL = "sand:vnc-session";
+  const VNC_VIEWER_VISIBLE_CHANNEL = "sand:vnc-viewer-visible";
   const NO_VNC_CHROME_HIDER_CSS = `
     #noVNC_control_bar,
     #noVNC_control_bar_handle,
@@ -125,6 +126,54 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     } catch {
       return false;
     }
+  }
+
+  function refreshNoVncIframe(iframe) {
+    try {
+      const win = iframe.contentWindow;
+      const rfb = win?.UI?.rfb ?? win?.rfb;
+      if (rfb != null) {
+        try {
+          if (typeof rfb.scaleViewport === "boolean") rfb.scaleViewport = rfb.scaleViewport;
+          rfb.focus?.();
+        } catch {}
+        return;
+      }
+    } catch {}
+    const src = iframe.getAttribute("src") || "";
+    if (src.length === 0 || iframe.dataset.grokBotVncRefreshing === "1") return;
+    iframe.dataset.grokBotVncRefreshing = "1";
+    const stripped = src.replace(/([?&])grokBotFb=\d+/g, "$1").replace(/[?&]$/, "");
+    const join = stripped.includes("?") ? "&" : "?";
+    iframe.setAttribute("src", `${stripped}${join}grokBotFb=${Date.now()}`);
+    iframe.addEventListener("load", () => { delete iframe.dataset.grokBotVncRefreshing; }, { once: true });
+  }
+
+  function attachVncVisibility(el, iframe) {
+    if (el.dataset.grokBotVncVisibility === "1") return;
+    el.dataset.grokBotVncVisibility = "1";
+    let hidden = true;
+    el.send = (channel, value) => {
+      try { iframe.contentWindow?.postMessage({ channel, value }, "*"); } catch {}
+      if (channel === VNC_VIEWER_VISIBLE_CHANNEL && value === true) refreshNoVncIframe(iframe);
+    };
+    const show = () => {
+      if (!hidden) return;
+      hidden = false;
+      el.send(VNC_VIEWER_VISIBLE_CHANNEL, true);
+    };
+    const hide = () => { hidden = true; };
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting && entry.intersectionRatio > 0)) show();
+      else hide();
+    }, { threshold: 0.05 });
+    observer.observe(el);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        hidden = true;
+        show();
+      } else hide();
+    });
   }
 
   function watchAdoptedWebview(el, iframe) {
@@ -187,7 +236,10 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     }
     const next = rewriteLoopbackVncUrl(el.getAttribute("src") || "");
     if (next.length > 0 && iframe.getAttribute("src") !== next) iframe.setAttribute("src", next);
-    if (next.length > 0) watchAdoptedWebview(el, iframe);
+    if (next.length > 0) {
+      watchAdoptedWebview(el, iframe);
+      attachVncVisibility(el, iframe);
+    }
   }
 
   function scanWebviews(root) {
@@ -672,7 +724,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     overlay.type = "button";
     overlay.setAttribute("aria-label", "Stop");
     overlay.dataset.testid = "grok-bot-composer-stop";
-    overlay.style.cssText = "display:none;position:fixed;z-index:40;margin:0;border:0;border-radius:50%;background:var(--sand-fill-primary,#111);color:var(--sand-text-on-color,#fff);width:30px;height:30px;padding:0;cursor:pointer";
+    overlay.style.cssText = "display:none;position:fixed;z-index:40;margin:0;border:0;border-radius:50%;background:var(--sand-fill-primary,#171914);color:var(--sand-text-on-color,#171914);width:30px;height:30px;padding:0;cursor:pointer";
     overlay.innerHTML = '<span aria-hidden="true" style="display:block;width:10px;height:10px;margin:10px auto;background:currentColor;border-radius:2px"></span>';
     function stopNow() {
       const agentId = lastAgentId || [...running][0];

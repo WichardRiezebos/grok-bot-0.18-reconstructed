@@ -286,6 +286,7 @@ function VncPool({ bridge, src, className, maxWarm = VNC_WARM_PREVIEW_LIMIT }: {
       ><VncWebview
         bridge={bridge}
         className={className}
+        isViewerVisible={visible}
         onConnectedChange={current ? setConnected : undefined}
         onCrashedChange={current ? setCrashed : undefined}
         src={value}

@@ -946,8 +946,8 @@ test("Computer tools attach only on Drive turns", async () => {
     remoteCalls.length = 0;
     await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "hello again", clientNonce: "n4" });
     await waitForCall(4);
-    assert.equal(providerCalls.at(-1).slot, "drive");
-    assert.equal(providerCalls.at(-1).toolNames.includes("Computer"), true);
+    assert.equal(providerCalls.at(-1).slot, "think");
+    assert.equal(providerCalls.at(-1).toolNames.includes("Computer"), false);
   } finally {
     await loaded.dispose();
     await rm(dataDir, { recursive: true, force: true });
@@ -1046,6 +1046,75 @@ test("stopRoutedTurn aborts an in-flight Drive turn with Stopped.", async () => 
       .filter((agent) => agent.id === "agent-1")
       .at(-1);
     assert.equal(stillRunning?.isRunning, false);
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("stopRoutedTurn stays idle when listAgents resolves after abort", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-stop-pulse-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), JSON.stringify(OPENROUTER_SETTINGS));
+    const events = [];
+    let started;
+    const startedTurn = new Promise((resolve) => { started = resolve; });
+    let releasePulse;
+    const pulseHeld = new Promise((resolve) => { releasePulse = resolve; });
+    let listAgentsCalls = 0;
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: (family, payload) => events.push({ family, payload }),
+      dispatchRemote: async (method) => {
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") {
+          listAgentsCalls += 1;
+          if (listAgentsCalls > 1) await pulseHeld;
+          return [{ id: "agent-1", isRunning: true }];
+        }
+        if (method === "listRoutedComputerTools") return [{ name: "observe_ui", providerIdentifier: "grok-bot-computer" }];
+        if (method === "listRoutedMcpTools") return [];
+        return {};
+      },
+      runProviderText: async (_provider, _messages, options) => {
+        started();
+        await new Promise((_, reject) => {
+          const signal = options.abortSignal;
+          if (signal?.aborted) {
+            reject(signal.reason instanceof Error ? signal.reason : new Error("aborted"));
+            return;
+          }
+          signal?.addEventListener("abort", () => {
+            reject(signal.reason instanceof Error ? signal.reason : new Error("aborted"));
+          }, { once: true });
+        });
+        return "should-not-finish";
+      },
+    });
+    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "quote the heading on plus.nl", clientNonce: "n1" });
+    await Promise.race([startedTurn, new Promise((_, reject) => setTimeout(() => reject(new Error("turn did not start")), 2_000))]);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const stop = await router.dispatch("stopRoutedTurn", { agentId: "agent-1" });
+    assert.deepEqual(stop, { handled: true, value: { stopped: true } });
+    releasePulse();
+    for (let i = 0; i < 80; i++) {
+      const last = events
+        .filter((event) => event.family === "agents")
+        .flatMap((event) => event.payload.agents ?? [])
+        .filter((agent) => agent.id === "agent-1")
+        .at(-1);
+      if (last?.isRunning === false) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const last = events
+      .filter((event) => event.family === "agents")
+      .flatMap((event) => event.payload.agents ?? [])
+      .filter((agent) => agent.id === "agent-1")
+      .at(-1);
+    assert.equal(last?.isRunning, false);
   } finally {
     await loaded.dispose();
     await rm(dataDir, { recursive: true, force: true });

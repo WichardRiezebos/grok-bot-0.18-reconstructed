@@ -483,8 +483,7 @@ export function shouldSkipRoutedBoxChromeReload(url: string | undefined, chromeA
 
 const ROUTED_GUI_INTENT_RE = /\b(click|screenshot|browse|shop|order|checkout|cookie|desktop|website|browser|open chrome|type in|scroll)\b/i;
 
-export function turnNeedsRoutedComputer(prompt: string, chromeAlreadyOpen = false): boolean {
-  if (chromeAlreadyOpen) return true;
+export function turnNeedsRoutedComputer(prompt: string, _chromeAlreadyOpen = false): boolean {
   if (extractRoutedBrowserUrl(prompt) != null) return true;
   return ROUTED_GUI_INTENT_RE.test(prompt);
 }

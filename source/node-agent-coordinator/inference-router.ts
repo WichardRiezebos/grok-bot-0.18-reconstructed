@@ -168,11 +168,13 @@ export function createCoordinatorInferenceRouter(options: {
   const streamingByAgent = new Map<string, { readonly id: string; readonly content: string; readonly timestampMs: number }>();
   const chromeOpenByAgent = new Set<string>();
   const turnControllers = new Map<string, AbortController>();
+  const turnActivities = new Map<string, { stop(): void }>();
 
   const abortAgentTurn = (agentId: string, kind: "stop" | "supersede"): boolean => {
     const controller = turnControllers.get(agentId);
     if (controller == null || controller.signal.aborted) return false;
     controller.abort(new RoutedTurnAbortError(kind));
+    turnActivities.get(agentId)?.stop();
     return true;
   };
   let storeLock = Promise.resolve();
@@ -198,10 +200,22 @@ export function createCoordinatorInferenceRouter(options: {
     await writeFile(temporary, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
     await rename(temporary, storePath);
   };
+  const stampLiveTurnState = (agents: unknown): unknown => {
+    if (!Array.isArray(agents)) return agents;
+    return agents.map(raw => {
+      const row = asRecord(raw);
+      if (row == null) return raw;
+      const id = typeof row.id === "string" ? row.id : "";
+      const controller = turnControllers.get(id);
+      const isRunning = controller != null && !controller.signal.aborted;
+      if (isRunning) return { ...row, isRunning: true, isRunningTurn: true };
+      return { ...row, isRunning: false, isRunningTurn: false, isComposingMessage: false, currentActivity: undefined };
+    });
+  };
   const overlayAgents = (payload: unknown): unknown => {
     const record = asRecord(payload);
     if (record == null || !Array.isArray(record.agents)) return payload;
-    return { ...record, agents: overlayRoutedRosterLastEntry(record.agents, snapshot) };
+    return { ...record, agents: stampLiveTurnState(overlayRoutedRosterLastEntry(record.agents, snapshot)) };
   };
   const append = async (agentId: string, entries: readonly StoredEntry[]): Promise<Store> => withStore(async () => {
     const current = await load();
@@ -216,6 +230,7 @@ export function createCoordinatorInferenceRouter(options: {
       abortAgentTurn(id, "stop");
       streamingByAgent.delete(id);
       chromeOpenByAgent.delete(id);
+      turnActivities.delete(id);
       queues.delete(id);
     }
     const current = await load();
@@ -243,13 +258,19 @@ export function createCoordinatorInferenceRouter(options: {
     try {
       let remote = await options.dispatchRemote("listAgents", {});
       if (!Array.isArray(remote)) return idleTurnActivity();
+      let live = true;
       const surface: { composing: boolean; activity: RoutedActivity } = { composing: true, activity: { kind: "thinking" } };
       const project = (isRunning: boolean, roster: unknown[]) => overlayRoutedRosterLastEntry(roster.map(raw => {
         const row = asRecord(raw);
         if (row?.id !== agentId) return raw;
         return { ...row, isRunning, isRunningTurn: isRunning, isComposingMessage: isRunning && surface.composing, isRetrying: false, ...(isRunning ? { currentActivity: surface.activity } : { currentActivity: undefined }) };
       }), snapshot);
-      const publishRunning = () => options.postEvent("agents", { activeAgentId: agentId, agents: project(true, Array.isArray(remote) ? remote : []) });
+      const publishRunning = () => {
+        if (!live) return;
+        const controller = turnControllers.get(agentId);
+        if (controller?.signal.aborted) return;
+        options.postEvent("agents", { activeAgentId: agentId, agents: project(true, Array.isArray(remote) ? remote : []) });
+      };
       publishRunning();
       const pulse = setInterval(() => {
         void options.dispatchRemote("listAgents", {}).then(next => {
@@ -260,11 +281,14 @@ export function createCoordinatorInferenceRouter(options: {
       pulse.unref();
       return {
         reveal(next) {
+          if (!live) return;
           if (next.composing !== undefined) surface.composing = next.composing;
           if (next.activity !== undefined) surface.activity = next.activity;
           publishRunning();
         },
         stop() {
+          if (!live) return;
+          live = false;
           clearInterval(pulse);
           options.postEvent("agents", { activeAgentId: agentId, agents: project(false, Array.isArray(remote) ? remote : []) });
         },
@@ -313,15 +337,18 @@ export function createCoordinatorInferenceRouter(options: {
     const chromeAlreadyOpen = chromeOpenByAgent.has(agentId);
     const withUser = await append(agentId, [{ provider, role: "user", content: prompt, ...(richText === undefined ? {} : { richText }), id: userEntry.id, clientNonce, timestampMs }]);
     emitTranscript(agentId, "appended", userEntry);
-    const turnActivity = await beginActivity(agentId);
     const userAbort = new AbortController();
     turnControllers.set(agentId, userAbort);
+    const turnActivity = await beginActivity(agentId);
+    turnActivities.set(agentId, turnActivity);
+    if (userAbort.signal.aborted) turnActivity.stop();
     let turnAbort: AbortSignal | undefined = userAbort.signal;
     const log = (message: string) => appendRoutedInferenceLog(options.dataDir, `${provider} ${agentId} ${message}`);
     try {
       await awaitRoutedRetryBackoff(options.composingDelayMs ?? 1_200, turnAbort);
     } catch (error) {
       if (turnControllers.get(agentId) === userAbort) turnControllers.delete(agentId);
+      if (turnActivities.get(agentId) === turnActivity) turnActivities.delete(agentId);
       turnActivity.stop();
       if (isRoutedTurnAbortError(error) && error.kind === "supersede") {
         log("turn-supersede");
@@ -622,6 +649,7 @@ export function createCoordinatorInferenceRouter(options: {
     }
     finally {
       if (turnControllers.get(agentId) === userAbort) turnControllers.delete(agentId);
+      if (turnActivities.get(agentId) === turnActivity) turnActivities.delete(agentId);
       turnActivity.stop();
     }
     return { accepted: true, clientNonce, provider };
@@ -646,7 +674,7 @@ export function createCoordinatorInferenceRouter(options: {
       if (provider !== "cursor" && method === "listAgents") {
         const remote = await options.dispatchRemote(method, args);
         const local = await load();
-        return { handled: true, value: overlayRoutedRosterLastEntry(remote, local) };
+        return { handled: true, value: stampLiveTurnState(overlayRoutedRosterLastEntry(remote, local)) };
       }
       if (provider !== "cursor" && ["getAgentTranscriptTail", "openAgentTail", "getAgentTranscriptWindow"].includes(method)) {
         const record = asRecord(args) ?? {};

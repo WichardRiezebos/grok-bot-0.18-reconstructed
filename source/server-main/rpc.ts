@@ -23,6 +23,7 @@ import { MAIN_METHOD_TABLE } from "../shared/rpc/main.js";
 import { CLIENT_PERSISTENCE_CHANNELS } from "../shared/persistence.js";
 import type { RuntimeConfig } from "./config.js";
 import type { DebugState } from "./debug-log.js";
+import { postGatewayCommand } from "./gateway-rpc.js";
 import { loadSecrets, persistSecrets } from "./secrets-file.js";
 import { DockerUnavailableError, unavailable } from "./unavailable.js";
 
@@ -173,7 +174,26 @@ export function createRpcDispatcher(options: {
     commitStagedAttachments: () => stub("commitStagedAttachments"),
     discardStagedAttachment: () => stub("discardStagedAttachment"),
     forceRecreateComputer: () => stub("forceRecreateComputer", "Reset the box container from your host instead."),
-    updateComputer: () => stub("updateComputer"),
+    updateComputer: async (payload) => {
+      const record = payload as JsonMap;
+      const id = record.id;
+      if (typeof id !== "string" || id.length === 0) throw new Error("A computer update names the agent by its string id.");
+      const force = record.force === true;
+      try {
+        const result = await postGatewayCommand(config, "updateForeverBox", { id, force });
+        const started = typeof result === "object" && result != null && (result as JsonMap).started;
+        if (started === false) {
+          const reason = typeof (result as JsonMap).reason === "string" ? (result as JsonMap).reason : "the service declined the update";
+          throw new Error(`Couldn't update the computer (${reason}). It is unchanged.`);
+        }
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("Couldn't update the computer")) throw error;
+        const detail = error instanceof Error ? error.message : String(error);
+        throw new Error(`Couldn't update the computer (${detail}). It is unchanged.`);
+      }
+      options.restartCoordinator();
+      return { status: "dev-fallback-finished" };
+    },
     forceReconnectGateway: () => { options.restartCoordinator(); return null; },
     getExperimentsSnapshot: () => ({ flags: {}, runtime: "docker" }),
     applyFeatureFlagOverride: () => stub("applyFeatureFlagOverride"),
@@ -312,14 +332,22 @@ export function createRpcDispatcher(options: {
       if (typeof key !== "string") return { value: null };
       return { value: loadSecrets(options.secretsPath)[key] ?? null };
     },
-    upsertSecrets: (payload) => {
+    upsertSecrets: async (payload) => {
       const entries = (payload as JsonMap).entries;
       const current = loadSecrets(options.secretsPath);
       if (typeof entries === "object" && entries != null && !Array.isArray(entries)) {
         for (const [key, value] of Object.entries(entries)) if (typeof value === "string") current[key] = value;
         persistSecrets(options.secretsPath, current);
       }
-      return { keys: Object.keys(current).sort(), synced: true };
+      let synced = false;
+      try {
+        await postGatewayCommand(config, "setBoxSecrets", { secrets: current });
+        synced = true;
+        await postGatewayCommand(config, "refreshMcp", {}).catch(() => undefined);
+      } catch (error) {
+        debug.logs.push({ at: new Date().toISOString(), stream: "control", text: `setBoxSecrets ${error instanceof Error ? error.message : String(error)}` });
+      }
+      return { keys: Object.keys(current).sort(), synced };
     },
     removeSecrets: (payload) => {
       const keys = (payload as JsonMap).keys;

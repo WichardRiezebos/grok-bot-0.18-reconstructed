@@ -2011,20 +2011,27 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
       const result = computerActionResult(response);
       if (result?.status === "started-untrackable") {
         setSettingsComputerActionState((previous) => previous.scope === scope ? { ...previous, isBlocked: true } : previous);
-        setNotice(kind === "update" ? COMPUTER_UPDATE_UNTRACKABLE_COPY : COMPUTER_RESET_UNTRACKABLE_COPY);
+        const message = kind === "update" ? COMPUTER_UPDATE_UNTRACKABLE_COPY : COMPUTER_RESET_UNTRACKABLE_COPY;
+        setNotice(message);
+        publishSettingsNotice({ kind: "error", operation: "settings-computer-update", message });
       } else if (result?.status === "rejected" && result.reason != null) {
         setNotice(result.reason);
+        publishSettingsNotice({ kind: "error", operation: "settings-computer-update", message: result.reason });
       }
       return response;
     } catch (error) {
-      if (settingsComputerGenerationRef.current === generation) setNotice(error instanceof Error ? error.message : String(error));
+      if (settingsComputerGenerationRef.current === generation) {
+        const message = error instanceof Error ? error.message : String(error);
+        setNotice(message);
+        publishSettingsNotice({ kind: "error", operation: "settings-computer-update", message });
+      }
       throw error;
     } finally {
       if (settingsComputerGenerationRef.current === generation) {
         setSettingsComputerActionState((previous) => previous.scope === scope ? { ...previous, pending: null } : previous);
       }
     }
-  }, [activeAgent, bridge, scopedSettingsComputerActionState.isBlocked, settingsComputerCanUpdateBaseline, settingsComputerScope]);
+  }, [activeAgent, bridge, publishSettingsNotice, scopedSettingsComputerActionState.isBlocked, settingsComputerCanUpdateBaseline, settingsComputerScope]);
   const queueSettingsComputerUpdate = useCallback(() => {
     if (!settingsComputerCanUpdateBaseline || scopedSettingsComputerActionState.pending != null || scopedSettingsComputerActionState.isBlocked) return;
     setSettingsComputerActionState((previous) => previous.scope === settingsComputerScope ? { ...previous, isUpdateQueued: true } : previous);
