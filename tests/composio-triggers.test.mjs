@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -31,7 +31,7 @@ test("composio routine triggers parse, describe, and match webhook events", asyn
   try {
     const trigger = loaded.module.parseStoredTrigger({ type: "composio", triggerSlug: "GMAIL_NEW_GMAIL_MESSAGE" });
     assert.deepEqual(trigger, { type: "composio", triggerSlug: "GMAIL_NEW_GMAIL_MESSAGE" });
-    assert.equal(schedule.module.describeTrigger(trigger), "When Composio GMAIL_NEW_GMAIL_MESSAGE fires");
+    assert.equal(schedule.module.describeTrigger(trigger), "When new Gmail arrives");
     const event = { source: "composio", triggerSlug: "GMAIL_NEW_GMAIL_MESSAGE", data: { id: "m1" } };
     assert.equal(loaded.module.triggerMatchesEvent(trigger, event), true);
     assert.equal(loaded.module.triggerMatchesEvent(trigger, { source: "composio", triggerSlug: "LINEAR_ISSUE_CREATED" }), false);
@@ -53,4 +53,27 @@ test("automations system prompt teaches the composio trigger shape", async () =>
   } finally {
     await loaded.dispose();
   }
+});
+
+test("routine editor maps Gmail into the trigger picker shape", async () => {
+  const loaded = await loadModule("frontend/src/recovered/features/automations/routines/trigger-schema.ts");
+  try {
+    const form = loaded.module.createRoutineTriggerForm("composio");
+    assert.deepEqual(form, { platform: "composio", triggerSlug: "GMAIL_NEW_GMAIL_MESSAGE" });
+    assert.deepEqual(loaded.module.routineTriggerFormToListener(form), { type: "composio", triggerSlug: "GMAIL_NEW_GMAIL_MESSAGE" });
+    assert.deepEqual(loaded.module.routineTriggerToForms({ type: "composio", triggerSlug: "GMAIL_NEW_GMAIL_MESSAGE" }), [form]);
+    assert.deepEqual(loaded.module.describeRoutineTrigger(form), { lead: "New", rest: "Gmail messages" });
+  } finally {
+    await loaded.dispose();
+  }
+});
+
+test("shipped renderer patch adds Gmail to Add trigger", async () => {
+  const { patchOriginalRoutineTriggerPicker } = await import("../scripts/lib/router-renderer-patch.mjs");
+  const source = await readFile(path.join(repoRoot, "deploy/control/shipped-renderer/assets/index-UbX-y3il.js"), "utf8");
+  const patched = patchOriginalRoutineTriggerPicker(source);
+  assert.match(patched, /children:"Gmail message"/);
+  assert.match(patched, /onSelect:\(\)=>F\("composio"\)/);
+  assert.match(patched, /triggerSlug:"GMAIL_NEW_GMAIL_MESSAGE"/);
+  assert.match(patched, /type:"composio"/);
 });

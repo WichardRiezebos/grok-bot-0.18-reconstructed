@@ -63,6 +63,32 @@ export function patchOriginalSettingsRegistry(source) {
   return replaceExactlyOnce(source, REGISTRY_BEFORE, REGISTRY_AFTER, "settings registry");
 }
 
+const HGN_BEFORE = 'function Hgn(n){switch(n){case"slack":return{platform:"slack"';
+const HGN_AFTER = 'function Hgn(n){switch(n){case"composio":return{platform:"composio",triggerSlug:"GMAIL_NEW_GMAIL_MESSAGE"};case"slack":return{platform:"slack"';
+const VGN_BEFORE = 'case"pagerduty":return{platform:"pagerduty",event:n.event.case,serviceIds:n.serviceIds.join(", ")}}}';
+const VGN_AFTER = 'case"pagerduty":return{platform:"pagerduty",event:n.event.case,serviceIds:n.serviceIds.join(", ")};case"composio":return{platform:"composio",triggerSlug:typeof n.triggerSlug==="string"?n.triggerSlug:"GMAIL_NEW_GMAIL_MESSAGE"}}}';
+const GGN_BEFORE = 'function Ggn(n){if(n.platform==="slack"){';
+const GGN_AFTER = 'function Ggn(n){if(n.platform==="composio"){const i=String(n.triggerSlug??"").trim();return i.length===0?null:{type:"composio",triggerSlug:i}}if(n.platform==="slack"){';
+const C2N_BEFORE = 'function C2n(n){switch(n){case"slack":';
+const C2N_AFTER = 'function C2n(n){switch(n){case"composio":return p.jsx(Dr,{name:"mail",size:"md"});case"slack":';
+const X2N_BEFORE = 'function x2n(n){switch(n.platform){case"slack":';
+const X2N_AFTER = 'function x2n(n){switch(n.platform){case"composio":return n.triggerSlug==="GMAIL_NEW_GMAIL_MESSAGE"?{lead:"New",rest:"Gmail messages"}:{lead:"When",rest:"Composio "+n.triggerSlug+" fires"};case"slack":';
+const F2N_BEFORE = 'function f2n(n){const e=he.c(24),{listener:t,onChange:s,onCommit:r}=n;switch(t.platform){case"slack":';
+const F2N_AFTER = 'function f2n(n){const e=he.c(24),{listener:t,onChange:s,onCommit:r}=n;switch(t.platform){case"composio":return p.jsx("span",{children:t.triggerSlug==="GMAIL_NEW_GMAIL_MESSAGE"?"New Gmail message":t.triggerSlug});case"slack":';
+const MENU_BEFORE = 'p.jsx(It.Item,{leading:p.jsx(Yne,{name:"slack",sizePx:18}),onSelect:()=>F("slack"),children:"Slack message"})';
+const MENU_AFTER = 'p.jsx(It.Item,{leading:p.jsx(Dr,{name:"mail",size:"md"}),onSelect:()=>F("composio"),children:"Gmail message"}),p.jsx(It.Item,{leading:p.jsx(Yne,{name:"slack",sizePx:18}),onSelect:()=>F("slack"),children:"Slack message"})';
+
+export function patchOriginalRoutineTriggerPicker(source) {
+  let patched = replaceExactlyOnce(source, HGN_BEFORE, HGN_AFTER, "composio trigger factory");
+  patched = replaceExactlyOnce(patched, VGN_BEFORE, VGN_AFTER, "composio trigger load");
+  patched = replaceExactlyOnce(patched, GGN_BEFORE, GGN_AFTER, "composio trigger save");
+  patched = replaceExactlyOnce(patched, C2N_BEFORE, C2N_AFTER, "composio trigger glyph");
+  patched = replaceExactlyOnce(patched, X2N_BEFORE, X2N_AFTER, "composio trigger sentence");
+  patched = replaceExactlyOnce(patched, F2N_BEFORE, F2N_AFTER, "composio trigger fields");
+  patched = replaceExactlyOnce(patched, MENU_BEFORE, MENU_AFTER, "composio trigger menu");
+  return patched;
+}
+
 export function patchOriginalSettingsPanel(source) {
   let patched = replaceExactlyOnce(source, COMPONENT_ANCHOR, `${COMPONENT_SOURCE}${COMPONENT_ANCHOR}`, "component insertion");
   patched = replaceExactlyOnce(patched, GENERAL_BEFORE, GENERAL_AFTER, "Router panel switch");
@@ -89,7 +115,7 @@ export async function applyOriginalRendererRouterPatch({ stageRoot }) {
   }
   const changes = [];
   for (const [role, candidate, transform] of [
-    ["registry", registryCandidates[0], patchOriginalSettingsRegistry],
+    ["registry", registryCandidates[0], (source) => patchOriginalRoutineTriggerPicker(patchOriginalSettingsRegistry(source))],
     ["panel", panelCandidates[0], patchOriginalSettingsPanel],
   ]) {
     const patched = transform(candidate.source);
@@ -105,8 +131,8 @@ export async function applyOriginalRendererRouterPatch({ stageRoot }) {
     schemaVersion: 1,
     mode: "original-renderer-settings-extension",
     chunks: changes,
-    features: ["settings-router-provider", "settings-openrouter-model", "settings-openrouter-computer-model", "settings-openrouter-reasoning-effort", "settings-openrouter-model-search", "settings-local-docker-status", "settings-composio", "settings-local-profile", "settings-gravatar", "usage-openrouter-cost"],
-    transformations: ["settings-registry", "router-panel", "usage-panel"],
+    features: ["settings-router-provider", "settings-openrouter-model", "settings-openrouter-computer-model", "settings-openrouter-reasoning-effort", "settings-openrouter-model-search", "settings-local-docker-status", "settings-composio", "settings-local-profile", "settings-gravatar", "usage-openrouter-cost", "routines-composio-gmail"],
+    transformations: ["settings-registry", "router-panel", "usage-panel", "routines-composio-gmail"],
   };
   const provenancePath = path.join(stageRoot, "dist", "renderer-router-extension.json");
   await writeFile(provenancePath, `${JSON.stringify(record, null, 2)}\n`);

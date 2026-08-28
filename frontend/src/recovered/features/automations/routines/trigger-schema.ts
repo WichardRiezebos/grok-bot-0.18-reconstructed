@@ -75,6 +75,11 @@ export interface PagerDutyTriggerForm {
   readonly serviceIds: string;
 }
 
+export interface ComposioTriggerForm {
+  readonly platform: "composio";
+  readonly triggerSlug: string;
+}
+
 export type RoutineTriggerForm =
   | { readonly platform: "schedule"; readonly schedule: string }
   | SlackTriggerForm
@@ -82,7 +87,8 @@ export type RoutineTriggerForm =
   | TeamsTriggerForm
   | LinearTriggerForm
   | SentryTriggerForm
-  | PagerDutyTriggerForm;
+  | PagerDutyTriggerForm
+  | ComposioTriggerForm;
 
 export interface CronListener {
   readonly type: "cron";
@@ -143,7 +149,13 @@ export interface PagerDutyListener {
   readonly serviceIds: readonly string[];
 }
 
-export type RoutineListener = CronListener | SlackListener | GithubListener | TeamsListener | LinearListener | SentryListener | PagerDutyListener;
+export interface ComposioListener {
+  readonly type: "composio";
+  readonly triggerSlug: string;
+  readonly toolkit?: string;
+}
+
+export type RoutineListener = CronListener | SlackListener | GithubListener | TeamsListener | LinearListener | SentryListener | PagerDutyListener | ComposioListener;
 
 export interface TriggerSentence {
   readonly lead: string;
@@ -299,6 +311,7 @@ export function createRoutineTriggerForm(platform: RoutineTriggerForm["platform"
     case "linear": return { platform, event: "issueCreated", statusIds: "", cycleIds: "", projectIds: "", teamIds: "" };
     case "sentry": return { platform, event: "issueCreated", projectIds: "" };
     case "pagerduty": return { platform, event: "incidentTriggered", serviceIds: "" };
+    case "composio": return { platform, triggerSlug: "GMAIL_NEW_GMAIL_MESSAGE" };
   }
 }
 
@@ -311,6 +324,7 @@ export function listenerToRoutineTriggerForm(listener: RoutineListener): Routine
     case "linear": return { platform: "linear", event: listener.event.case, statusIds: listener.event.case === "statusChanged" ? listener.event.statusIds.join(", ") : "", cycleIds: listener.event.case === "endOfCycle" ? listener.event.cycleIds.join(", ") : "", projectIds: listener.projectIds.join(", "), teamIds: listener.teamIds.join(", ") };
     case "sentry": return { platform: "sentry", event: listener.event.case, projectIds: listener.projectIds.join(", ") };
     case "pagerduty": return { platform: "pagerduty", event: listener.event.case, serviceIds: listener.serviceIds.join(", ") };
+    case "composio": return { platform: "composio", triggerSlug: listener.triggerSlug };
   }
 }
 
@@ -343,6 +357,9 @@ function routineListener(value: unknown): RoutineListener | null {
   }
   if (value.type === "sentry" && record(value.event) && isSentryEvent(value.event.case) && Array.isArray(value.projectIds) && value.projectIds.every((item): item is string => typeof item === "string")) return { type: "sentry", event: { case: value.event.case }, projectIds: value.projectIds };
   if (value.type === "pagerduty" && record(value.event) && isPagerDutyEvent(value.event.case) && Array.isArray(value.serviceIds) && value.serviceIds.every((item): item is string => typeof item === "string")) return { type: "pagerduty", event: { case: value.event.case }, serviceIds: value.serviceIds };
+  if (value.type === "composio" && typeof value.triggerSlug === "string" && value.triggerSlug.trim().length > 0) {
+    return { type: "composio", triggerSlug: value.triggerSlug, ...(typeof value.toolkit === "string" ? { toolkit: value.toolkit } : {}) };
+  }
   return null;
 }
 
@@ -355,6 +372,7 @@ function routinePlatformForm(value: Record<string, unknown>): RoutineTriggerForm
     case "linear": return (value.event === "issueCreated" || value.event === "statusChanged" || value.event === "endOfCycle") && typeof value.statusIds === "string" && typeof value.cycleIds === "string" && typeof value.projectIds === "string" && typeof value.teamIds === "string" ? { platform: "linear", event: value.event, statusIds: value.statusIds, cycleIds: value.cycleIds, projectIds: value.projectIds, teamIds: value.teamIds } : null;
     case "sentry": return isSentryEvent(value.event) && typeof value.projectIds === "string" ? { platform: "sentry", event: value.event, projectIds: value.projectIds } : null;
     case "pagerduty": return isPagerDutyEvent(value.event) && typeof value.serviceIds === "string" ? { platform: "pagerduty", event: value.event, serviceIds: value.serviceIds } : null;
+    case "composio": return typeof value.triggerSlug === "string" && value.triggerSlug.trim().length > 0 ? { platform: "composio", triggerSlug: value.triggerSlug } : null;
     default: return null;
   }
 }
@@ -410,6 +428,10 @@ export function routineTriggerFormToListener(form: RoutineTriggerForm): RoutineL
     }
     case "sentry": return { type: "sentry", event: { case: form.event }, projectIds: tokens(form.projectIds) };
     case "pagerduty": return { type: "pagerduty", event: { case: form.event }, serviceIds: tokens(form.serviceIds) };
+    case "composio": {
+      const triggerSlug = form.triggerSlug.trim();
+      return triggerSlug.length === 0 ? null : { type: "composio", triggerSlug };
+    }
     case "github": {
       const repo = form.repo.trim();
       const branch = form.ciBranch.trim();
@@ -429,6 +451,7 @@ export function describeRoutineListener(listener: RoutineListener): TriggerSente
     case "linear": return linearSentence(listener);
     case "sentry": return { lead: "Issue", rest: `${SENTRY_EVENT_LABELS[listener.event.case]} in ${list(listener.projectIds) || "all projects"}` };
     case "pagerduty": return { lead: "Incident", rest: `${PAGERDUTY_EVENT_LABELS[listener.event.case]} on ${list(listener.serviceIds) || "all services"}` };
+    case "composio": return listener.triggerSlug === "GMAIL_NEW_GMAIL_MESSAGE" ? { lead: "New", rest: "Gmail messages" } : { lead: "When", rest: `Composio ${listener.triggerSlug} fires` };
   }
 }
 

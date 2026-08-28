@@ -94,6 +94,10 @@ test("Router settings use the trusted backend and display recorded inference usa
   assert.match(rendererPatch, /Recommended · /);
   assert.match(rendererPatch, /x-ai\/grok-4\.6/);
   assert.match(rendererPatch, /Think model/);
+  assert.match(rendererPatch, /Gmail message/);
+  assert.match(rendererPatch, /F\("composio"\)/);
+  assert.match(rendererPatch, /GMAIL_NEW_GMAIL_MESSAGE/);
+  assert.match(rendererPatch, /routines-composio-gmail/);
   assert.match(rendererPatch, /Drive model/);
   assert.match(rendererPatch, /Summarize model/);
   assert.match(rendererPatch, /Same as Think/);

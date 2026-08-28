@@ -20,7 +20,8 @@ type AutomationTeamsTrigger = { readonly type: "microsoftTeams"; readonly tenant
 type AutomationLinearTrigger = { readonly type: "linear"; readonly event: { readonly case: "issueCreated" } | { readonly case: "statusChanged"; readonly statusIds: readonly string[] } | { readonly case: "endOfCycle"; readonly cycleIds: readonly string[] }; readonly projectIds: readonly string[]; readonly teamIds: readonly string[] };
 type AutomationSentryTrigger = { readonly type: "sentry"; readonly event: { readonly case: string }; readonly projectIds: readonly string[] };
 type AutomationPagerDutyTrigger = { readonly type: "pagerduty"; readonly event: { readonly case: string }; readonly serviceIds: readonly string[] };
-type AutomationTriggerMember = AutomationCronTrigger | AutomationSlackTrigger | AutomationGithubTrigger | AutomationTeamsTrigger | AutomationLinearTrigger | AutomationSentryTrigger | AutomationPagerDutyTrigger;
+type AutomationComposioTrigger = { readonly type: "composio"; readonly triggerSlug: string; readonly toolkit?: string };
+type AutomationTriggerMember = AutomationCronTrigger | AutomationSlackTrigger | AutomationGithubTrigger | AutomationTeamsTrigger | AutomationLinearTrigger | AutomationSentryTrigger | AutomationPagerDutyTrigger | AutomationComposioTrigger;
 type AutomationTrigger = AutomationTriggerMember | { readonly type: "group"; readonly listeners: readonly [AutomationTriggerMember, AutomationTriggerMember, ...AutomationTriggerMember[]] };
 
 /** The generated AutomationTrigger shape accepted by the existing RPC spec. */
@@ -76,6 +77,7 @@ function toAutomationTriggerMember(listener: RoutineListener): AutomationTrigger
     };
     case "sentry": return { type: "sentry", event: { case: listener.event.case }, projectIds: [...listener.projectIds] };
     case "pagerduty": return { type: "pagerduty", event: { case: listener.event.case }, serviceIds: [...listener.serviceIds] };
+    case "composio": return { type: "composio", triggerSlug: listener.triggerSlug, ...(listener.toolkit == null ? {} : { toolkit: listener.toolkit }) };
   }
 }
 

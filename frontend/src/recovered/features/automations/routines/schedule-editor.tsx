@@ -76,6 +76,7 @@ export interface RoutineTriggerDraftEditorProps {
 
 const EMPTY_DRAFT: RoutineTriggerDraft = { rows: [] };
 const HOURLY_FORM: RoutineTriggerForm = { platform: "schedule", schedule: "0 * * * *" };
+const GMAIL_FORM: RoutineTriggerForm = { platform: "composio", triggerSlug: "GMAIL_NEW_GMAIL_MESSAGE" };
 
 /** Non-root composition of the recovered P2n controller and Ugn schedule leaf. */
 export function RoutineTriggerDraftEditor({ trigger, pending, onCommit }: RoutineTriggerDraftEditorProps) {
@@ -129,6 +130,7 @@ export function RoutineTriggerDraftEditor({ trigger, pending, onCommit }: Routin
           {snapshot.menuOpen ? (
             <div aria-label="Trigger source" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); void controller.handleMenuEscape(); } }} role="menu">
               <button onClick={() => { void controller.addRowAndCommit(HOURLY_FORM).then(() => controller.setMenuOpen(false)); }} type="button">Every hour</button>
+              <button onClick={() => { void controller.addRowAndCommit(GMAIL_FORM).then(() => controller.setMenuOpen(false)); }} type="button">Gmail message</button>
               <button onClick={() => { void controller.addRow({ platform: "schedule", schedule: "" }, true); }} type="button">Advanced…</button>
               <button onClick={() => { void controller.setMenuOpen(false); }} type="button">Cancel</button>
             </div>
@@ -146,6 +148,8 @@ export function RoutineTriggerDraftEditor({ trigger, pending, onCommit }: Routin
                 schedule={editingRow.schedule}
               />
             </>
+          ) : editingRow?.platform === "composio" ? (
+            <span>{editingRow.triggerSlug === "GMAIL_NEW_GMAIL_MESSAGE" ? "New Gmail message" : editingRow.triggerSlug}</span>
           ) : null}
           <button onClick={() => { void controller.closeEditor("cancel"); }} type="button">Cancel</button>
           <button disabled={pending || snapshot.pending} onClick={() => { if (snapshot.editingRow != null && editingRow?.platform === "schedule") void controller.blurCustomSchedule(snapshot.editingRow, editingRow.schedule); }} type="button">Save</button>
