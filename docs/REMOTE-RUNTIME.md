@@ -34,15 +34,22 @@ expose box:1340.
    - `OPENROUTER_API_KEY`
    - `SAND_GATEWAY_TOKEN` (shared by control and the box gateway)
    - `PUBLIC_URL=https://<your-domain>`
+   - `COMPOSE_PARALLEL_LIMIT=1` (Compose process, not a container env)
    - optional `COMPOSIO_API_KEY` for Connect plugins
    - optional `RUNTIME_DEBUG=1` for the corner overlay and verbose debug
-4. Enable **Isolated Deployments**. Do not add Traefik labels or `dokploy-network`
-   to the Compose file; Dokploy injects those.
-5. Domain → service `control`, port `8080`, HTTPS. Keep the service off the
+4. Compose builds `control` and `box` from `deploy/Dockerfile` targets that
+   share one Node `build` stage. `COMPOSE_PARALLEL_LIMIT=1` keeps those
+   builds sequential so the second image reuses the cache instead of racing
+   a second `npm ci`.
+5. **Disable Isolated Deployments** on a 4GB (or similar) host. Leaving the
+   old `sand-box` stack up while the new one builds will swap the machine.
+   Expect a short restart on each deploy. Do not add Traefik labels or
+   `dokploy-network` to the Compose file; Dokploy injects those.
+6. Domain → service `control`, port `8080`, HTTPS. Keep the service off the
    public internet unless the tailnet (or equivalent) is the only path in.
-6. Grok’s screen is proxied through control at `/__grok_bot/vnc/primary` (box:6080)
+7. Grok’s screen is proxied through control at `/__grok_bot/vnc/primary` (box:6080)
    and `/__grok_bot/vnc/fork` (box:6081). A separate VNC domain is optional.
-7. Volume backups for `box-workspace`, `box-data`, and `control-data`.
+8. Volume backups for `box-workspace`, `box-data`, and `control-data`.
 
 The base Compose file uses named volumes only (a Dokploy `git clone` would wipe
 repo bind-mounts). Internal ports are `expose`d, not published on the host.
@@ -58,6 +65,7 @@ Router → You** to change them.
 export OPENROUTER_API_KEY=...
 export SAND_GATEWAY_TOKEN=...
 export PUBLIC_URL=http://127.0.0.1:8080
+export COMPOSE_PARALLEL_LIMIT=1
 docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml up --build
 ```
 

@@ -109,6 +109,11 @@ test("Dokploy compose uses named volumes, env interpolation, and no host ports",
   assert.match(base, /control-data:/);
   assert.match(base, /expose:\n\s+- "1340"/);
   assert.match(base, /expose:\n\s+- "8080"/);
+  assert.match(base, /dockerfile: deploy\/Dockerfile/);
+  assert.match(base, /target: box/);
+  assert.match(base, /target: control/);
+  assert.doesNotMatch(base, /deploy\/box\/Dockerfile/);
+  assert.doesNotMatch(base, /deploy\/control\/Dockerfile/);
   assert.doesNotMatch(base, /^\s+ports:/m);
   assert.doesNotMatch(base, /caddy/i);
   assert.doesNotMatch(base, /dokploy-network/);

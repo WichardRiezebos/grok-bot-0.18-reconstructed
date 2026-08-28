@@ -2,7 +2,8 @@ services:
   box:
     build:
       context: ..
-      dockerfile: deploy/box/Dockerfile
+      dockerfile: deploy/Dockerfile
+      target: box
     platform: linux/amd64
     restart: unless-stopped
     expose:
@@ -37,7 +38,8 @@ services:
   control:
     build:
       context: ..
-      dockerfile: deploy/control/Dockerfile
+      dockerfile: deploy/Dockerfile
+      target: control
     restart: unless-stopped
     expose:
       - "8080"
