@@ -9,8 +9,10 @@ export class SandClientPausedError extends Error {
   }
 }
 
+import type { GatewayConnectOptions } from "../../shared/box-idle-suspend.js";
+
 export interface RemoteHostConnector<TConnection, TRecreateArgs = unknown, TRecreateResult = unknown, TCredential = unknown> {
-  connect(): Promise<TConnection>;
+  connect(options?: GatewayConnectOptions): Promise<TConnection>;
   recreate?(args: TRecreateArgs): Promise<TRecreateResult>;
   forceRecreate?(): Promise<TRecreateResult>;
   issueLocalExecDaemonCredential?(): Promise<TCredential | undefined>;
@@ -22,7 +24,7 @@ export function wrapRemoteHostConnectorWithClientPause<TConnection, TRecreateArg
 ): RemoteHostConnector<TConnection, TRecreateArgs, TRecreateResult, TCredential> {
   const refuseWhilePaused = (): void => { if (isPaused()) throw new SandClientPausedError(); };
   return {
-    connect: async () => { refuseWhilePaused(); return await base.connect(); },
+    connect: async (options) => { refuseWhilePaused(); return await base.connect(options); },
     ...(base.recreate == null ? {} : { recreate: async (args: TRecreateArgs) => { refuseWhilePaused(); return await base.recreate!.call(base, args); } }),
     ...(base.forceRecreate == null ? {} : { forceRecreate: async () => { refuseWhilePaused(); return await base.forceRecreate!.call(base); } }),
     ...(base.issueLocalExecDaemonCredential == null ? {} : {
