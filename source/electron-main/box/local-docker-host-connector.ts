@@ -17,9 +17,11 @@ import {
   resolveDockerCliPath,
 } from "../../shared/node/docker-cli.js";
 import type { SandSettingsStore } from "../../shared/node/settings/sand-settings-store.js";
+import type { GatewayConnectOptions } from "../../shared/box-idle-suspend.js";
 import type { RecreateResult } from "./box-recreate-commands.js";
 import type { SandRemoteHostConnector } from "./box-host-connector.js";
 import type { GatewayConnection } from "./gateway-descriptor-cache.js";
+import { getRegisteredBoxIdleSuspendService } from "./box-idle-suspend.js";
 
 export const LOCAL_DOCKER_BOX_IMAGE = "public.ecr.aws/k0i0n2g5/cursorenvironments/universal:sand-box-latest";
 export const LOCAL_DOCKER_BOX_CONTAINER = "grok-bot-local-vm";
@@ -279,6 +281,13 @@ async function readOrCreateToken(settingsPath: string): Promise<string> {
   return token;
 }
 
+export interface LocalDockerHealthProbe {
+  readonly running: boolean;
+  readonly ready: boolean;
+  readonly isBusy: boolean;
+  readonly lastBusyAtMs: number | null;
+}
+
 async function gatewayReady(token: string): Promise<boolean> {
   try {
     const response = await fetch(`${LOCAL_DOCKER_GATEWAY_URL}/health`, {
@@ -287,6 +296,29 @@ async function gatewayReady(token: string): Promise<boolean> {
     });
     return response.ok;
   } catch { return false; }
+}
+
+export async function probeLocalDockerHealth(settingsPath: string): Promise<LocalDockerHealthProbe | null> {
+  const daemon = await dockerInfo().catch(() => ({ ok: false, output: DOCKER_ENGINE_UNAVAILABLE }));
+  if (!daemon.ok) return null;
+  const inspected = await inspectContainer();
+  if (!inspected.exists || !inspected.running) return { running: false, ready: false, isBusy: false, lastBusyAtMs: null };
+  try {
+    const response = await fetch(`${LOCAL_DOCKER_GATEWAY_URL}/health`, {
+      headers: { authorization: `Bearer ${await readOrCreateToken(settingsPath)}` },
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (!response.ok) return { running: true, ready: false, isBusy: false, lastBusyAtMs: null };
+    const body = await response.json() as { isBusy?: unknown; lastBusyAtMs?: unknown };
+    return {
+      running: true,
+      ready: true,
+      isBusy: body.isBusy === true,
+      lastBusyAtMs: typeof body.lastBusyAtMs === "number" && Number.isFinite(body.lastBusyAtMs) ? body.lastBusyAtMs : null,
+    };
+  } catch {
+    return { running: true, ready: false, isBusy: false, lastBusyAtMs: null };
+  }
 }
 
 async function inspectContainer(): Promise<{ exists: boolean; running: boolean; owned: boolean; image: string; hostSha256: string; hasInferenceCredential: boolean; schemaVersion: string }> {
@@ -507,14 +539,20 @@ export function createSettingsRoutedHostConnector(
     return ensureInFlight;
   };
   return {
-    connect: async () => await localConnect(),
+    connect: async (options?: GatewayConnectOptions) => {
+      const idle = getRegisteredBoxIdleSuspendService();
+      if (idle == null) return await localConnect();
+      return await idle.guardConnect(options?.demand === true, localConnect);
+    },
     ...(remote.issueLocalExecDaemonCredential == null ? {} : { issueLocalExecDaemonCredential: remote.issueLocalExecDaemonCredential.bind(remote) }),
     ...(remote.issueInferenceCredential == null ? {} : { issueInferenceCredential: remote.issueInferenceCredential.bind(remote) }),
     recreate: async (): Promise<RecreateResult> => {
+      getRegisteredBoxIdleSuspendService()?.noteActivity();
       await updateLocalDockerBox(settings.settingsPath, secrets?.exportBoxSecrets);
       return { status: "started-untrackable" };
     },
     forceRecreate: async (): Promise<RecreateResult> => {
+      getRegisteredBoxIdleSuspendService()?.noteActivity();
       const removed = await runDocker(["rm", "--force", LOCAL_DOCKER_BOX_CONTAINER]);
       if (!removed.ok && !/no such container/i.test(removed.output)) return { status: "rejected", reason: removed.output };
       await localConnect();

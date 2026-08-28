@@ -28,6 +28,22 @@ export const SAND_CLIENT_PAUSE_BLOCKED_MESSAGE = encodeSandBoxBlockedMessage({
   detail: ""
 });
 
+export const SAND_BOX_SUSPENDED_REASON = "SAND_BOX_SUSPENDED";
+export const SAND_BOX_SUSPENDED_BLOCKED_MESSAGE = encodeSandBoxBlockedMessage({
+  reason: SAND_BOX_SUSPENDED_REASON,
+  title: "",
+  detail: ""
+});
+
+export function isBoxSuspendedMessage(message: string): boolean {
+  return hasSandBoxBlockedMarker(message) && message.includes(SAND_BOX_SUSPENDED_REASON);
+}
+
+export function isBoxSuspendedError(error: unknown): boolean {
+  const blocked = findSandBoxBlockedMessage(error);
+  return blocked != null && isBoxSuspendedMessage(blocked);
+}
+
 export function findSandBoxBlockedMessage(error: unknown): string | null {
   const seen = new Set<object>();
   let current = error;

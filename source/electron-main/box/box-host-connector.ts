@@ -11,6 +11,9 @@ import { GATEWAY_ACCESS_DENIED_MESSAGE_MARKER, CLOUD_AGENT_STORAGE_DISABLED, GAT
 import { GATEWAY_NETWORK_TOKEN_HEADER } from "../../shared/gateway-wire.js";
 import { createGatewayConnectFastPath, type GatewayConnection, type GatewayDescriptorStore } from "./gateway-descriptor-cache.js";
 import type { RecreateResult } from "./box-recreate-commands.js";
+import type { GatewayConnectOptions } from "../../shared/box-idle-suspend.js";
+
+export type { GatewayConnectOptions };
 
 export const LOCAL_EXEC_DAEMON_CREDENTIAL_PATH = "/sand-box/local-exec-daemon-credential";
 export const GATEWAY_URL_ENV = "SAND_HOST_GATEWAY_URL";
@@ -36,7 +39,7 @@ export interface BrokerDeps {
 }
 
 export interface SandRemoteHostConnector {
-  connect(): Promise<GatewayConnection>;
+  connect(options?: GatewayConnectOptions): Promise<GatewayConnection>;
   recreate?(args: { readonly preserveData: boolean; readonly force?: boolean }): Promise<RecreateResult>;
   forceRecreate?(): Promise<RecreateResult>;
   issueLocalExecDaemonCredential?(): Promise<{ readonly credential: string; readonly backendUrl: string; readonly expiresAtMs?: number } | undefined>;
