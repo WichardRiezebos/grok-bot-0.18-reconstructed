@@ -76,6 +76,7 @@ interface McpManagerRuntime {
   renameAccount(serverId: string, accountKey: string, newAccountKey: string): Promise<ServerState>;
   removeAccount(serverId: string, accountKey: string): Promise<ServerState>;
   getMcpCustomInstructions(): Promise<string>;
+  listServerTools(serverId: string): Promise<unknown>;
   refreshAccountConfigInBackground(): void;
   noteAuthCompletedElsewhere(serverId: string, accountKey: string): void;
   setAuthCompletionObserver(observer: (completion: unknown) => void): void;

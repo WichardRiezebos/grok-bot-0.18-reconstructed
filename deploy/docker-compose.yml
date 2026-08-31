@@ -1,7 +1,7 @@
 services:
   box:
     build:
-      context: ..
+      context: .
       dockerfile: deploy/Dockerfile
       target: box
     platform: linux/amd64
@@ -37,7 +37,7 @@ services:
 
   control:
     build:
-      context: ..
+      context: .
       dockerfile: deploy/Dockerfile
       target: control
     restart: unless-stopped

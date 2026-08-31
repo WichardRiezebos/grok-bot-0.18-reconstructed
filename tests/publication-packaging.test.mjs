@@ -266,8 +266,8 @@ test("Router settings use the trusted backend and display recorded inference usa
   assert.match(providers, /configuredOpenRouterReasoningEffort\(slot\)/);
   assert.match(providers, /runPiDriveSession/);
   assert.match(providers, /slot === "drive"/);
-  assert.match(providers, /injectOpenRouterReasoningIntoBody/);
-  assert.match(providers, /boundOpenRouterRequestBody/);
+  assert.match(providers, /openRouterReasoningRequest/);
+  assert.match(providers, /boundOpenRouterMessages/);
   assert.match(providers, /openRouterFetch/);
   assert.match(providers, /openRouterSlotFromSession\(sessionOptions\)/);
   assert.doesNotMatch(providers, /routedToolsIncludeComputer\(definitions \?\? \[\]\)/);

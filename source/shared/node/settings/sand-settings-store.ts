@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 
 import { DEFAULT_SAND_THEME_PREFERENCE, isSandThemePreference, type SandThemePreference } from "../../desktop.js";
@@ -128,7 +129,10 @@ export class SandSettingsStore {
   load(): SandStoredSettings {
     if (!existsSync(this.settingsPath)) return emptySettings();
     try { const parsed = parseSettings(JSON.parse(readFileSync(this.settingsPath, "utf8")) as unknown); return parsed == null ? emptySettings() : this.applyPendingMigrations(parsed); }
-    catch { return emptySettings(); }
+    catch {
+      try { renameSync(this.settingsPath, `${this.settingsPath}.corrupt-${Date.now()}`); } catch {}
+      return emptySettings();
+    }
   }
   private applyPendingMigrations(settings: SandStoredSettings): SandStoredSettings {
     let next = settings;
@@ -165,7 +169,7 @@ export class SandSettingsStore {
     }
     return next;
   }
-  persist(settings: SandStoredSettings): void { mkdirSync(dirname(this.settingsPath), { recursive: true }); const temp = `${this.settingsPath}.${process.pid}.tmp`; writeFileSync(temp, JSON.stringify(settings, null, 2), "utf8"); renameSync(temp, this.settingsPath); }
+  persist(settings: SandStoredSettings): void { mkdirSync(dirname(this.settingsPath), { recursive: true }); const temp = `${this.settingsPath}.${process.pid}.${randomUUID()}.tmp`; writeFileSync(temp, JSON.stringify(settings, null, 2), "utf8"); renameSync(temp, this.settingsPath); }
   private update(mutator: (settings: SandStoredSettings) => SandStoredSettings): void { this.persist(mutator(this.load())); }
   getHasSeenOnboarding(): boolean | undefined { return this.load().hasSeenOnboarding; }
   setHasSeenOnboarding(value: boolean): void { this.update((current) => { const { hasSeenOnboardingAccountScope: _old, ...rest } = current; return { ...rest, hasSeenOnboarding: value, ...(rest.mcpCustomInstructionsAccountScope === undefined ? {} : { hasSeenOnboardingAccountScope: rest.mcpCustomInstructionsAccountScope }) }; }); }
@@ -293,34 +297,27 @@ export class SandSettingsStore {
       cacheWriteTokens: safe(usage.cacheWriteTokens),
       costUsd: safeCost(usage.costUsd),
     };
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const before = existsSync(this.settingsPath) ? readFileSync(this.settingsPath, "utf8") : "";
-      const settings = this.load();
-      const current = settings.inferenceRouterUsage ?? emptySandInferenceRouterUsage();
-      const previous = current.providers[provider];
-      const next = {
-        ...settings,
-        inferenceRouterUsage: {
-          schemaVersion: 1 as const,
-          providers: {
-            ...current.providers,
-            [provider]: {
-              requests: previous.requests + increment.requests,
-              inputTokens: previous.inputTokens + increment.inputTokens,
-              outputTokens: previous.outputTokens + increment.outputTokens,
-              cacheReadTokens: previous.cacheReadTokens + increment.cacheReadTokens,
-              cacheWriteTokens: previous.cacheWriteTokens + increment.cacheWriteTokens,
-              costUsd: (previous.costUsd ?? 0) + increment.costUsd,
-              lastUsedAt: new Date().toISOString(),
-            },
+    const settings = this.load();
+    const current = settings.inferenceRouterUsage ?? emptySandInferenceRouterUsage();
+    const previous = current.providers[provider];
+    this.persist({
+      ...settings,
+      inferenceRouterUsage: {
+        schemaVersion: 1 as const,
+        providers: {
+          ...current.providers,
+          [provider]: {
+            requests: previous.requests + increment.requests,
+            inputTokens: previous.inputTokens + increment.inputTokens,
+            outputTokens: previous.outputTokens + increment.outputTokens,
+            cacheReadTokens: previous.cacheReadTokens + increment.cacheReadTokens,
+            cacheWriteTokens: previous.cacheWriteTokens + increment.cacheWriteTokens,
+            costUsd: (previous.costUsd ?? 0) + increment.costUsd,
+            lastUsedAt: new Date().toISOString(),
           },
         },
-      };
-      const after = existsSync(this.settingsPath) ? readFileSync(this.settingsPath, "utf8") : "";
-      if (after !== before && attempt < 2) continue;
-      this.persist(next);
-      return;
-    }
+      },
+    });
   }
   setLocalToolPermissionCeiling(value?: SandLocalToolPermission): void { this.update((s) => { const { localToolPermissionCeiling: _old, ...rest } = s; return value === undefined ? rest : { ...rest, localToolPermissionCeiling: value }; }); }
   getPinnedAgentIds(): string[] | undefined { return this.load().pinnedAgentIds; }

@@ -8,13 +8,17 @@ import { SAND_BOX_FORK_NOVNC_PORT, SAND_BOX_PRIMARY_NOVNC_PORT } from "../packag
 export const VNC_PRIMARY_PREFIX = "/__grok_bot/vnc/primary";
 export const VNC_FORK_PREFIX = "/__grok_bot/vnc/fork";
 
+const VNC_PROXY_CONNECT_TIMEOUT_MS = 10_000;
+const VNC_PROXY_HTTP_IDLE_TIMEOUT_MS = 30_000;
+const VNC_PROXY_STRIPPED_HEADERS = new Set(["authorization", "cookie"]);
+
 export function vncProxyMatch(pathName: string): { readonly prefix: string; readonly port: number; readonly rest: string } | null {
   if (pathName === VNC_PRIMARY_PREFIX || pathName.startsWith(`${VNC_PRIMARY_PREFIX}/`)) {
-    const rest = pathName.slice(VNC_PRIMARY_PREFIX.length);
+    const rest = pathName.slice(VNC_PRIMARY_PREFIX.length).replace(/\/{2,}/g, "/");
     return { prefix: VNC_PRIMARY_PREFIX, port: SAND_BOX_PRIMARY_NOVNC_PORT, rest: rest.length > 0 ? rest : "/" };
   }
   if (pathName === VNC_FORK_PREFIX || pathName.startsWith(`${VNC_FORK_PREFIX}/`)) {
-    const rest = pathName.slice(VNC_FORK_PREFIX.length);
+    const rest = pathName.slice(VNC_FORK_PREFIX.length).replace(/\/{2,}/g, "/");
     return { prefix: VNC_FORK_PREFIX, port: SAND_BOX_FORK_NOVNC_PORT, rest: rest.length > 0 ? rest : "/" };
   }
   return null;
@@ -55,13 +59,20 @@ export function proxyVncHttp(
   match: { readonly port: number; readonly rest: string },
   search: string,
 ): void {
-  const target = new URL(match.rest + search, boxVncOrigin(gatewayUrl, match.port));
-  const headers = { ...req.headers, host: target.host };
-  delete headers["connection"];
+  const expectedOrigin = boxVncOrigin(gatewayUrl, match.port);
+  const target = new URL(match.rest + search, expectedOrigin);
+  if (target.origin !== expectedOrigin) {
+    res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+    res.end("vnc proxy target rejected");
+    return;
+  }
+  const headers: Record<string, string | string[] | undefined> = { ...req.headers, host: target.host };
+  for (const name of ["connection", ...VNC_PROXY_STRIPPED_HEADERS]) delete headers[name];
   const upstream = httpRequest(target, { method: req.method, headers }, (incoming) => {
     res.writeHead(incoming.statusCode ?? 502, incoming.headers);
     incoming.pipe(res);
   });
+  upstream.setTimeout(VNC_PROXY_HTTP_IDLE_TIMEOUT_MS, () => upstream.destroy(new Error("vnc proxy upstream timeout")));
   const abortUpstream = () => {
     upstream.destroy();
   };
@@ -84,13 +95,20 @@ export function proxyVncUpgrade(
   match: { readonly port: number; readonly rest: string },
   search: string,
 ): void {
-  const target = new URL(match.rest + search, boxVncOrigin(gatewayUrl, match.port));
+  const expectedOrigin = boxVncOrigin(gatewayUrl, match.port);
+  const target = new URL(match.rest + search, expectedOrigin);
+  if (target.origin !== expectedOrigin) {
+    try { socket.destroy(); } catch {}
+    return;
+  }
   const port = Number.parseInt(target.port, 10);
   const upstream = netConnect(port, target.hostname, () => {
+    clearTimeout(connectTimer);
     const headerLines = Object.entries(req.headers).flatMap(([key, value]) => {
-      if (value == null || key.toLowerCase() === "host") return [];
+      const name = key.toLowerCase();
+      if (value == null || name === "host" || VNC_PROXY_STRIPPED_HEADERS.has(name)) return [];
       const serialized = Array.isArray(value) ? value : [value];
-      return serialized.map((item) => `${key}: ${item}`);
+      return serialized.map((item) => `${name}: ${item}`);
     });
     upstream.write(`${req.method} ${target.pathname}${target.search} HTTP/1.1\r\nHost: ${target.host}\r\n${headerLines.join("\r\n")}\r\n\r\n`);
     if (head.length > 0) upstream.write(head);
@@ -101,6 +119,14 @@ export function proxyVncUpgrade(
     try { socket.destroy(); } catch {}
     try { upstream.destroy(); } catch {}
   };
-  upstream.on("error", fail);
-  socket.on("error", fail);
+  const connectTimer = setTimeout(fail, VNC_PROXY_CONNECT_TIMEOUT_MS);
+  connectTimer.unref?.();
+  upstream.on("error", () => {
+    clearTimeout(connectTimer);
+    fail();
+  });
+  socket.on("error", () => {
+    clearTimeout(connectTimer);
+    fail();
+  });
 }

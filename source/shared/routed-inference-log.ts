@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { ROUTED_COMPUTER_TOOL_NAME } from "./routed-computer-tools.js";
@@ -44,7 +44,7 @@ export async function awaitAbortRace<T>(
 
 export function appendRoutedInferenceLog(dataDir: string, message: string, at = new Date()): void {
   const line = formatRoutedInferenceLogLine(message, at);
-  try { appendFileSync(routedInferenceLogPath(dataDir), line); } catch { /* log must never break a turn */ }
+  try { void appendFile(routedInferenceLogPath(dataDir), line).catch(() => undefined); } catch { /* log must never break a turn */ }
   try { process.stderr.write(line); } catch { /* ignore */ }
 }
 

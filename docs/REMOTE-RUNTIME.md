@@ -66,7 +66,7 @@ export OPENROUTER_API_KEY=...
 export SAND_GATEWAY_TOKEN=...
 export PUBLIC_URL=http://127.0.0.1:8080
 export COMPOSE_PARALLEL_LIMIT=1
-docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml up --build
+docker compose --project-directory . -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml up --build
 ```
 
 Open `http://127.0.0.1:8080`. The local overlay publishes only

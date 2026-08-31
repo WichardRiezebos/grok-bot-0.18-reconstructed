@@ -30,12 +30,14 @@ import { normalizeRequestUrl, proxyVncHttp, proxyVncUpgrade, vncProxyMatch } fro
 interface RuntimeSocket {
   readonly readyState: number;
   readonly OPEN: number;
+  readonly bufferedAmount?: number;
   send(data: string): void;
   close(code?: number, reason?: string): void;
+  terminate?(): void;
   on(event: "message" | "close", listener: (raw?: Buffer | string) => void): void;
 }
 
-function resolveWebSocketServer(mod: unknown): new (options: { noServer?: boolean; server?: ReturnType<typeof createServer>; path?: string }) => {
+function resolveWebSocketServer(mod: unknown): new (options: { noServer?: boolean; server?: ReturnType<typeof createServer>; path?: string; maxPayload?: number }) => {
   on(event: "connection", listener: (socket: RuntimeSocket, req: IncomingMessage) => void): void;
   handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, cb: (socket: RuntimeSocket) => void): void;
   emit(event: "connection", socket: RuntimeSocket, req: IncomingMessage): boolean;
@@ -44,7 +46,7 @@ function resolveWebSocketServer(mod: unknown): new (options: { noServer?: boolea
   const record = mod as { WebSocketServer?: unknown; Server?: unknown; default?: { WebSocketServer?: unknown; Server?: unknown } };
   const candidate = record.WebSocketServer ?? record.Server ?? record.default?.WebSocketServer ?? record.default?.Server;
   if (typeof candidate !== "function") throw new Error("ws WebSocketServer export is unavailable");
-  return candidate as new (options: { noServer?: boolean; server?: ReturnType<typeof createServer>; path?: string }) => {
+  return candidate as new (options: { noServer?: boolean; server?: ReturnType<typeof createServer>; path?: string; maxPayload?: number }) => {
     on(event: "connection", listener: (socket: RuntimeSocket, req: IncomingMessage) => void): void;
     handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, cb: (socket: RuntimeSocket) => void): void;
     emit(event: "connection", socket: RuntimeSocket, req: IncomingMessage): boolean;
@@ -94,8 +96,8 @@ function readRequestBody(req: IncomingMessage, limit = 1_000_000): Promise<strin
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > limit) {
-        reject(new Error("payload too large"));
-        req.destroy();
+        req.pause();
+        reject(new PayloadTooLargeError());
         return;
       }
       chunks.push(chunk);
@@ -103,6 +105,10 @@ function readRequestBody(req: IncomingMessage, limit = 1_000_000): Promise<strin
     req.on("end", () => resolveBody(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
+}
+
+class PayloadTooLargeError extends Error {
+  constructor() { super("payload too large"); this.name = "PayloadTooLargeError"; }
 }
 
 function stripCrossOrigin(html: string): string {
@@ -113,6 +119,10 @@ function injectRenderer(html: string, debug: boolean): string {
   const tags = `<script src="/__grok_bot/shim.js"></script>${debug ? '<script src="/__grok_bot/overlay.js"></script>' : ""}`;
   const prepared = stripCrossOrigin(html);
   if (prepared.includes("<head>")) return prepared.replace("<head>", `<head>${tags}`);
+  const htmlOpen = prepared.match(/<html[^>]*>/i);
+  if (htmlOpen != null) return prepared.replace(htmlOpen[0], `${htmlOpen[0]}${tags}`);
+  const doctype = prepared.match(/<!doctype html[^>]*>/i);
+  if (doctype != null) return prepared.replace(doctype[0], `${doctype[0]}${tags}`);
   return `${tags}${prepared}`;
 }
 
@@ -162,39 +172,77 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
       noteLog(debug, "control", "coordinator owner superseded");
       try { previous.close(4409, "superseded by another tab"); } catch {}
     }
+    if (previous !== socket) flushOwnerFrameBuffer(socket);
   };
   let restartQueued = false;
+  const COORDINATOR_RESTART_BASE_MS = 750;
+  const COORDINATOR_RESTART_MAX_MS = 30_000;
+  const COORDINATOR_STABLE_MS = 10_000;
+  const OWNER_BACKPRESSURE_LIMIT = 4 * 1024 * 1024;
+  const OWNER_FRAME_BUFFER_LIMIT = 256;
+  const OWNER_FRAME_BUFFER_TTL_MS = 2_000;
+  let coordinatorRestartAttempts = 0;
+  let ownerFrameBuffer: Array<{ at: number; frame: string }> = [];
+  const forwardCoordinatorFrame = (kind: "coordinator" | "coordinator-main", frame: unknown) => {
+    const data = JSON.stringify({ kind, frame });
+    const socket = ownerSocket;
+    if (socket == null || socket.readyState !== socket.OPEN) {
+      if (ownerFrameBuffer.length < OWNER_FRAME_BUFFER_LIMIT) ownerFrameBuffer.push({ at: Date.now(), frame: data });
+      return;
+    }
+    if ((socket.bufferedAmount ?? 0) > OWNER_BACKPRESSURE_LIMIT) return;
+    try { socket.send(data); } catch {}
+  };
+  const flushOwnerFrameBuffer = (socket: RuntimeSocket) => {
+    const now = Date.now();
+    const pending = ownerFrameBuffer.filter((entry) => now - entry.at <= OWNER_FRAME_BUFFER_TTL_MS);
+    ownerFrameBuffer = [];
+    for (const entry of pending) {
+      if ((socket.bufferedAmount ?? 0) > OWNER_BACKPRESSURE_LIMIT) return;
+      try { socket.send(entry.frame); } catch { return; }
+    }
+  };
+  const scheduleCoordinatorRestart = () => {
+    coordinatorRestartAttempts += 1;
+    const delay = Math.min(COORDINATOR_RESTART_BASE_MS * 2 ** (coordinatorRestartAttempts - 1), COORDINATOR_RESTART_MAX_MS)
+      + Math.floor(Math.random() * 250);
+    noteLog(debug, "control", `coordinator restart scheduled in ${delay}ms`);
+    const generationAtSchedule = coordinatorGeneration;
+    setTimeout(() => {
+      if (closing || generationAtSchedule !== coordinatorGeneration) return;
+      startCoordinator();
+    }, delay);
+  };
   const startCoordinator = () => {
     const generation = ++coordinatorGeneration;
     try {
       coordinator?.dispose();
+      coordinator = undefined;
       ownerSocket = undefined;
       for (const socket of [...sockets]) {
         try { socket.close(1012, "coordinator-restart"); } catch {}
       }
-      coordinator = (options.fork ?? forkCoordinator)(config, debug);
-      coordinator.onData((frame) => {
-        if (ownerSocket != null && ownerSocket.readyState === ownerSocket.OPEN) {
-          ownerSocket.send(JSON.stringify({ kind: "coordinator", frame }));
-        }
+      const session = (options.fork ?? forkCoordinator)(config, debug);
+      coordinator = session;
+      const stableTimer = setTimeout(() => { coordinatorRestartAttempts = 0; }, COORDINATOR_STABLE_MS);
+      stableTimer.unref?.();
+      session.onData((frame) => {
+        forwardCoordinatorFrame("coordinator", frame);
       });
-      coordinator.onMainData((frame) => {
-        if (ownerSocket != null && ownerSocket.readyState === ownerSocket.OPEN) {
-          ownerSocket.send(JSON.stringify({ kind: "coordinator-main", frame }));
-        }
+      session.onMainData((frame) => {
+        forwardCoordinatorFrame("coordinator-main", frame);
       });
-      coordinator.child.on?.("exit", () => {
+      session.child.on?.("exit", () => {
+        clearTimeout(stableTimer);
         if (closing || generation !== coordinatorGeneration) return;
         noteLog(debug, "control", "coordinator died; restarting");
-        setTimeout(() => {
-          if (closing || generation !== coordinatorGeneration) return;
-          startCoordinator();
-        }, 750);
+        scheduleCoordinatorRestart();
       });
     } catch (error) {
       debug.coordinatorAlive = false;
       debug.coordinatorPid = null;
       noteLog(debug, "stderr", `coordinator fork failed: ${String(error)}`);
+      scheduleCoordinatorRestart();
     }
   };
   startCoordinator();
@@ -257,7 +305,18 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
     }
 
     if (req.method === "POST" && pathName === "/webhooks/composio") {
-      const payload = await readRequestBody(req).catch(() => "");
+      let payload: string;
+      try {
+        payload = await readRequestBody(req);
+      } catch (error) {
+        if (error instanceof PayloadTooLargeError) {
+          res.writeHead(413, { "content-type": "text/plain; charset=utf-8", "connection": "close", "cache-control": "no-store" });
+          res.end("payload too large\n");
+          try { req.socket.end(); } catch {}
+          return;
+        }
+        return send(res, 400, "bad request");
+      }
       const secrets = loadSecrets(secretsPathFor(config.dataDir));
       const secret = process.env.COMPOSIO_WEBHOOK_SECRET?.trim() || secrets[COMPOSIO_WEBHOOK_SECRET_NAME]?.trim() || "";
       const webhookId = String(req.headers["webhook-id"] ?? "");
@@ -352,7 +411,7 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
     }
   });
 
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
   debug.wsListenerReady = true;
   server.on("upgrade", (req, socket, head) => {
     try {
@@ -370,6 +429,22 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
       if (url.pathname !== "/ws") {
         socket.destroy();
         return;
+      }
+      const origin = req.headers.origin;
+      const host = req.headers.host;
+      if (origin != null && origin.length > 0) {
+        try {
+          const parsed = new URL(origin);
+          const hostHeader = String(req.headers.host ?? "");
+          if (parsed.host !== hostHeader) {
+            socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+            socket.destroy();
+            return;
+          }
+        } catch {
+          socket.destroy();
+          return;
+        }
       }
       wss.handleUpgrade(req, socket, head, (client) => {
         wss.emit("connection", client, req);
@@ -451,11 +526,36 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
       closing = true;
       coordinatorGeneration += 1;
       coordinator?.dispose();
+      wss.close();
       for (const socket of [...sockets]) {
         try { socket.close(1001, "server-close"); } catch {}
       }
-      wss.close();
-      await new Promise<void>((resolve, reject) => server.close((error) => error != null ? reject(error) : resolve()));
+      const WS_CLOSE_GRACE_MS = 2_000;
+      const SERVER_CLOSE_GRACE_MS = 5_000;
+      setTimeout(() => {
+        for (const socket of [...sockets]) {
+          try { socket.terminate?.(); } catch {}
+        }
+      }, WS_CLOSE_GRACE_MS).unref?.();
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(deadline);
+          resolve();
+        };
+        const deadline = setTimeout(() => {
+          try { server.closeAllConnections(); } catch {}
+          finish();
+        }, SERVER_CLOSE_GRACE_MS);
+        deadline.unref?.();
+        server.close((error) => {
+          if (error != null) noteLog(debug, "stderr", `server close: ${error instanceof Error ? error.message : String(error)}`);
+          finish();
+        });
+      });
+      try { server.closeAllConnections(); } catch {}
     },
   };
 }

@@ -54,7 +54,23 @@ function savePersistence(path: string, values: Record<string, string>): void {
   renameSync(temporary, path);
 }
 
-function themeState(preference: string) {
+  const persistenceValues = new Map<string, string>();
+  let persistenceLoaded = false;
+  const loadPersistenceValues = (path: string): Record<string, string> => {
+    if (!persistenceLoaded) {
+      for (const [key, value] of Object.entries(loadPersistence(path))) persistenceValues.set(key, value);
+      persistenceLoaded = true;
+    }
+    return Object.fromEntries(persistenceValues);
+  };
+  const savePersistenceValues = (path: string, values: Record<string, string>): void => {
+    persistenceValues.clear();
+    for (const [key, value] of Object.entries(values)) persistenceValues.set(key, value);
+    persistenceLoaded = true;
+    savePersistence(path, values);
+  };
+
+  function themeState(preference: string) {
   return { preference, resolved: preference === "system" ? "dark" : preference, source: "docker" };
 }
 
@@ -252,7 +268,13 @@ export function createRpcDispatcher(options: {
       return settings.load().pinnedAgentIds ?? null;
     },
     getHostSidebarSections: () => settings.load().sidebarSections ?? null,
-    setHostSidebarSections: (payload) => (payload as JsonMap).sections ?? settings.load().sidebarSections ?? null,
+    setHostSidebarSections: (payload) => {
+      const sections = (payload as JsonMap).sections;
+      if (Array.isArray(sections)) {
+        settings.setSidebarSections(sections as Parameters<SandSettingsStore["setSidebarSections"]>[0]);
+      }
+      return settings.load().sidebarSections ?? null;
+    },
     getAvailableModels: () => [],
     getInferenceRouter: () => snapshot(),
     setInferenceRouter: (payload) => {
@@ -386,12 +408,19 @@ export function createRpcDispatcher(options: {
       }
       return { keys: Object.keys(current).sort(), synced };
     },
-    removeSecrets: (payload) => {
+    removeSecrets: async (payload) => {
       const keys = (payload as JsonMap).keys;
       const current = loadSecrets(options.secretsPath);
       if (Array.isArray(keys)) for (const key of keys) if (typeof key === "string") delete current[key];
       persistSecrets(options.secretsPath, current);
-      return { keys: Object.keys(current).sort() };
+      let synced = false;
+      try {
+        await postGatewayCommand(config, "setBoxSecrets", { secrets: current });
+        synced = true;
+      } catch (error) {
+        debug.logs.push({ at: new Date().toISOString(), stream: "control", text: `setBoxSecrets ${error instanceof Error ? error.message : String(error)}` });
+      }
+      return { keys: Object.keys(current).sort(), synced };
     },
     getMcpState: async () => {
       const gateway = await gatewayInstalledServers();
@@ -462,27 +491,27 @@ export function createRpcDispatcher(options: {
     [CLIENT_PERSISTENCE_CHANNELS.read]: (payload) => {
       const key = (payload as JsonMap).key;
       if (typeof key !== "string") return null;
-      return loadPersistence(options.persistencePath)[key] ?? null;
+      return loadPersistenceValues(options.persistencePath)[key] ?? null;
     },
     [CLIENT_PERSISTENCE_CHANNELS.write]: (payload) => {
       const record = payload as JsonMap;
       if (typeof record.key !== "string" || typeof record.value !== "string") return null;
-      const values = loadPersistence(options.persistencePath);
+      const values = loadPersistenceValues(options.persistencePath);
       values[record.key] = record.value;
-      savePersistence(options.persistencePath, values);
+      savePersistenceValues(options.persistencePath, values);
       return null;
     },
     [CLIENT_PERSISTENCE_CHANNELS.remove]: (payload) => {
       const key = (payload as JsonMap).key;
       if (typeof key !== "string") return null;
-      const values = loadPersistence(options.persistencePath);
+      const values = loadPersistenceValues(options.persistencePath);
       delete values[key];
-      savePersistence(options.persistencePath, values);
+      savePersistenceValues(options.persistencePath, values);
       return null;
     },
     [CLIENT_PERSISTENCE_CHANNELS.listKeys]: (payload) => {
       const prefix = (payload as JsonMap).prefix;
-      const keys = Object.keys(loadPersistence(options.persistencePath));
+      const keys = Object.keys(loadPersistenceValues(options.persistencePath));
       return typeof prefix === "string" ? keys.filter((key) => key.startsWith(prefix)) : keys;
     },
     [CLIENT_PERSISTENCE_CHANNELS.migrate]: () => null,

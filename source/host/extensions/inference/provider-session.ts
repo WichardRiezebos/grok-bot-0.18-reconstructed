@@ -11,9 +11,9 @@ import type { SandInferenceProvider } from "../../../shared/inference-router.js"
 import { resolveClaudeCodeCliPath } from "../../../shared/node/inference-router-local.js";
 import { getSandRootDir, SAND_BOX_DATA_ROOT } from "../../host-paths.js";
 import { SandSettingsStore } from "../../../shared/node/settings/sand-settings-store.js";
-import { DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, DEFAULT_OPENROUTER_REASONING_EFFORT, injectOpenRouterReasoningIntoBody, openRouterSlotFromSession, resolveOpenRouterComputerModel, resolveOpenRouterModel, resolveOpenRouterReasoningEffort, resolveOpenRouterSlotModel, resolveOpenRouterSummarizeModel, type OpenRouterReasoningEffort, type OpenRouterSlot } from "../../../shared/openrouter-models.js";
-import { boundOpenRouterRequestBody } from "../../../shared/openrouter-prompt-budget.js";
-import { injectOpenRouterCacheControlIntoBody, injectOpenRouterStreamUsageIntoBody, observeOpenRouterSseUsage } from "../../../shared/openrouter-prompt-cache.js";
+import { DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, DEFAULT_OPENROUTER_REASONING_EFFORT, openRouterReasoningRequest, openRouterSlotFromSession, resolveOpenRouterComputerModel, resolveOpenRouterModel, resolveOpenRouterReasoningEffort, resolveOpenRouterSlotModel, resolveOpenRouterSummarizeModel, type OpenRouterReasoningEffort, type OpenRouterSlot } from "../../../shared/openrouter-models.js";
+import { boundOpenRouterMessages } from "../../../shared/openrouter-prompt-budget.js";
+import { applyOpenRouterCacheControl, applyOpenRouterStreamUsage, openRouterModelHonorsCacheControl, observeOpenRouterSseUsage } from "../../../shared/openrouter-prompt-cache.js";
 import {
   ROUTED_PLUGIN_MAX_STEPS,
   openRouterToolResultContent,
@@ -144,10 +144,24 @@ function configuredOpenRouterReasoningEffort(slot: OpenRouterSlot): OpenRouterRe
 function openRouterFetch(effort: OpenRouterReasoningEffort, modelId: string, usage: OpenRouterTurnUsage): typeof fetch {
   return async (input, init) => {
     const nextInit = init == null ? init : (() => {
-      const reasoned = injectOpenRouterReasoningIntoBody(boundOpenRouterRequestBody(init.body), effort);
-      const cached = injectOpenRouterCacheControlIntoBody(reasoned, modelId);
-      const body = injectOpenRouterStreamUsageIntoBody(cached);
-      return body === init.body ? init : { ...init, body: body as BodyInit };
+      const raw = init.body;
+      if (typeof raw !== "string") return init;
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (typeof parsed !== "object" || parsed == null || Array.isArray(parsed)) return init;
+        const root = parsed as Record<string, unknown>;
+        if (!Array.isArray(root.messages)) return init;
+        const { messages: _old, ...rest } = root;
+        const messages = boundOpenRouterMessages(root.messages, { extra: rest });
+        const reasoning = openRouterReasoningRequest(effort);
+        const next: Record<string, unknown> = { ...root, messages };
+        if (reasoning == null) delete next.reasoning;
+        else next.reasoning = reasoning;
+        const withCache = openRouterModelHonorsCacheControl(modelId) ? applyOpenRouterCacheControl(next) : next;
+        return { ...init, body: JSON.stringify(applyOpenRouterStreamUsage(withCache)) as BodyInit };
+      } catch {
+        return init;
+      }
     })();
     const response = await fetch(input, nextInit);
     if (response.ok) return observeOpenRouterSseUsage(response, usage);

@@ -12,8 +12,7 @@ export function redactSecret(value: string | undefined | null): string | null {
 
 export function redactValue(value: unknown, key?: string): unknown {
   if (key != null && SECRET_KEY.test(key) && typeof value === "string") return lastFour(value);
-  if (typeof value === "string" && value.length > 24 && SECRET_KEY.test(key ?? "")) return lastFour(value);
-  if (Array.isArray(value)) return value.map((item) => redactValue(item));
+  if (Array.isArray(value)) return value.map((item) => redactValue(item, key));
   if (typeof value === "object" && value != null) {
     const result: Record<string, unknown> = {};
     for (const [entryKey, entryValue] of Object.entries(value)) result[entryKey] = redactValue(entryValue, entryKey);

@@ -16,8 +16,10 @@ export async function postGatewayCommand(
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!response.ok) {
-    const detail = await response.text().catch(() => response.statusText);
-    throw new Error(`gateway ${method} failed: ${detail}`);
+    const detail = (await response.text().catch(() => response.statusText)).slice(0, 2_000);
+    const error = new Error(`gateway ${method} failed (${response.status}).`) as Error & { gatewayDetail?: string };
+    error.gatewayDetail = detail;
+    throw error;
   }
   const text = await response.text();
   if (text.length === 0) return null;

@@ -114,7 +114,14 @@ export function forkCoordinator(config: RuntimeConfig, debug: DebugState): Coord
     },
     dispose() {
       server.dispose();
-      if (child.exitCode == null && child.signalCode == null) child.kill("SIGTERM");
+      if (child.exitCode == null && child.signalCode == null) {
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode == null && child.signalCode == null) {
+            try { child.kill("SIGKILL"); } catch {}
+          }
+        }, 2_000).unref?.();
+      }
     },
     onData(listener) {
       dataListeners.add(listener);

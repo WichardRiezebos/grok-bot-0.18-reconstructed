@@ -41,7 +41,8 @@ test("box-exec daemon attaches spawn error listeners instead of crashing", async
   const source = await readFile(path.join(repoRoot, "source/box-exec-daemon/server.ts"), "utf8");
   assert.match(source, /async \*shellStream[\s\S]*child\.once\("error"/);
   assert.match(source, /async spawnBackground[\s\S]*child\.once\("error"/);
-  assert.match(source, /process\.writeQueue = process\.writeQueue\.then\(\(\) => appendFile\(terminalPath, data\)\)\.catch\(\(\) => \{\}\)/);
+  assert.match(source, /process\.writeQueue = process\.writeQueue\.then\(\(\) => \{[\s\S]*appendFile\(terminalPath, data\)[\s\S]*\}\)\.catch/);
+  assert.match(source, /timingSafeEqual/);
 });
 
 test("box Chrome converge disables GPU and waits for fork VNC", async () => {
@@ -110,7 +111,7 @@ test("web runtime keeps serving after unhandled rejections", async () => {
 test("OpenRouter usage is taken from the SSE stream, not a JSON clone", async () => {
   const session = await readFile(path.join(repoRoot, "source/host/extensions/inference/provider-session.ts"), "utf8");
   assert.match(session, /observeOpenRouterSseUsage/);
-  assert.match(session, /injectOpenRouterStreamUsageIntoBody/);
+  assert.match(session, /applyOpenRouterStreamUsage/);
   assert.match(session, /GROK_BOT_DATA_DIR/);
   assert.match(session, /function routedSettingsPath/);
   assert.doesNotMatch(session, /response\.clone\(\)\.json/);
@@ -152,4 +153,21 @@ test("renderer drops transcript entries when a bot is deleted", async () => {
   const renderer = await readFile(path.join(repoRoot, "frontend/src/production/ProductionRenderer.tsx"), "utf8");
   assert.match(renderer, /setEntriesByAgent\(\(current\) => \{/);
   assert.match(renderer, /\[agentId\]: _removed/);
+});
+
+test("web control plane hardening", async () => {
+  const vnc = await readFile(path.join(repoRoot, "source/server-main/vnc-proxy.ts"), "utf8");
+  assert.match(vnc, /\{\s*2,\s*\}\s*\/g,\s*"\/"/);
+  assert.match(vnc, /target\.origin !== expectedOrigin/);
+  assert.match(vnc, /VNC_PROXY_STRIPPED_HEADERS/);
+  const http = await readFile(path.join(repoRoot, "source/server-main/http-server.ts"), "utf8");
+  assert.match(http, /maxPayload: 1 << 20/);
+  const redact = await readFile(path.join(repoRoot, "source/server-main/redact.ts"), "utf8");
+  assert.match(redact, /value\.map\(\(item\) => redactValue\(item, key\)\)/);
+  const rpc = await readFile(path.join(repoRoot, "source/server-main/rpc.ts"), "utf8");
+  assert.match(rpc, /setHostSidebarSections: \(payload\) => \{[\s\S]*settings\.setSidebarSections/);
+  assert.match(rpc, /removeSecrets: async \(payload\) => \{[\s\S]*setBoxSecrets/);
+  const settings = await readFile(path.join(repoRoot, "source/shared/node/settings/sand-settings-store.ts"), "utf8");
+  assert.match(settings, /randomUUID\(\)\}\.tmp/);
+  assert.match(settings, /corrupt-\$\{Date\.now\(\)\}/);
 });

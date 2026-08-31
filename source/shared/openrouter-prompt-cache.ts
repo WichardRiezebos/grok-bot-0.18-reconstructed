@@ -24,9 +24,42 @@ function withCacheControl(value: unknown): unknown {
   return record == null ? value : { ...record, cache_control: CACHE_CONTROL };
 }
 
-function isLatestUserTurn(message: Record<string, unknown>, index: number, messages: readonly unknown[]): boolean {
-  if (message.role !== "user") return false;
-  return !messages.slice(index + 1).some((item) => asRecord(item)?.role === "user");
+export function applyOpenRouterCacheControl(root: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...root };
+  const systemMarked = typeof next.system === "string" || Array.isArray(next.system);
+  if (systemMarked) next.system = withCacheControl(next.system);
+  const toolsMarked = Array.isArray(next.tools) && next.tools.length > 0;
+  if (toolsMarked) next.tools = withCacheControl(next.tools);
+  if (Array.isArray(next.messages)) {
+    const messages = next.messages;
+    let latestUserIndex = -1;
+    for (let index = messages.length - 1; index >= 0; index--) {
+      if (asRecord(messages[index])?.role === "user") { latestUserIndex = index; break; }
+    }
+    let latestAssistantOrToolIndex = -1;
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const role = asRecord(messages[index])?.role;
+      if (role === "assistant" || role === "tool") { latestAssistantOrToolIndex = index; break; }
+    }
+    let markersRemaining = 4 - (systemMarked ? 1 : 0) - (toolsMarked ? 1 : 0);
+    next.messages = messages.map((item, index) => {
+      const message = asRecord(item);
+      if (message == null) return item;
+      if (message.role === "system") {
+        if (markersRemaining <= 0) return item;
+        markersRemaining -= 1;
+        return { ...message, content: withCacheControl(message.content) };
+      }
+      if (index === latestUserIndex) return item;
+      if ((message.role === "assistant" || message.role === "tool") && index === latestAssistantOrToolIndex) {
+        if (markersRemaining <= 0) return item;
+        markersRemaining -= 1;
+        return { ...message, content: withCacheControl(message.content) };
+      }
+      return item;
+    });
+  }
+  return next;
 }
 
 export function injectOpenRouterCacheControlIntoBody(body: unknown, modelId: string): unknown {
@@ -35,26 +68,7 @@ export function injectOpenRouterCacheControlIntoBody(body: unknown, modelId: str
     const parsed: unknown = JSON.parse(body);
     const root = asRecord(parsed);
     if (root == null) return body;
-    const next: Record<string, unknown> = { ...root };
-    if (typeof next.system === "string" || Array.isArray(next.system)) next.system = withCacheControl(next.system);
-    if (Array.isArray(next.tools) && next.tools.length > 0) next.tools = withCacheControl(next.tools);
-    if (Array.isArray(next.messages)) {
-      next.messages = next.messages.map((item, index, messages) => {
-        const message = asRecord(item);
-        if (message == null) return item;
-        if (message.role === "system") return { ...message, content: withCacheControl(message.content) };
-        if (isLatestUserTurn(message, index, messages)) return item;
-        const laterAssistant = messages.slice(index + 1).some((later) => {
-          const role = asRecord(later)?.role;
-          return role === "assistant" || role === "tool";
-        });
-        if ((message.role === "assistant" || message.role === "tool") && !laterAssistant) {
-          return { ...message, content: withCacheControl(message.content) };
-        }
-        return item;
-      });
-    }
-    return JSON.stringify(next);
+    return JSON.stringify(applyOpenRouterCacheControl(root));
   } catch {
     return body;
   }
@@ -77,21 +91,26 @@ export function injectOpenRouterStreamUsageIntoBody(body: unknown): unknown {
     const parsed: unknown = JSON.parse(body);
     const root = asRecord(parsed);
     if (root == null) return body;
-    return JSON.stringify({
-      ...root,
-      stream_options: { ...(asRecord(root.stream_options) ?? {}), include_usage: true },
-    });
+    return JSON.stringify(applyOpenRouterStreamUsage(root));
   } catch {
     return body;
   }
 }
 
+export function applyOpenRouterStreamUsage(root: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...root,
+    stream_options: { ...(asRecord(root.stream_options) ?? {}), include_usage: true },
+  };
+}
+
 export function applyOpenRouterSseUsage(chunk: string, usage: { cacheReadTokens: number; cacheWriteTokens: number; costUsd: number }): void {
-  for (const line of chunk.split("\n")) {
+  for (const line of chunk.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed.startsWith("data:")) continue;
     const payload = trimmed.slice(5).trim();
     if (payload.length === 0 || payload === "[DONE]") continue;
+    if (!payload.includes("usage") && !payload.includes("cost") && !payload.includes("cached")) continue;
     try {
       const parsed = openRouterCacheUsageFromPayload(JSON.parse(payload) as unknown);
       if (parsed.cacheReadTokens > usage.cacheReadTokens) usage.cacheReadTokens = parsed.cacheReadTokens;
@@ -114,12 +133,13 @@ export function observeOpenRouterSseUsage(
       const { done, value } = await reader.read();
       if (value != null) {
         buffer += decoder.decode(value, { stream: !done });
-        const events = buffer.split("\n\n");
+        const events = buffer.split(/\r?\n\r?\n/);
         buffer = events.pop() ?? "";
         for (const event of events) applyOpenRouterSseUsage(event, usage);
         controller.enqueue(value);
       }
       if (done) {
+        buffer += decoder.decode();
         if (buffer.length > 0) applyOpenRouterSseUsage(buffer, usage);
         controller.close();
       }

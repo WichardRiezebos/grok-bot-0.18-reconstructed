@@ -13,8 +13,11 @@ export async function runBoxExecDaemonEntrypoint(): Promise<void> {
   });
   process.stdout.write(`${JSON.stringify({ event: "box-exec-daemon-ready", url: handle.url, workspaceRoot: handle.workspaceRoot, terminalsDirectory: handle.terminalsDirectory })}\n`);
   const shutdown = async () => {
-    await handle.stop();
-    process.exitCode = 0;
+    await Promise.race([
+      handle.stop(),
+      new Promise<void>((resolve) => setTimeout(resolve, 3_000).unref()),
+    ]);
+    process.exit(0);
   };
   process.once("SIGINT", () => { void shutdown(); });
   process.once("SIGTERM", () => { void shutdown(); });

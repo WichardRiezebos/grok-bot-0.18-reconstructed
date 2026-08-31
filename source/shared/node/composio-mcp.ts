@@ -404,7 +404,7 @@ async function mcpJsonRpc(
   if (payload?.error != null) {
     throw new Error(typeof payload.error.message === "string" ? payload.error.message : `Connect MCP ${method} failed.`);
   }
-  return { result: payload?.result, sessionId: nextSession ?? undefined };
+  return { result: payload?.result, ...(nextSession == null ? {} : { sessionId: nextSession }) };
 }
 
 async function connectMcpSession(apiKey: string): Promise<{ url: string; headers: Record<string, string>; sessionId?: string }> {
@@ -417,15 +417,25 @@ async function connectMcpSession(apiKey: string): Promise<{ url: string; headers
     clientInfo: { name: "grok-bot", version: "0.18" },
   });
   await mcpJsonRpc(config.url, config.headers, "notifications/initialized", {}, initialized.sessionId).catch(() => undefined);
-  cachedConnectSession = { key: apiKey, url: config.url, headers: config.headers, sessionId: initialized.sessionId };
+  cachedConnectSession = { key: apiKey, url: config.url, headers: config.headers, ...(initialized.sessionId == null ? {} : { sessionId: initialized.sessionId }) };
   return cachedConnectSession;
 }
 
 export async function listComposioConnectMcpTools(apiKey: string): Promise<ComposioToolDefinition[]> {
-  const session = await connectMcpSession(apiKey);
-  const listed = await mcpJsonRpc(session.url, session.headers, "tools/list", {}, session.sessionId);
-  const record = asRecord(listed.result);
-  const rows = Array.isArray(record?.tools) ? record.tools : [];
+  const listWithSession = async (): Promise<unknown[]> => {
+    const session = await connectMcpSession(apiKey);
+    const listed = await mcpJsonRpc(session.url, session.headers, "tools/list", {}, session.sessionId);
+    const record = asRecord(listed.result);
+    return Array.isArray(record?.tools) ? record.tools : [];
+  };
+  let rows: unknown[];
+  try {
+    rows = await listWithSession();
+  } catch (error) {
+    if (!cachedComposioSessionError(error)) throw error;
+    cachedConnectSession = undefined;
+    rows = await listWithSession();
+  }
   const tools: ComposioToolDefinition[] = [];
   for (const row of rows) {
     const item = asRecord(row);
@@ -448,12 +458,26 @@ export async function executeComposioConnectMcpTool(
   name: string,
   args: unknown,
 ): Promise<ComposioMcpExecResult> {
-  const session = await connectMcpSession(apiKey);
-  const called = await mcpJsonRpc(session.url, session.headers, "tools/call", {
-    name,
-    arguments: asRecord(args) ?? {},
-  }, session.sessionId);
-  return mcpExecText(JSON.stringify(called.result ?? {}));
+  const callWithSession = async (): Promise<unknown> => {
+    const session = await connectMcpSession(apiKey);
+    const called = await mcpJsonRpc(session.url, session.headers, "tools/call", {
+      name,
+      arguments: asRecord(args) ?? {},
+    }, session.sessionId);
+    return called.result ?? {};
+  };
+  try {
+    return mcpExecText(JSON.stringify(await callWithSession()));
+  } catch (error) {
+    if (!cachedComposioSessionError(error)) throw error;
+    cachedConnectSession = undefined;
+    return mcpExecText(JSON.stringify(await callWithSession()));
+  }
+}
+
+function cachedComposioSessionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\(400\)|\(404\)/.test(message);
 }
 
 function mcpExecError(message: string): ComposioMcpExecResult {

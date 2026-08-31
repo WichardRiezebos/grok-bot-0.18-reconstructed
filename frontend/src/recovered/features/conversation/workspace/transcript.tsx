@@ -150,22 +150,14 @@ function isMessageContextTargetExcluded(target: EventTarget | null): boolean {
 }
 
 function MessageActionAnchor({ entry, isReadOnly, threadRootId, threadSummary, onOpenThread, onCopy, onReply, onStartThread, renderReactionActions, children }: { entry: TranscriptMessage; isReadOnly: boolean; threadRootId: string | null; threadSummary?: TranscriptThreadSummary | null; onOpenThread?: (targetId: string) => void; onCopy?: (entry: TranscriptMessage) => void | Promise<void>; onReply?: (entry: TranscriptMessage) => void; onStartThread?: (entry: TranscriptMessage) => void; renderReactionActions?: (onOpenChange: (open: boolean) => void) => ReactNode; children: ReactNode }) {
-  const hasActions = isOrdinaryMessageActionable(entry, isReadOnly, onCopy);
-  if (!hasActions) return <>{children}</>;
-  const isThreadActionVisible = threadRootId == null;
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [reactionMenuOpen, setReactionMenuOpen] = useState(false);
-  const reactionActions = renderReactionActions?.((open) => {
-    setReactionMenuOpen(open);
-    if (open) setMenuOpen(false);
-  });
   const closeMenu = (restoreFocus: boolean) => {
     setMenuOpen(false);
     if (restoreFocus) triggerRef.current?.focus();
   };
-
   useEffect(() => {
     if (!menuOpen) return;
     const handlePointerDown = (event: PointerEvent) => {
@@ -183,7 +175,15 @@ function MessageActionAnchor({ entry, isReadOnly, threadRootId, threadSummary, o
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [menuOpen]);
+  const hasActions = isOrdinaryMessageActionable(entry, isReadOnly, onCopy);
+  if (!hasActions) return <>{children}</>;
+  const isThreadActionVisible = threadRootId == null;
+  const reactionActions = renderReactionActions?.((open) => {
+    setReactionMenuOpen(open);
+    if (open) setMenuOpen(false);
+  });
 
   const copy = () => {
     closeMenu(true);

@@ -154,6 +154,7 @@ export function createWebAuthnProvider(options: WebAuthnProviderOptions): { star
     }, signal);
     try {
       for await (const chunk of response.body) decoder.push(chunk);
+      decoder.flush();
     } finally {
       heartbeat.dispose();
       for (const attempt of inFlight.values()) attempt.abort();

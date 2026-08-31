@@ -4,11 +4,22 @@ export class SseBlockDecoder {
   private readonly decoder = new TextDecoder();
   private readonly parts: string[] = [];
   private prevEndedWithLf = false;
+  private pendingCr = false;
 
   constructor(private readonly onBlock: (block: string) => void) {}
 
   push(bytes: Uint8Array): void {
-    const chunk = this.decoder.decode(bytes, { stream: true });
+    let chunk = this.decoder.decode(bytes, { stream: true });
+    if (this.pendingCr) {
+      chunk = `\r${chunk}`;
+      this.pendingCr = false;
+    }
+    if (chunk.length === 0) return;
+    chunk = chunk.replaceAll("\r\n", "\n");
+    if (chunk.endsWith("\r")) {
+      this.pendingCr = true;
+      chunk = chunk.slice(0, -1);
+    }
     if (chunk.length === 0) return;
     let start = 0;
     if (this.prevEndedWithLf && chunk.charCodeAt(0) === LF) {
@@ -32,5 +43,17 @@ export class SseBlockDecoder {
     if (tail.length > 0) this.parts.push(tail);
     const last = this.parts.length > 0 ? this.parts[this.parts.length - 1] ?? "" : "";
     this.prevEndedWithLf = last.length > 0 && last.charCodeAt(last.length - 1) === LF;
+  }
+
+  flush(): void {
+    if (this.pendingCr) {
+      this.parts.push("\r");
+      this.pendingCr = false;
+    }
+    if (this.parts.length === 0) return;
+    const joined = this.parts.join("");
+    this.parts.length = 0;
+    this.prevEndedWithLf = false;
+    if (joined.length > 0) this.onBlock(joined);
   }
 }

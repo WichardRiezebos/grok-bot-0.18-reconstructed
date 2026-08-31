@@ -47,8 +47,8 @@ export function createHeadlessExecutors(config: RuntimeConfig, debug: DebugState
       const provider = typeof record.providerIdentifier === "string" ? record.providerIdentifier : undefined;
       if (isComposioServerIdentifier(provider)) {
         return await executeComposioBackendTool(readComposioApiKey(), {
-          name: typeof record.name === "string" ? record.name : undefined,
-          toolName: typeof record.toolName === "string" ? record.toolName : undefined,
+          ...(typeof record.name === "string" ? { name: record.name } : {}),
+          ...(typeof record.toolName === "string" ? { toolName: record.toolName } : {}),
           args: record.args,
         });
       }

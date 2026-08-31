@@ -150,7 +150,9 @@ for (const candidate of rendererCandidates) {
     try {
       await applyOriginalRendererRouterPatch({ stageRoot: out });
     } catch (error) {
-      process.stderr.write(`Renderer router patch skipped: ${error instanceof Error ? error.message : String(error)}\n`);
+      const message = `Renderer router patch failed: ${error instanceof Error ? error.message : String(error)}`;
+      if (process.env.GROK_BOT_ALLOW_UNPATCHED_RENDERER === "1") process.stderr.write(`${message}\n`);
+      else throw new Error(message);
     }
     await cp(path.join(out, "dist", "renderer"), path.join(out, "renderer"), { recursive: true });
     stagedRenderer = true;

@@ -116,7 +116,8 @@ function parseImages(value: unknown): RoutedAgentImage[] {
   const images: RoutedAgentImage[] = [];
   for (const raw of value) {
     const row = asRecord(raw);
-    const url = typeof row?.url === "string" ? row.url.trim() : "";
+    if (row == null) continue;
+    const url = typeof row.url === "string" ? row.url.trim() : "";
     if (url.length === 0) continue;
     const alt = typeof row.alt === "string" && row.alt.trim().length > 0 ? row.alt.trim() : undefined;
     images.push({ url, ...(alt == null ? {} : { alt }) });
@@ -126,8 +127,9 @@ function parseImages(value: unknown): RoutedAgentImage[] {
 
 export function parseRoutedSendToAgentArgs(value: unknown): RoutedSendToAgentArgs | null {
   const row = asRecord(value);
-  const targetId = typeof row?.target_id === "string" ? row.target_id.trim() : "";
-  const message = typeof row?.message === "string" ? clampAgentMessage(row.message) : "";
+  if (row == null) return null;
+  const targetId = typeof row.target_id === "string" ? row.target_id.trim() : "";
+  const message = typeof row.message === "string" ? clampAgentMessage(row.message) : "";
   if (targetId.length === 0) return null;
   return {
     targetId,

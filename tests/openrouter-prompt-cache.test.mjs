@@ -65,3 +65,34 @@ test("OpenRouter stream usage is requested for every model and parsed from SSE",
     await loaded.dispose();
   }
 });
+
+test("OpenRouter cache control never exceeds four breakpoints", async () => {
+  const loaded = await loadModule();
+  try {
+    const messages = [
+      { role: "system", content: "sys-1" },
+      { role: "system", content: "sys-2" },
+      { role: "system", content: "sys-3" },
+      { role: "user", content: "old" },
+      { role: "assistant", content: "mid" },
+      { role: "tool", content: "tool-out" },
+      { role: "user", content: "latest" },
+    ];
+    const body = JSON.parse(loaded.module.injectOpenRouterCacheControlIntoBody(JSON.stringify({
+      model: "anthropic/claude-sonnet-4",
+      system: "top-system",
+      tools: [{ name: "Computer", description: "d" }],
+      messages,
+    }), "anthropic/claude-sonnet-4"));
+    let markers = 0;
+    if (body.system?.some?.((part) => part.cache_control != null) || body.system?.cache_control != null) markers += 1;
+    if (Array.isArray(body.tools) && body.tools.at(-1)?.cache_control != null) markers += 1;
+    for (const message of body.messages) {
+      const content = Array.isArray(message.content) ? message.content : [];
+      if (content.some((part) => part.cache_control != null)) markers += 1;
+    }
+    assert.equal(markers <= 4, true, `expected at most 4 cache_control breakpoints, found ${markers}`);
+  } finally {
+    await loaded.dispose();
+  }
+});

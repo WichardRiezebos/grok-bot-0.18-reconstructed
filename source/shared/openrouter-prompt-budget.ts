@@ -120,20 +120,29 @@ function dropOldestNonSystem(messages: readonly unknown[]): unknown[] | null {
     if (previous >= 0 && (hasToolCalls(messages[previous]) || messageRole(messages[previous]) === "assistant")) start = previous;
   }
   if (hasToolCalls(messages[start]) || messageRole(messages[start]) === "assistant") {
-    while (end < messages.length - 1 && isToolMessage(messages[end])) end += 1;
+    while (end < messages.length && isToolMessage(messages[end])) end += 1;
   }
   return [...messages.slice(0, start), ...messages.slice(end)];
 }
 
 function enforceCharBudget(messages: readonly unknown[], extra: unknown, budget: number, keepRecentImages: number): unknown[] {
   let next = [...messages];
-  for (;;) {
-    if (serializedSize(next, extra) <= budget) return next;
+  let size = serializedSize(next, extra);
+  if (size <= budget) return next;
+  const perMessage = next.map((message) => JSON.stringify(message).length + 1);
+  let overhead = size - perMessage.reduce((sum, item) => sum + item, 0);
+  while (size > budget) {
     const dropped = dropOldestNonSystem(next);
     if (dropped == null) break;
+    const removed = next.length - dropped.length;
+    let removedChars = 0;
+    for (let index = 0; index < removed; index++) removedChars += perMessage[index] ?? 0;
+    perMessage.splice(0, removed);
     next = dropped;
+    size = overhead + perMessage.reduce((sum, item) => sum + item, 0);
   }
-  if (serializedSize(next, extra) <= budget) return next;
+  size = serializedSize(next, extra);
+  if (size <= budget) return next;
   for (const limit of [8_000, 400]) {
     next = next.map((message) => truncateToolMessage(message, limit));
     if (serializedSize(next, extra) <= budget) return next;

@@ -27,6 +27,7 @@ import { isComposioServerIdentifier } from "../composio-mcp.js";
 
 export const MCP_TOOLS_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
 export const TOOLS_DISCOVERY_DEADLINE_MS = 120_000;
+export const MCP_TOOL_EXEC_DEADLINE_MS = 600_000;
 
 export interface McpDiscoveryResultFactory extends McpResultFactory {
   error(message: string): McpResultLike;
@@ -399,14 +400,20 @@ export function createMcpToolsDiscovery(
     args: any,
     auditIdentity: any,
   ): Promise<McpResultLike> {
+    const execDeadline =
+      deps.deadline ??
+      createDeadlinePolicy(realClock, {
+        name: "mcp-tool-execution",
+        timeoutMs: MCP_TOOL_EXEC_DEADLINE_MS,
+      });
     if (isComposioServerIdentifier(args.providerIdentifier) || await isHttpProvider(args.providerIdentifier)) {
-      const result = await core.backendMcpExec.executeTool({
+      const result = await execDeadline.run(() => core.backendMcpExec.executeTool({
         serverIdentifier: args.providerIdentifier,
         toolName: args.name,
         args: toJsonArgs(args.args),
         toolCallId: args.toolCallId,
         agentId: auditIdentity?.agentId,
-      });
+      })) as McpResultLike;
       reportFirstCall(args.providerIdentifier, result.result.case !== "error");
       return result;
     }
@@ -422,7 +429,7 @@ export function createMcpToolsDiscovery(
           `Could not load MCP servers onto Grok Bot's computer: ${errorMessage(error)}`,
         );
       }
-      return boxMcpExec.executeTool(args);
+      return await execDeadline.run(() => boxMcpExec.executeTool(args));
     }
     return resultFactory.error(
       `MCP server "${args.providerIdentifier}" is not available here. HTTP/SSE servers execute on the backend and stdio servers run on Grok Bot's computer; this server is neither reachable nor supported in this context.`,

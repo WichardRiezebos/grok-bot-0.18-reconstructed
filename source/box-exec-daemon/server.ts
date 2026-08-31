@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { appendFile, lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -106,6 +107,8 @@ interface BackgroundProcess {
   readonly child: ChildProcessWithoutNullStreams;
   readonly terminalPath: string;
   readonly startedAt: number;
+  bytes: number;
+  completed: boolean;
   writeQueue: Promise<void>;
 }
 
@@ -117,6 +120,14 @@ interface ProcessOutcome {
   readonly elapsedMs: number;
   readonly timedOut: boolean;
   readonly aborted: boolean;
+}
+
+const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
+const MAX_TERMINAL_BYTES = 32 * 1024 * 1024;
+const MAX_BUFFERED_STREAM_EVENT_BYTES = 4 * 1024 * 1024;
+
+function decodeChunks(chunks: readonly Buffer[]): string {
+  return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
 class PathRejectedError extends Error {}
@@ -178,7 +189,7 @@ export class BoxExecRuntime {
     let removed = 0;
     if (request.replace) {
       for (const key of Object.keys(this.#environment)) {
-        if (!(key in request.env)) {
+        if (!Object.hasOwn(request.env, key)) {
           delete this.#environment[key];
           removed += 1;
         }
@@ -261,6 +272,9 @@ export class BoxExecRuntime {
       this.assertRealPathAllowed(canonical, args.path);
       const info = await stat(canonical);
       if (!info.isFile()) return new ReadResult({ result: { case: "invalidFile", value: new ReadInvalidFile({ path: args.path, reason: "Path is not a regular file" }) } });
+      if (info.size > MAX_CAPTURE_BYTES) {
+        return new ReadResult({ result: { case: "error", value: new ReadError({ path: args.path, error: `File exceeds the ${MAX_CAPTURE_BYTES} byte read limit (${info.size} bytes)` }) } });
+      }
       if (args.encodingHint != null && args.encodingHint !== "utf8" && args.encodingHint !== "utf-8" && args.encodingHint !== "latin1") {
         return new ReadResult({ result: { case: "invalidFile", value: new ReadInvalidFile({ path: args.path, reason: `Unsupported encoding hint: ${args.encodingHint}` }) } });
       }
@@ -320,13 +334,23 @@ export class BoxExecRuntime {
     this.#foreground.add(child);
     const startedAt = Date.now();
     const events: Array<{ case: "stdout" | "stderr"; data: string }> = [];
+    let bufferedEventBytes = 0;
     let wake: (() => void) | undefined;
     let done = false;
     let exitCode = 1;
     let exitSignal = "";
     const notify = () => { wake?.(); wake = undefined; };
-    child.stdout.on("data", data => { events.push({ case: "stdout", data: String(data) }); notify(); });
-    child.stderr.on("data", data => { events.push({ case: "stderr", data: String(data) }); notify(); });
+    const pushEvent = (streamCase: "stdout" | "stderr", data: Buffer) => {
+      if (bufferedEventBytes >= MAX_BUFFERED_STREAM_EVENT_BYTES) return;
+      bufferedEventBytes += data.length;
+      events.push({ case: streamCase, data: decodeChunks([data]) });
+      if (bufferedEventBytes >= MAX_BUFFERED_STREAM_EVENT_BYTES) {
+        events.push({ case: "stderr", data: "\n[stream buffer truncated]\n" });
+      }
+      notify();
+    };
+    child.stdout.on("data", data => { pushEvent("stdout", data); });
+    child.stderr.on("data", data => { pushEvent("stderr", data); });
     child.once("error", error => {
       events.push({ case: "stderr", data: errorText(error) });
       exitCode = 1;
@@ -378,22 +402,33 @@ export class BoxExecRuntime {
         child,
         terminalPath,
         startedAt,
+        bytes: 0,
+        completed: false,
         writeQueue: writeFile(terminalPath, terminalFrontmatter(args, child.pid, startedAt)),
       };
       this.#background.set(shellId, process);
       const queueWrite = (data: string | Uint8Array) => {
-        process.writeQueue = process.writeQueue.then(() => appendFile(terminalPath, data)).catch(() => {});
+        process.writeQueue = process.writeQueue.then(() => {
+          if (process.bytes >= MAX_TERMINAL_BYTES) return;
+          process.bytes += typeof data === "string" ? Buffer.byteLength(data) : data.byteLength;
+          return appendFile(terminalPath, data);
+        }).catch((error) => { console.error(`terminal write failed: ${errorText(error)}`); });
+      };
+      const finishTerminal = (exitCode: number) => {
+        if (process.completed) return;
+        process.completed = true;
+        queueWrite(terminalFooter(exitCode, startedAt));
       };
       child.stdout.on("data", data => { queueWrite(data); });
       child.stderr.on("data", data => { queueWrite(data); });
       child.once("error", error => {
         this.#background.delete(shellId);
         queueWrite(`${errorText(error)}\n`);
-        queueWrite(terminalFooter(1, startedAt));
+        finishTerminal(1);
       });
       child.once("close", code => {
         this.#background.delete(shellId);
-        queueWrite(terminalFooter(code ?? 1, startedAt));
+        finishTerminal(code ?? 1);
       });
       return new BackgroundShellSpawnResult({ result: { case: "success", value: new BackgroundShellSpawnSuccess({ shellId, command: args.command, workingDirectory: args.workingDirectory, ...(child.pid == null ? {} : { pid: child.pid }) }) } });
     } catch (error) {
@@ -404,39 +439,73 @@ export class BoxExecRuntime {
   async writeStdin(args: WriteShellStdinArgs): Promise<WriteShellStdinResult> {
     const running = this.#background.get(args.shellId);
     if (running == null) return new WriteShellStdinResult({ result: { case: "error", value: new WriteShellStdinError({ error: `Shell ${args.shellId} is not running` }) } });
+    if (running.child.stdin.destroyed || running.child.stdin.writableEnded) {
+      return new WriteShellStdinResult({ result: { case: "error", value: new WriteShellStdinError({ error: `Shell ${args.shellId} stdin is closed` }) } });
+    }
     const before = Number((await stat(running.terminalPath)).size);
     await new Promise<void>((resolve, reject) => running.child.stdin.write(args.chars, error => error == null ? resolve() : reject(error)));
     return new WriteShellStdinResult({ result: { case: "success", value: new WriteShellStdinSuccess({ shellId: args.shellId, terminalFileLengthBeforeInputWritten: before }) } });
   }
 
   async stop(): Promise<void> {
-    for (const child of this.#foreground) this.kill(child);
-    for (const process of this.#background.values()) this.kill(process.child);
+    const children = [...this.#foreground, ...[...this.#background.values()].map(process => process.child)];
+    for (const child of children) this.kill(child);
     this.#foreground.clear();
     this.#background.clear();
+    await Promise.race([
+      Promise.allSettled(children.map(child => new Promise<void>(resolve => {
+        if (child.exitCode != null || child.signalCode != null) resolve();
+        else child.once("close", () => resolve());
+      }))),
+      new Promise<void>(resolve => setTimeout(resolve, 2_000).unref()),
+    ]);
   }
 
   private spawnShell(command: string, cwd: string): ChildProcessWithoutNullStreams {
-    return spawn("/bin/sh", ["-lc", command], { cwd, env: this.#environment, detached: process.platform !== "win32", stdio: "pipe" });
+    const child = spawn("/bin/sh", ["-lc", command], { cwd, env: this.#environment, detached: process.platform !== "win32", stdio: "pipe" });
+    child.stdin.on("error", () => {});
+    return child;
   }
 
   private kill(child: ChildProcessWithoutNullStreams): void {
     if (child.exitCode != null || child.signalCode != null) return;
+    const pid = child.pid;
     try {
-      if (process.platform !== "win32" && child.pid != null) process.kill(-child.pid, "SIGTERM");
+      if (process.platform !== "win32" && pid != null) process.kill(-pid, "SIGTERM");
       else child.kill("SIGTERM");
     } catch {}
+    setTimeout(() => {
+      if (child.exitCode != null || child.signalCode != null) return;
+      try {
+        if (process.platform !== "win32" && pid != null) process.kill(-pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {}
+    }, 1_000).unref();
   }
 
   private async run(command: string, cwd: string, timeoutMs: number | undefined, signal: AbortSignal): Promise<ProcessOutcome> {
     const child = this.spawnShell(command, cwd);
     this.#foreground.add(child);
     const startedAt = Date.now();
-    let stdout = "";
-    let stderr = "";
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
     let timedOut = false;
-    child.stdout.on("data", data => { stdout += String(data); });
-    child.stderr.on("data", data => { stderr += String(data); });
+    child.stdout.on("data", (data: Buffer) => {
+      if (stdoutBytes >= MAX_CAPTURE_BYTES) return;
+      const slice = data.subarray(0, MAX_CAPTURE_BYTES - stdoutBytes);
+      stdoutChunks.push(slice);
+      stdoutBytes += slice.length;
+      if (stdoutBytes === MAX_CAPTURE_BYTES) stdoutChunks.push(Buffer.from("\n[output truncated]\n"));
+    });
+    child.stderr.on("data", (data: Buffer) => {
+      if (stderrBytes >= MAX_CAPTURE_BYTES) return;
+      const slice = data.subarray(0, MAX_CAPTURE_BYTES - stderrBytes);
+      stderrChunks.push(slice);
+      stderrBytes += slice.length;
+      if (stderrBytes === MAX_CAPTURE_BYTES) stderrChunks.push(Buffer.from("\n[output truncated]\n"));
+    });
     const abort = () => this.kill(child);
     signal.addEventListener("abort", abort, { once: true });
     const timer = timeoutMs == null ? undefined : setTimeout(() => { timedOut = true; this.kill(child); }, timeoutMs);
@@ -445,7 +514,7 @@ export class BoxExecRuntime {
         child.once("error", reject);
         child.once("close", (code, childSignal) => resolve({ code: code ?? 1, signal: childSignal ?? "" }));
       });
-      return { ...outcome, stdout, stderr, elapsedMs: Date.now() - startedAt, timedOut, aborted: signal.aborted };
+      return { ...outcome, stdout: decodeChunks(stdoutChunks), stderr: decodeChunks(stderrChunks), elapsedMs: Date.now() - startedAt, timedOut, aborted: signal.aborted };
     } finally {
       if (timer != null) clearTimeout(timer);
       signal.removeEventListener("abort", abort);
@@ -466,6 +535,11 @@ export async function startBoxExecDaemon(options: BoxExecDaemonOptions): Promise
   const requestedTerminalsDirectory = path.resolve(options.terminalsDirectory ?? path.join(tmpdir(), "sand-box-terminals"));
   await mkdir(requestedWorkspaceRoot, { recursive: true });
   await mkdir(requestedTerminalsDirectory, { recursive: true });
+  try {
+    for (const entry of await readdir(requestedTerminalsDirectory)) {
+      if (entry.endsWith(".txt")) await rm(path.join(requestedTerminalsDirectory, entry), { force: true }).catch(() => {});
+    }
+  } catch {}
   const [workspaceRoot, terminalsDirectory] = await Promise.all([
     realpath(requestedWorkspaceRoot),
     realpath(requestedTerminalsDirectory),
@@ -487,7 +561,11 @@ export async function startBoxExecDaemon(options: BoxExecDaemonOptions): Promise
   });
   let readyState = false;
   const server = createServer((request, response) => {
-    if (request.headers.authorization !== `Bearer ${authToken}`) {
+    const provided = String(request.headers.authorization ?? "");
+    const expected = `Bearer ${authToken}`;
+    const providedDigest = createHash("sha256").update(provided).digest();
+    const expectedDigest = createHash("sha256").update(expected).digest();
+    if (providedDigest.length !== expectedDigest.length || !timingSafeEqual(providedDigest, expectedDigest)) {
       response.writeHead(401, { "content-type": "text/plain; charset=utf-8" });
       response.end("Unauthorized");
       return;

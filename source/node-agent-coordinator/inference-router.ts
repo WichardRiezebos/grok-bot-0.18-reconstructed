@@ -109,7 +109,8 @@ function parseStoredImages(value: unknown): readonly RoutedAgentImage[] | undefi
   const images: RoutedAgentImage[] = [];
   for (const raw of value) {
     const row = asRecord(raw);
-    const url = typeof row?.url === "string" ? row.url : "";
+    if (row == null) return undefined;
+    const url = typeof row.url === "string" ? row.url : "";
     if (url.length === 0) return undefined;
     const alt = typeof row.alt === "string" && row.alt.length > 0 ? row.alt : undefined;
     images.push({ url, ...(alt == null ? {} : { alt }) });
@@ -233,12 +234,14 @@ export function createCoordinatorInferenceRouter(options: {
   const chromeOpenByAgent = new Set<string>();
   const turnControllers = new Map<string, AbortController>();
   const turnActivities = new Map<string, { stop(): void }>();
+  const queuedTurnGenerations = new Map<string, number>();
 
   const abortAgentTurn = (agentId: string, kind: "stop" | "supersede"): boolean => {
     const controller = turnControllers.get(agentId);
     if (controller == null || controller.signal.aborted) return false;
     controller.abort(new RoutedTurnAbortError(kind));
     turnActivities.get(agentId)?.stop();
+    if (kind === "supersede") queuedTurnGenerations.set(agentId, (queuedTurnGenerations.get(agentId) ?? 0) + 1);
     return true;
   };
   let storeLock = Promise.resolve();
@@ -296,6 +299,7 @@ export function createCoordinatorInferenceRouter(options: {
       chromeOpenByAgent.delete(id);
       turnActivities.delete(id);
       queues.delete(id);
+      queuedTurnGenerations.set(id, (queuedTurnGenerations.get(id) ?? 0) + 1);
     }
     const current = await load();
     const agents = { ...current.agents };
@@ -324,6 +328,12 @@ export function createCoordinatorInferenceRouter(options: {
       if (!Array.isArray(remote)) return idleTurnActivity();
       let live = true;
       const surface: { composing: boolean; activity: RoutedActivity } = { composing: true, activity: { kind: "thinking" } };
+      const routedActivityEquals = (a: RoutedActivity, b: RoutedActivity): boolean => {
+        if (a.kind !== b.kind) return false;
+        if (a.kind !== "tool" || b.kind !== "tool") return true;
+        return a.tool === b.tool && a.callId === b.callId && (a.detail ?? "") === (b.detail ?? "");
+      };
+
       const project = (isRunning: boolean, roster: unknown[]) => overlayRoutedRosterLastEntry(roster.map(raw => {
         const row = asRecord(raw);
         if (row?.id !== agentId) return raw;
@@ -346,9 +356,15 @@ export function createCoordinatorInferenceRouter(options: {
       return {
         reveal(next) {
           if (!live) return;
-          if (next.composing !== undefined) surface.composing = next.composing;
-          if (next.activity !== undefined) surface.activity = next.activity;
-          publishRunning();
+          if (next.composing !== undefined && next.composing !== surface.composing) {
+            surface.composing = next.composing;
+            publishRunning();
+            return;
+          }
+          if (next.activity !== undefined && !routedActivityEquals(surface.activity, next.activity)) {
+            surface.activity = next.activity;
+            publishRunning();
+          }
         },
         stop() {
           if (!live) return;
@@ -753,7 +769,9 @@ export function createCoordinatorInferenceRouter(options: {
           onTextDelta,
           onProgress,
           onStreamEvent: event => {
-            log(`stream ${event.type}${event.toolName == null ? "" : ` ${event.toolName}`} ${event.elapsedMs}ms`);
+            if (event.type !== "text-delta" && event.type !== "reasoning-delta") {
+              log(`stream ${event.type}${event.toolName == null ? "" : ` ${event.toolName}`} ${event.elapsedMs}ms`);
+            }
             if (event.type === "step-finish") settleStep();
           },
           abortSignal,
@@ -823,7 +841,7 @@ export function createCoordinatorInferenceRouter(options: {
     finally {
       if (turnControllers.get(agentId) === userAbort) turnControllers.delete(agentId);
       if (turnActivities.get(agentId) === turnActivity) turnActivities.delete(agentId);
-      turnActivity.stop();
+      if (!turnActivities.has(agentId)) turnActivity.stop();
     }
     return { accepted: true, clientNonce, provider };
   };
@@ -834,7 +852,12 @@ export function createCoordinatorInferenceRouter(options: {
     args: Record<string, unknown>,
   ): Promise<unknown> => {
     const previous = queues.get(agentId) ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(() => execute(provider, args)).catch(async (error) => {
+    const generation = (queuedTurnGenerations.get(agentId) ?? 0) + 1;
+    queuedTurnGenerations.set(agentId, generation);
+    const next = previous.catch(() => undefined).then(() => {
+      if (queuedTurnGenerations.get(agentId) !== generation) return undefined;
+      return execute(provider, args);
+    }).catch(async (error) => {
       const timestampMs = now();
       const content = routedRouterErrorText(error);
       if (agentId.length > 0) {

@@ -97,3 +97,24 @@ test("OpenRouter prompt budget keeps assistant tool_calls paired with tool repli
     await loaded.dispose();
   }
 });
+
+test("OpenRouter prompt budget never leaves an orphan tool reply when the transcript ends with one", async () => {
+  const loaded = await loadModule();
+  try {
+    const messages = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "old" },
+      { role: "assistant", content: "calling", tool_calls: [{ id: "call-1", type: "function", function: { name: "Computer" } }] },
+      { role: "tool", tool_call_id: "call-1", content: "ok ".repeat(80) },
+    ];
+    const trimmed = loaded.module.boundOpenRouterMessages(messages, { charBudget: 120, keepRecentImages: 3 });
+    const roles = trimmed.map((message) => message.role);
+    for (let index = 0; index < roles.length; index += 1) {
+      if (roles[index] !== "tool") continue;
+      assert.equal(roles[index - 1], "assistant", "tool reply must be preceded by its assistant tool_calls message");
+      assert.ok(Array.isArray(trimmed[index - 1].tool_calls));
+    }
+  } finally {
+    await loaded.dispose();
+  }
+});

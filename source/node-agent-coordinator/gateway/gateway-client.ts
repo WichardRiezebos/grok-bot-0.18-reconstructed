@@ -467,6 +467,7 @@ export class CoordinatorGatewayClient {
           watchdog.kick();
           blocks.push(result.value);
         }
+        blocks.flush();
       } catch (error) {
         down = classifyStreamDown({ stalled, forced: attemptGeneration !== this.reconnectGeneration, devInducedOffline: this.devInducedOffline, clientPaused: this.clientPaused, error });
         throw error;
