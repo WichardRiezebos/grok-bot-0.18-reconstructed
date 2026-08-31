@@ -30,10 +30,12 @@ expose box:1340.
 
 1. Service type **Docker Compose**.
 2. Compose path `deploy/docker-compose.yml`.
-3. Environment (Dokploy writes a `.env` file; Compose interpolates `${VAR}`):
+3. Secrets live in **one place**: the grok-bot Environment tab in Dokploy.
+   Dokploy writes `deploy/.env`; Compose loads that file (`env_file`). Do not
+   also export the same keys on the host or keep a second file.
    - `OPENROUTER_API_KEY`
    - `SAND_GATEWAY_TOKEN` (shared by control and the box gateway)
-   - `PUBLIC_URL=https://<your-domain>`
+   - `PUBLIC_URL=http://hetzner.tail979ea3.ts.net:8080`
    - `COMPOSE_PARALLEL_LIMIT=1` (Compose process, not a container env)
    - optional `COMPOSIO_API_KEY` for Connect plugins
    - optional `RUNTIME_DEBUG=1` for the corner overlay and verbose debug
@@ -62,10 +64,7 @@ Router → You** to change them.
 ## Local Compose (no Dokploy)
 
 ```sh
-export OPENROUTER_API_KEY=...
-export SAND_GATEWAY_TOKEN=...
-export PUBLIC_URL=http://127.0.0.1:8080
-export COMPOSE_PARALLEL_LIMIT=1
+# Same keys as Dokploy, in deploy/.env (not committed)
 docker compose --project-directory . -f deploy/docker-compose.yml -f deploy/docker-compose.local.yml up --build
 ```
 
