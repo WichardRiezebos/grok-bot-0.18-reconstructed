@@ -152,12 +152,27 @@ async function materializeRoutedSendPromptAttachments(
   agentId: string,
   paths: readonly string[],
   names: readonly string[],
-): Promise<{ promptSuffix: string; images: readonly RoutedAgentImage[] }> {
+): Promise<{ promptSuffix: string; images: readonly RoutedAgentImage[]; videoAttachments: readonly { readonly path: string; readonly name: string }[] }> {
   const blocks: string[] = [];
   const images: RoutedAgentImage[] = [];
+  const videoAttachments: Array<{ readonly path: string; readonly name: string }> = [];
   for (let index = 0; index < paths.length; index += 1) {
     const path = paths[index]!;
     const name = names[index] ?? path.split("/").pop() ?? `attachment-${index + 1}`;
+    const chunkResult = await dispatchRemote("readAttachmentChunk", {
+      path,
+      agentId,
+      offset: 0,
+      length: 1,
+      videoPlayback: true,
+    });
+    const chunkRecord = asRecord(chunkResult);
+    const mime = typeof chunkRecord?.mime === "string" ? chunkRecord.mime : "";
+    if (mime.startsWith("video/")) {
+      videoAttachments.push({ path, name });
+      blocks.push(`Attached video "${name}" at ${path}.`);
+      continue;
+    }
     const textResult = await dispatchRemote("readAttachmentText", { path, agentId });
     const textRecord = asRecord(textResult);
     if (textRecord?.kind === "text" && typeof textRecord.text === "string") {
@@ -174,7 +189,46 @@ async function materializeRoutedSendPromptAttachments(
   return {
     promptSuffix: blocks.length === 0 ? "" : `\n\n${blocks.join("\n\n")}`,
     images,
+    videoAttachments,
   };
+}
+
+async function reviewRoutedVideoAttachments(
+  dispatchRemote: (method: string, args: unknown) => Promise<unknown>,
+  agentId: string,
+  videos: readonly { readonly path: string; readonly name: string }[],
+): Promise<string> {
+  const summaries: string[] = [];
+  for (const video of videos) {
+    const result = await dispatchRemote("reviewRoutedVideoAttachment", {
+      id: agentId,
+      agentId,
+      path: video.path,
+      name: video.name,
+    });
+    const record = asRecord(result);
+    const summary = typeof record?.summary === "string" ? record.summary.trim() : "";
+    if (summary.length > 0) summaries.push(`Video review for "${video.name}":\n${summary}`);
+  }
+  return summaries.length === 0 ? "" : `\n\n${summaries.join("\n\n")}`;
+}
+
+function joinRoutedSystemExtra(...parts: readonly (string | undefined)[]): string {
+  return parts
+    .map(part => part?.trim() ?? "")
+    .filter(part => part.length > 0)
+    .join("\n\n");
+}
+
+async function loadRoutedSystemExtra(
+  dispatchRemote: (method: string, args: unknown) => Promise<unknown>,
+  agentId: string,
+  rosterExtra: string,
+): Promise<string> {
+  const remote = await dispatchRemote("getRoutedSystemPromptExtra", { id: agentId, agentId });
+  const record = asRecord(remote);
+  const liveExtra = typeof record?.extra === "string" ? record.extra : "";
+  return joinRoutedSystemExtra(rosterExtra, liveExtra);
 }
 
 async function awaitRoutedRetryBackoff(ms: number, signal?: AbortSignal): Promise<void> {
@@ -478,10 +532,13 @@ export function createCoordinatorInferenceRouter(options: {
       throw new Error("Local inference routing requires an agentId and prompt");
     }
     const timestampMs = now();
-    const { promptSuffix, images: attachmentImages } = attachmentPaths.length === 0
-      ? { promptSuffix: "", images: [] as readonly RoutedAgentImage[] }
+    const attachmentMaterial = attachmentPaths.length === 0
+      ? { promptSuffix: "", images: [] as readonly RoutedAgentImage[], videoAttachments: [] as readonly { readonly path: string; readonly name: string }[] }
       : await materializeRoutedSendPromptAttachments(options.dispatchRemote, agentId, attachmentPaths, attachmentNames);
-    const effectivePrompt = `${prompt}${promptSuffix}`;
+    const videoReviewSuffix = attachmentMaterial.videoAttachments.length === 0
+      ? ""
+      : await reviewRoutedVideoAttachments(options.dispatchRemote, agentId, attachmentMaterial.videoAttachments);
+    const effectivePrompt = `${prompt}${attachmentMaterial.promptSuffix}${videoReviewSuffix}`;
     const [remote, beforeUser] = await Promise.all([options.dispatchRemote("getAgentTranscriptTail", { id: agentId }), load()]);
     const remoteEntries = Array.isArray(asRecord(remote)?.entries) ? asRecord(remote)!.entries as unknown[] : [];
     const remoteTurn = remoteEntries.reduce<number>((highest, raw) => {
@@ -524,7 +581,7 @@ export function createCoordinatorInferenceRouter(options: {
         role: "user",
         content: effectivePrompt,
         ...(richText === undefined ? {} : { richText }),
-        ...(attachmentImages.length === 0 ? {} : { images: attachmentImages }),
+        ...(attachmentMaterial.images.length === 0 ? {} : { images: attachmentMaterial.images }),
         id: userEntry.id,
         clientNonce,
         timestampMs,
@@ -838,7 +895,11 @@ export function createCoordinatorInferenceRouter(options: {
         return { accepted: true, clientNonce, provider };
       }
       const roster = await loadRoster();
-      const systemExtra = renderAgentDirectorySystemPrompt(routedTeammatesOf(roster, agentId));
+      const systemExtra = await loadRoutedSystemExtra(
+        options.dispatchRemote,
+        agentId,
+        renderAgentDirectorySystemPrompt(routedTeammatesOf(roster, agentId)),
+      );
       if (drive) {
         const url = extractRoutedBrowserUrl(effectivePrompt);
         if (url != null && shouldSkipRoutedBoxChromeReload(url, chromeOpenByAgent.has(agentId))) {

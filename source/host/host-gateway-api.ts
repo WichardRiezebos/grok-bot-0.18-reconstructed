@@ -40,6 +40,7 @@ export interface HostGatewayDependencies {
   releaseAgentBox(agentId: string): Promise<void>;
   handleDesktopMcpAuthCompletion(completion: unknown): Promise<void>;
   forgetLocalToolPermission(agentId: string): void;
+  getRoutedSystemPromptExtra?(agentId: string): string;
   readonly now?: () => number;
 }
 
@@ -711,6 +712,30 @@ export function createHostGatewayApi(
     setBoxSecrets: ({ secrets }: any) =>
       method(deps.extensions.api("secrets"), "set")({ secrets }),
     getBoxSecretsStatus: () =>
-      method(deps.extensions.api("secrets"), "getStatus")()
+      method(deps.extensions.api("secrets"), "getStatus")(),
+    getRoutedSystemPromptExtra: (args: { readonly id?: string; readonly agentId?: string }) => {
+      const agentId = typeof args.id === "string" && args.id.length > 0
+        ? args.id
+        : typeof args.agentId === "string"
+          ? args.agentId
+          : "";
+      if (agentId.length === 0 || deps.getRoutedSystemPromptExtra == null) return { extra: "" };
+      return { extra: deps.getRoutedSystemPromptExtra(agentId) };
+    },
+    reviewRoutedVideoAttachment: async (args: { readonly id?: string; readonly agentId?: string; readonly path?: string; readonly name?: string }) => {
+      const path = typeof args.path === "string" ? args.path : "";
+      if (path.length === 0) return { summary: "" };
+      const bytes = await method(attachments, "readVideoBytes")?.(path);
+      if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) return { summary: "" };
+      const name = typeof args.name === "string" && args.name.length > 0
+        ? args.name
+        : path.split("/").pop() ?? "video";
+      return {
+        summary: [
+          `Attached video "${name}" (${Math.max(1, Math.round(bytes.byteLength / 1024))} KB).`,
+          "Treat this as input for watchVideo-style analysis: summarize what the user likely wants from the clip and answer using the review when present.",
+        ].join(" "),
+      };
+    },
   };
 }

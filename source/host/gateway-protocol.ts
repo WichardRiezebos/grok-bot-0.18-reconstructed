@@ -128,6 +128,8 @@ export const SAND_GATEWAY_COMMANDS = {
   listMcpServerTools: (api: GatewayApi, body: string) => api.listMcpServerTools(parseCommandArgs(body)),
   listRoutedComputerTools: (api: GatewayApi) => api.listRoutedComputerTools(),
   executeRoutedComputerTool: (api: GatewayApi, body: string) => api.executeRoutedComputerTool(parseCommandArgs(body)),
+  getRoutedSystemPromptExtra: (api: GatewayApi, body: string) => api.getRoutedSystemPromptExtra(parseCommandArgs(body)),
+  reviewRoutedVideoAttachment: (api: GatewayApi, body: string) => api.reviewRoutedVideoAttachment(parseCommandArgs(body)),
   listBoxMcpServers: (api: GatewayApi, body: string) => api.listBoxMcpServers(parseCommandArgs(body))
 };
 export const GATEWAY_PREPARE_UPGRADE_PATH = "/prepare-upgrade";

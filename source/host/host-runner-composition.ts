@@ -119,6 +119,8 @@ import {
 import { DEFAULT_SAND_SYSTEM_PROMPT } from "./runner/system-prompt.js";
 import {
   createSystemPromptAssembly,
+  type MemoryPromptStore,
+  type MemorySnapshotStore,
   type PromptSnapshotStore,
 } from "./runner/system-prompt-assembly.js";
 import { PrivacyMode, type PrivacyMode as PrivacyModeValue } from "../packages/redaction/privacy-mode.js";
@@ -320,6 +322,7 @@ export interface RecoveredHostRunnerComposition<Runner extends ProductionSession
   ): Runner;
   canAskLocalToolPermission(agentId: string): boolean;
   forgetLocalToolPermission(agentId: string): void;
+  getRoutedSystemPromptExtra(agentId: string): string;
   dispose(): Promise<void>;
 }
 
@@ -590,6 +593,46 @@ function isAgentProfilePromptSnapshot(value: unknown): value is AgentProfileProm
     && typeof candidate.compactionEpoch === "number";
 }
 
+function asMemoryPromptStore(value: unknown): MemoryPromptStore | null {
+  if (typeof value !== "object" || value == null) return null;
+  const candidate = value as {
+    recall?: (limit: number) => ReturnType<MemoryPromptStore["recall"]>;
+    getLocation?: () => unknown;
+  };
+  if (typeof candidate.recall !== "function" || typeof candidate.getLocation !== "function") return null;
+  return {
+    recall: limit => candidate.recall!(limit),
+    getLocation: () => {
+      const location = candidate.getLocation!();
+      return typeof location === "string" ? location : null;
+    },
+  };
+}
+
+function asMemorySnapshotStore(value: unknown): MemorySnapshotStore | null {
+  if (typeof value !== "object" || value == null) return null;
+  const candidate = value as {
+    getMemoryPromptSnapshot?: () => ReturnType<MemorySnapshotStore["getMemoryPromptSnapshot"]>;
+    setMemoryPromptSnapshot?: (snapshot: Parameters<MemorySnapshotStore["setMemoryPromptSnapshot"]>[0]) => void;
+  };
+  if (typeof candidate.getMemoryPromptSnapshot !== "function" || typeof candidate.setMemoryPromptSnapshot !== "function") {
+    return null;
+  }
+  return {
+    getMemoryPromptSnapshot: () => candidate.getMemoryPromptSnapshot!(),
+    setMemoryPromptSnapshot: snapshot => {
+      candidate.setMemoryPromptSnapshot!(snapshot);
+    },
+  };
+}
+
+function asAutomationPromptStore(value: unknown) {
+  if (typeof value !== "object" || value == null) return null;
+  const candidate = value as { getLocation?: () => unknown; list?: () => unknown };
+  if (typeof candidate.getLocation !== "function" || typeof candidate.list !== "function") return null;
+  return value as NonNullable<ReturnType<Parameters<typeof createSystemPromptAssembly>[0]["automationStore"]>>;
+}
+
 function asPromptSnapshotStore(value: unknown): PromptSnapshotStore | undefined {
   if (typeof value !== "object" || value == null) return undefined;
   const candidate = value as Record<string, unknown>;
@@ -836,6 +879,7 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
   const auth = extensions.api("auth");
   const localToolPermission = extensions.api("local-tool-permission");
   const localToolPermissionSurfaces = new Map<string, () => void>();
+  const routedPromptExtraByAgent = new Map<string, () => string>();
   const ownedRunners = new Set<Runner>();
   let mirrorOffloadPool: TranscriptMirrorOffloadPool | null = null;
 
@@ -1358,10 +1402,17 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
               : null;
           },
           compactionEpoch: () => 0,
-          memoryStore: () => null,
-          memorySnapshots: () => null,
-          userMemory: () => null,
-          projectMemory: () => null,
+          memoryStore: () => asMemoryPromptStore(session.memory),
+          memorySnapshots: () => asMemorySnapshotStore(session.db),
+          userMemory: () => method(memory, "createUserMemory")?.({
+            agentId: session.id,
+            resolveAgentName: resolveAgentDisplayName,
+          }) ?? null,
+          projectMemory: () => method(memory, "createProjectMemory")?.({
+            agentDir: dirname(session.dbPath),
+            agentId: session.id,
+            resolveAgentName: resolveAgentDisplayName,
+          }) ?? null,
           isBoxScopedSubagent: () => false,
           requestContext: {
             resolve: () => {
@@ -1374,9 +1425,18 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
               };
             },
           },
-          automationStore: () => null,
-          workflowStore: () => null,
-          channelStore: () => null,
+          automationStore: () => asAutomationPromptStore(session.automations),
+          workflowStore: () => (
+            typeof session.workflows === "object"
+            && session.workflows != null
+            && typeof (session.workflows as { getLocation?: unknown }).getLocation === "function"
+          ) ? session.workflows as NonNullable<Parameters<typeof createSystemPromptAssembly>[0]["workflowStore"] extends () => infer R ? R : never> : null,
+          channelStore: () => (
+            typeof session.channels === "object"
+            && session.channels != null
+            && typeof (session.channels as { getLocation?: unknown; listConnections?: unknown }).getLocation === "function"
+            && typeof (session.channels as { listConnections?: unknown }).listConnections === "function"
+          ) ? session.channels as NonNullable<Parameters<typeof createSystemPromptAssembly>[0]["channelStore"] extends () => infer R ? R : never> : null,
           connectorManifests: CONNECTOR_MANIFESTS,
           sendToAgentImpl: sendToAgent,
           agentManagement,
@@ -1393,6 +1453,11 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
           remoteBoxSection: () => productionPromptGlue?.getRemoteBoxSection() ?? "",
           computerSection: () => productionPromptGlue?.getComputerSection() ?? null,
         });
+    if (productionSystemPromptAssembly != null) {
+      routedPromptExtraByAgent.set(session.id, () => productionSystemPromptAssembly.getExtraSections());
+    } else {
+      routedPromptExtraByAgent.delete(session.id);
+    }
 
     const runnerOptions: Record<string, unknown> = {
       inference: extensions.api("inference").port,
@@ -2638,8 +2703,10 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
     forgetLocalToolPermission: agentId => {
       localToolPermissionSurfaces.get(agentId)?.();
       localToolPermissionSurfaces.delete(agentId);
+      routedPromptExtraByAgent.delete(agentId);
       method(localToolPermission, "forgetAgent")?.(agentId);
     },
+    getRoutedSystemPromptExtra: agentId => routedPromptExtraByAgent.get(agentId)?.() ?? "",
     dispose: async () => {
       for (const runner of ownedRunners) {
         const candidate = runner as {
@@ -2654,6 +2721,7 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
         unsubscribe();
       }
       localToolPermissionSurfaces.clear();
+      routedPromptExtraByAgent.clear();
       await mirrorOffloadPool?.closeAll();
       mirrorOffloadPool = null;
     }

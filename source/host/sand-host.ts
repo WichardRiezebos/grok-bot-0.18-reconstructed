@@ -76,6 +76,7 @@ export interface HostRunnerComposition {
   ): unknown;
   canAskLocalToolPermission(agentId: string): boolean;
   forgetLocalToolPermission(agentId: string): void;
+  getRoutedSystemPromptExtra(agentId: string): string;
   dispose(): Promise<void>;
 }
 
@@ -102,6 +103,7 @@ export interface SandHostRuntime {
     requestDiskSaverAudit(agentId: string): Promise<boolean>;
     releaseAgentBox(agentId: string): Promise<void>;
     forgetLocalToolPermission(agentId: string): void;
+    getRoutedSystemPromptExtra?(agentId: string): string;
   }): HostGatewayDependencies;
   readonly isAgentLimitError?: (error: unknown) => boolean;
   readonly buildIdentityFallback?: string;
@@ -659,7 +661,9 @@ export class SandHost {
         kickstartIfPending: agentId => this.kickstartIfPending(agentId),
         requestDiskSaverAudit: agentId => this.requestDiskSaverAudit(agentId),
         releaseAgentBox: agentId => this.releaseAgentBox(agentId),
-        forgetLocalToolPermission: agentId => this.forgetLocalToolPermission(agentId)
+        forgetLocalToolPermission: agentId => this.forgetLocalToolPermission(agentId),
+        getRoutedSystemPromptExtra: agentId =>
+          this.runnerComposition?.getRoutedSystemPromptExtra(agentId) ?? "",
       }),
       emitSseEvent: event => this.emit(event),
     });

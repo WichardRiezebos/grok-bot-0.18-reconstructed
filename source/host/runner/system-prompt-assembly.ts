@@ -246,6 +246,32 @@ export function createSystemPromptAssembly(deps: SystemPromptAssemblyDependencie
     return rendered.length > 0 ? rendered : null;
   }
 
+  function getExtraSections(snapshot?: AgentProfilePromptSnapshot): string {
+    if (deps.isSharedRoomRunner) return "";
+    const sections: string[] = [];
+    const add = (value: string | null | undefined): void => { if (value != null && value.length > 0) sections.push(value); };
+    const profile = snapshot?.profileSection ?? profileSection(resolveProfileForPrompt(), false);
+    add(profile);
+    add(getUserIdentitySection());
+    if (!deps.isSubagentRunner && !deps.isSystemPromptOverridden && deps.isMultitaskEnabled?.() === true) add(deps.multitaskSection);
+    if (deps.isSystemPromptOverridden && !deps.isSubagentRunner && deps.isCloudAgentsDisabledByTeam?.() === true) {
+      add(SAND_CLOUD_AGENTS_DISABLED_PROMPT_SECTION);
+    }
+    if (!deps.isSubagentRunner && deps.mcpManagement() != null && deps.isMcpMultiAccountEnabled?.() === true) {
+      add(SAND_MCP_MULTI_ACCOUNT_PROMPT_SECTION);
+    }
+    add(getTimeZoneSection());
+    add(getMemorySection());
+    add(getAutomationsSection());
+    add(getWorkflowsSection());
+    add(getChannelsSection());
+    add(deps.mcpCustomInstructionsSection());
+    add(deps.mcpDiscoveryStatusSection());
+    add(deps.remoteBoxSection());
+    add(deps.computerSection());
+    return sections.join("\n\n");
+  }
+
   function getSystemPrompt(snapshot?: AgentProfilePromptSnapshot): string {
     const cloudDisabled = deps.isCloudAgentsDisabledByTeam?.() === true;
     const base = !deps.isSystemPromptOverridden && cloudDisabled ? SAND_SYSTEM_PROMPT_CLOUD_AGENTS_DISABLED : deps.basePrompt;
@@ -266,7 +292,11 @@ export function createSystemPromptAssembly(deps: SystemPromptAssemblyDependencie
   }
 
   return {
-    getSystemPrompt, prepareAgentProfilePromptSnapshot, getAgentProfileUpdateForTurn, persistAnnouncedAgentProfile,
+    getSystemPrompt,
+    getExtraSections,
+    prepareAgentProfilePromptSnapshot,
+    getAgentProfileUpdateForTurn,
+    persistAnnouncedAgentProfile,
     resetProfileSnapshotFallback() { inMemoryProfilePromptSnapshot = null; },
   };
 }

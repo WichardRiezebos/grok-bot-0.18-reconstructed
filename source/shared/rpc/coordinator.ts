@@ -142,6 +142,8 @@ export const COORDINATOR_METHOD_TABLE = {
   executeRoutedMcpTool: { args: "object", reply: "record" },
   listRoutedComputerTools: { args: "none", reply: "array" },
   executeRoutedComputerTool: { args: "object", reply: "record" },
+  getRoutedSystemPromptExtra: { args: "object", reply: "record" },
+  reviewRoutedVideoAttachment: { args: "object", reply: "record" },
   getSkillPublishTargets: { args: "none", reply: "record" },
   publishSkill: { args: "object", reply: "record" },
   resyncPublishedSkill: { args: "object", reply: "record" },
