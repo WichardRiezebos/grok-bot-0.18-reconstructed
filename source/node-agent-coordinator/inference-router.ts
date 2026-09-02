@@ -348,6 +348,16 @@ export function projectInferenceRouterTranscriptEntry(entry: StoredEntry): Recor
       };
 }
 
+function routedLogLine(dataDir: string, provider: string, agentId: string, message: string, postEvent: (family: string, payload: unknown) => void): void {
+  const line = `${provider} ${agentId} ${message}`;
+  appendRoutedInferenceLog(dataDir, line);
+  postEvent("routed-log", { line, agentId, provider });
+}
+
+function routedPromptTraceEnabled(): boolean {
+  return (process.env.GROK_BOT_ROUTED_TRACE ?? "").toLowerCase().includes("prompt");
+}
+
 export function createCoordinatorInferenceRouter(options: {
   readonly dataDir: string;
   readonly postEvent: (family: string, payload: unknown) => void;
@@ -355,6 +365,7 @@ export function createCoordinatorInferenceRouter(options: {
   readonly now?: () => number;
   readonly composingDelayMs?: number;
   readonly retryBackoffMs?: readonly number[];
+  readonly turnTimeoutMs?: number;
   readonly runProviderText?: typeof runRoutedProviderText;
 }) {
   const settings = new SandSettingsStore(join(options.dataDir, "settings.json"));
@@ -594,7 +605,7 @@ export function createCoordinatorInferenceRouter(options: {
     turnActivities.set(agentId, turnActivity);
     if (userAbort.signal.aborted) turnActivity.stop();
     let turnAbort: AbortSignal | undefined = userAbort.signal;
-    const log = (message: string) => appendRoutedInferenceLog(options.dataDir, `${provider} ${agentId} ${message}`);
+    const log = (message: string) => routedLogLine(options.dataDir, provider, agentId, message, options.postEvent);
     try {
       await awaitRoutedRetryBackoff(options.composingDelayMs ?? 1_200, turnAbort);
     } catch (error) {
@@ -616,6 +627,13 @@ export function createCoordinatorInferenceRouter(options: {
     }
     const messages = coalesceRoutedProviderMessages(withUser.agents[agentId] ?? []);
     if (hidden) messages.push({ role: "user", content: effectivePrompt });
+    if (routedPromptTraceEnabled()) {
+      const base = messages.length - Math.min(4, messages.length);
+      for (const [index, message] of messages.slice(-4).entries()) {
+        const text = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+        log(`prompt-part ${base + index}/${messages.length} ${message.role} ${text.replaceAll("\n", " ").slice(0, 240)}`);
+      }
+    }
     let assistantSlot = 0;
     let assistantTimestampMs = now();
     let assistantId = `t${turn}s${assistantSlot}`;
@@ -882,7 +900,8 @@ export function createCoordinatorInferenceRouter(options: {
     };
     const runProviderText = options.runProviderText ?? runRoutedProviderText;
     const slot = drive ? "drive" as const : "think" as const;
-    log(`turn-start ${slot}`);
+    const promptChars = messages.reduce((sum, message) => sum + (typeof message.content === "string" ? message.content.length : 0), 0);
+    log(`turn-start ${slot} ${messages.length} msgs ${promptChars} chars`);
     try {
       const listedTools = await listRoutedTools();
       const pluginTools = listedTools.some((tool) => {
@@ -921,7 +940,9 @@ export function createCoordinatorInferenceRouter(options: {
           }
         }
       }
-      const timeoutMs = drive ? ROUTED_COMPUTER_INFERENCE_TURN_TIMEOUT_MS : ROUTED_INFERENCE_TURN_TIMEOUT_MS;
+      const timeoutMs = options.turnTimeoutMs
+        ?? (drive ? ROUTED_COMPUTER_INFERENCE_TURN_TIMEOUT_MS : ROUTED_INFERENCE_TURN_TIMEOUT_MS);
+      log(`turn-deadline ${Math.round(timeoutMs / 100) / 10}s`);
       const maxSteps = drive ? ROUTED_COMPUTER_MAX_STEPS : ROUTED_PLUGIN_MAX_STEPS;
       const abortSignal = AbortSignal.any([userAbort.signal, AbortSignal.timeout(timeoutMs)]);
       turnAbort = abortSignal;
@@ -993,10 +1014,19 @@ export function createCoordinatorInferenceRouter(options: {
       log(`turn-finish ${visibleText.length || content.length} chars`);
     } catch (error) {
       await persistChain.catch(() => undefined);
+      const deadlineFired = turnAbort?.aborted === true && !userAbort.signal.aborted;
       if (isRoutedTurnAbortError(error) && error.kind === "supersede") {
         log("turn-supersede");
         if (assistantStreamStarted) emitAssistant("", false);
         clearStreaming();
+      } else if (deadlineFired && !isRoutedTurnAbortError(error)) {
+        const content = routedSettledAssistantContent(visibleText, error);
+        log(`turn-timeout content ${content}`);
+        try {
+          await persistThenEmit(assistantId, content, assistantTimestampMs);
+        } catch {
+          emitAssistant(content, false);
+        }
       } else {
         const content = isRoutedTurnAbortError(error) && error.kind === "stop"
           ? (visibleText.trim().length > 0 ? visibleText.trim() : ROUTED_TURN_STOPPED_MESSAGE)
@@ -1101,7 +1131,7 @@ export function createCoordinatorInferenceRouter(options: {
         const agentId = typeof record.agentId === "string" ? record.agentId : "";
         if (agentId.length === 0) return { handled: true, value: { stopped: false } };
         const stopped = abortAgentTurn(agentId, "stop");
-        appendRoutedInferenceLog(options.dataDir, `${provider} ${agentId} turn-abort ${stopped ? "stop" : "idle"}`);
+        routedLogLine(options.dataDir, provider, agentId, `turn-abort ${stopped ? "stop" : "idle"}`, options.postEvent);
         return { handled: true, value: { stopped } };
       }
       if (method === "deleteAgent" || method === "deleteAgents") {

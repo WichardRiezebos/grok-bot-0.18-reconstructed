@@ -387,6 +387,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
 
   let noteRoutedSend = () => {};
   let noteRoutedAgents = () => {};
+  let noteRoutedLine = () => {};
 
   function sendSocket(payload) {
     try {
@@ -826,6 +827,112 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     },
   };
 
+  function installTurnDebugOverlay() {
+    const buffer = [];
+    const limit = 320;
+    let open = false;
+    let lastEventAt = 0;
+    let warningButton = null;
+    const root = document.createElement("div");
+    root.dataset.testid = "grok-bot-turn-debug";
+    root.style.cssText = "display:none;position:fixed;left:10px;bottom:12px;z-index:10002;width:min(560px,calc(100vw - 20px));flex-direction:column;border-radius:10px;overflow:hidden;background:rgba(13,15,12,.95);color:#b7c4b0;font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;border:1px solid rgba(214,226,208,.18);box-shadow:0 12px 32px rgba(0,0,0,.4)";
+    const head = document.createElement("div");
+    head.style.cssText = "display:flex;align-items:center;gap:10px;padding:6px 10px;background:rgba(214,226,208,.06);border-bottom:1px solid rgba(214,226,208,.12)";
+    const title = document.createElement("span");
+    title.textContent = "live turns";
+    title.style.cssText = "font-weight:700;letter-spacing:.08em;text-transform:uppercase;font-size:10px;color:#d6e2d0";
+    const status = document.createElement("span");
+    status.style.cssText = "flex:1;opacity:.75;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+    const clearButton = document.createElement("button");
+    clearButton.type = "button";
+    clearButton.textContent = "clear";
+    clearButton.style.cssText = "border:0;background:transparent;color:#8fa286;cursor:pointer;font:inherit;padding:0";
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.textContent = "×";
+    closeButton.style.cssText = "border:0;background:transparent;color:#8fa286;cursor:pointer;font:inherit;padding:0 2px";
+    head.append(title, status, clearButton, closeButton);
+    const feed = document.createElement("div");
+    feed.dataset.testid = "grok-bot-turn-debug-feed";
+    feed.style.cssText = "overflow:auto;max-height:36vh;padding:8px 10px;white-space:pre-wrap;word-break:break-word";
+    function paint(line, tone) {
+      const row = document.createElement("div");
+      row.textContent = line;
+      row.style.color = tone != null ? tone : undefined;
+      if (tone === "#ff7070" || tone === "#f5c14e") row.style.fontWeight = "600";
+      feed.appendChild(row);
+      while (feed.childElementCount > limit) feed.firstElementChild?.remove();
+      feed.scrollTop = feed.scrollHeight;
+      buffer.push(line);
+      if (buffer.length > limit) buffer.shift();
+    }
+    const LINE_TONES = [
+      [/turn-start/, "#7dd88f"],
+      [/turn-finish/, "#6fae77"],
+      [/turn-supersede/, "#f5c14e"],
+      [/turn-stopp?/, "#ff7070"],
+      [/turn-timeout|turn-error|Router error|abort/, "#ff7070"],
+      [/turn-retry|turn-deadline/, "#f5c14e"],
+      [/prompt-part/, "#c792ea"],
+      [/tool-start|tool-finish|box-chrome|box-handoff|send-to-agent/, "#66d9ef"],
+      [/stream /, "#7f917f"],
+    ];
+    const toneFor = (line) => LINE_TONES.find(([pattern]) => pattern.test(line))?.[1];
+    function noteRoutedLineImpl(payload) {
+      const line = typeof payload?.line === "string" ? payload.line : JSON.stringify(payload ?? {});
+      const now = Date.now();
+      if (lastEventAt !== 0 && now - lastEventAt > 5_000) {
+        paint(`${new Date(now).toISOString()} -- gap ${((now - lastEventAt) / 1000).toFixed(1)}s without events --`, "#f5c14e");
+      }
+      lastEventAt = now;
+      paint(line, toneFor(line));
+      if (warningButton == null && /turn-timeout|turn-error.*timeout/i.test(line)) {
+        warningButton = document.createElement("button");
+        warningButton.type = "button";
+        warningButton.dataset.testid = "grok-bot-turn-debug-dot";
+        warningButton.title = "turn trouble — click for the live feed (Ctrl+Shift+D)";
+        warningButton.textContent = "»";
+        warningButton.style.cssText = "position:fixed;left:12px;bottom:12px;z-index:10001;width:22px;height:22px;border-radius:50%;border:1px solid rgba(255,112,112,.5);background:rgba(13,15,12,.9);color:#ff7070;cursor:pointer;font:12px/1 monospace";
+        warningButton.addEventListener("click", () => { toggle(); warningButton?.remove(); warningButton = null; });
+        document.body.appendChild(warningButton);
+      }
+      renderStatus();
+    }
+    function renderStatus() {
+      if (!open) return;
+      const idle = lastEventAt === 0 ? "quiet" : `${((Date.now() - lastEventAt) / 1000).toFixed(0)}s since last event`;
+      status.textContent = `${idle} · ${buffer.length} events`;
+    }
+    function toggle() {
+      open = !open;
+      root.style.display = open ? "flex" : "none";
+      renderStatus();
+    }
+    clearButton.addEventListener("click", () => { buffer.length = 0; feed.replaceChildren(); renderStatus(); });
+    closeButton.addEventListener("click", () => toggle());
+    document.addEventListener("keydown", (event) => {
+      if (!(event.ctrlKey || event.metaKey) || !event.shiftKey) return;
+      const key = typeof event.key === "string" ? event.key.toLowerCase() : "";
+      if (key !== "d") return;
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      toggle();
+    }, true);
+    setInterval(() => { if (open) renderStatus(); }, 1000);
+    const mount = () => { if (document.body != null) { document.body.appendChild(root); } else { setTimeout(mount, 50); } };
+    mount();
+    noteRoutedLine = noteRoutedLineImpl;
+    window.__grokBotTurnDebug = {
+      toggle,
+      show: () => { if (!open) toggle(); },
+      hide: () => { if (open) toggle(); },
+      clear: () => { buffer.length = 0; feed.replaceChildren(); renderStatus(); },
+      lines: () => buffer.slice(),
+    };
+  }
+
   function installComposerStop() {
     let lastAgentId = "";
     const running = new Set();
@@ -885,6 +992,9 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     const emit = coordinatorPort._emit.bind(coordinatorPort);
     coordinatorPort._emit = (data) => {
       try {
+        if (data && data.kind === "event" && data.family === "routed-log") {
+          noteRoutedLine(data.payload);
+        }
         if (data && data.kind === "event" && data.family === "agents") {
           const agents = data.payload && Array.isArray(data.payload.agents) ? data.payload.agents : [];
           running.clear();
@@ -936,6 +1046,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     new MutationObserver(paint).observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["aria-label"] });
   }
   installComposerStop();
+  installTurnDebugOverlay();
 
   window.desktop = desktop;
   window.coordinatorPort = {
@@ -961,6 +1072,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     get runtimeHealth() { return state.runtimeHealth; },
     get rpcLog() { return rpcLog.slice(); },
     health: state.health,
+    turnDebug: window.__grokBotTurnDebug ?? null,
   };
   probeRuntimeHealth();
   setInterval(probeRuntimeHealth, 2_000);

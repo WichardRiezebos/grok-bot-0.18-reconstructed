@@ -100,6 +100,30 @@ characters.
   the last RPC error. `window.__grokBotDebug` exposes `health()`, `rpcLog`, and
   `connection` for DevTools.
 
+## Live turn debugging
+
+The coordinator mirrors every routed-turn event (turn start with prompt shape,
+tool timings, retries, deadline, stop/supersede/timeout classification) both to
+`routed-inference.log` in the coordinator data dir and to connected browsers as
+`routed-log` events.
+
+- In the web UI, press **Ctrl+Shift+D** (Cmd+Shift+D on a Mac) to toggle the
+  live turns overlay: a colorized event feed that also marks gaps of silence
+  between events, so a slow/stalled provider is visible immediately. Errors open
+  a small red marker button that jumps to the feed.
+  `window.__grokBotDebug.turnDebug.toggle()` does the same from DevTools.
+- From the coordinator host (or any mount of its data dir):
+
+  ```sh
+  node scripts/turn-tail.mjs <dataDir> [--agent id] [--history]
+  ```
+
+  `docker compose logs -f` works too: the coordinator prints every event to
+  stderr.
+- Set `GROK_BOT_ROUTED_TRACE=prompt` on the coordinator process to log a
+  truncated preview of each coalesced prompt's last messages next to the usual
+  shape line. Off by default.
+
 Do not mount `docker.sock` into `control`. Box-side `box-doctor` remains a
 command inside the box; the debug page probes the gateway `/health` instead.
 
