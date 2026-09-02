@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { copyFile, mkdir, readFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,6 +48,28 @@ const nodeBundle = {
 await mkdir(path.join(out, "static"), { recursive: true });
 await mkdir(path.join(out, "node-agent-coordinator"), { recursive: true });
 await mkdir(repoDataDir, { recursive: true });
+
+const FAST_DEBUG_MODEL = process.env.FAST_DEBUG_MODEL ?? "google/gemini-3.7-flash";
+const settingsPath = path.join(repoDataDir, "settings.json");
+if (!existsSync(settingsPath)) {
+  await writeFile(settingsPath, JSON.stringify({
+    version: 1,
+    mcpBoxServers: [],
+    autoUpdateWhenIdleOptIn: false,
+    egressTunnelEnabled: false,
+    webauthnProxyEnabled: true,
+    mcpCustomInstructions: {},
+    mcpCustomInstructionsByServerId: {},
+    mcpDisabledToolsByServerId: {},
+    conciergeConsent: "unset",
+    settingsMigrations: [],
+    inferenceProvider: "openrouter",
+    openRouterModel: FAST_DEBUG_MODEL,
+    openRouterComputerModel: FAST_DEBUG_MODEL,
+    boxAutoSuspendIdleMs: 1800000,
+  }, null, 2));
+  process.stdout.write(`[fast-debug] seeded settings.json (model ${FAST_DEBUG_MODEL})\n`);
+}
 
 async function syncShim() {
   await copyFile(path.join(repoRoot, "source/server-main/web-shim.js"), path.join(out, "web-shim.js"));
@@ -98,6 +120,17 @@ contexts.push(watchServer);
 
 const watchCoordinator = await esbuild.context({
   ...nodeBundle,
+  plugins: [{
+    name: "respawn-on-coordinator-rebuild",
+    setup(buildApi) {
+      buildApi.onEnd(() => {
+        if (child == null) return;
+        respawning = true;
+        child.kill("SIGTERM");
+        setTimeout(startServer, 250);
+      });
+    },
+  }],
   stdin: {
     contents: `import { composeCoordinator } from "./source/node-agent-coordinator/main.ts";\nvoid composeCoordinator().catch((error) => {\n  process.stderr.write(\`node-agent-coordinator: composition failure: \${String(error)}\\n\`);\n  process.exit(1);\n});\n`,
     loader: "ts",

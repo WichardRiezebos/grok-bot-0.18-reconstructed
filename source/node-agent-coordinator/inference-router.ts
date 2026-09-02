@@ -516,11 +516,15 @@ export function createCoordinatorInferenceRouter(options: {
         if (row?.id !== agentId) return raw;
         return { ...row, isRunning, isRunningTurn: isRunning, isComposingMessage: isRunning && surface.composing, isRetrying: false, ...(isRunning ? { currentActivity: surface.activity } : { currentActivity: undefined }) };
       }), snapshot);
+      let lastPublished = "";
       const publishRunning = () => {
         if (!live) return;
         const controller = turnControllers.get(agentId);
         if (controller?.signal.aborted) return;
-        options.postEvent("agents", { activeAgentId: agentId, agents: project(true, Array.isArray(remote) ? remote : []) });
+        const payload = JSON.stringify(project(true, Array.isArray(remote) ? remote : []));
+        if (payload === lastPublished) return;
+        lastPublished = payload;
+        options.postEvent("agents", { activeAgentId: agentId, agents: JSON.parse(payload) });
       };
       publishRunning();
       const pulse = setInterval(() => {
@@ -528,7 +532,7 @@ export function createCoordinatorInferenceRouter(options: {
           if (Array.isArray(next)) remote = next;
           publishRunning();
         }).catch(() => publishRunning());
-      }, 250);
+      }, 1_000);
       pulse.unref();
       return {
         reveal(next) {
@@ -1262,8 +1266,10 @@ export function createCoordinatorInferenceRouter(options: {
         }
       }
       const clientNonce = typeof record.clientNonce === "string" ? record.clientNonce : randomUUID();
+      routedLogLine(options.dataDir, provider, agentId || "(none)", "dispatch sendPrompt queued", options.postEvent);
       if (agentId.length > 0) abortAgentTurn(agentId, "supersede");
-      enqueueTurn(agentId, provider, { ...record, clientNonce });
+      const queuedValue = enqueueTurn(agentId, provider, { ...record, clientNonce });
+      void queuedValue.finally(() => routedLogLine(options.dataDir, provider, agentId || "(none)", "dispatch sendPrompt settled", options.postEvent));
       return { handled: true, value: { accepted: true, clientNonce, provider } };
     },
     overlayAgents,

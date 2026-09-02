@@ -481,7 +481,7 @@ export function shouldSkipRoutedBoxChromeReload(url: string | undefined, chromeA
   return isRoutedBrowserOriginHomeUrl(url);
 }
 
-const ROUTED_GUI_INTENT_RE = /\b(click|screenshot|browse|shop|order|checkout|cookie|desktop|website|browser|open chrome|type in|scroll)\b/i;
+const ROUTED_GUI_INTENT_RE = /\b(click|screenshot|browse|shop|shopping|order|checkout|cookie|desktop|website|browser|open chrome|type in|scroll|basket|cart|grocer(y|ies)|boodschappen|webshop|jumbo|albert heijn|ah\.nl|bol\.com|log ?in|sign ?in|search (?:on google|the web|online|for a product|for the price)|find (?:a|an|the) (?:price|product|item)|put .{0,40} (?:in|into|op).{0,20} (?:basket|cart|mandje))\b/i;
 
 export function turnNeedsRoutedComputer(prompt: string, _chromeAlreadyOpen = false): boolean {
   if (extractRoutedBrowserUrl(prompt) != null) return true;
