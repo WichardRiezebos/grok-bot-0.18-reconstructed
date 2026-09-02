@@ -109,6 +109,7 @@ import { commandPaletteLinksFromConversation, createCommandPaletteLinkMetadataPr
 import { commandPaletteUpdateCommand } from "./command-palette-update-command";
 import { commandPaletteRootCommands, type CommandPaletteComputerUpdateAction, type CommandPaletteInfoSection } from "./command-palette-root-commands";
 import { CoordinatorCallError, createCoordinatorClient, type ProductionCoordinatorClient } from "./coordinator-client";
+import { createRuntimeHealthStore, isWebRuntimeHealthProbeAvailable, pollRuntimeHealthFromLocation, projectWindowTransportState } from "./runtime-health";
 import { UI_TEXT } from "./evidence";
 import { movePinnedAgent, partitionSidebarAgents } from "./sidebar-model";
 import { SignOutDialog } from "../recovered/features/account/session/sign-out";
@@ -846,6 +847,14 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
     }) ?? (() => {})
   }));
   const [transport, setTransport] = useState<TransportState>("connecting");
+  const [runtimeHealthStore] = useState(() => createRuntimeHealthStore(
+    isWebRuntimeHealthProbeAvailable(window)
+      ? { poll: pollRuntimeHealthFromLocation(window.location) }
+      : {}
+  ));
+  const runtimeHealth = useSyncExternalStore(runtimeHealthStore.subscribe, runtimeHealthStore.get, runtimeHealthStore.get);
+  const windowTransport = projectWindowTransportState({ transport, health: runtimeHealth });
+  const coordinatorHealthy = runtimeHealth.coordinator.alive && runtimeHealth.ok;
   const [agents, setAgents] = useState<RendererAgent[]>([]);
   const [pinnedAgentIds, setPinnedAgentIds] = useState<string[]>([]);
   const [hasLoadedAgents, setHasLoadedAgents] = useState(false);
@@ -1977,13 +1986,13 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
       : activeState?.boxPhase ?? null;
     const transport = rebuildTransportStore?.getTransportState() ?? "connected";
     return {
-      kind: activeState?.kind ?? (transport === "down" ? "reconnecting" : null),
+      kind: activeState?.kind ?? (transport === "down" || !coordinatorHealthy ? "reconnecting" : null),
       stage,
       migrationStatus: migrationSnapshot.phase,
       migrationPhases: migrationSnapshot.migrationPhases,
       pullPercent
     };
-  }, [rebuildBoxStore, rebuildMigrationStore, rebuildRevision, rebuildTransportStore]);
+  }, [coordinatorHealthy, rebuildBoxStore, rebuildMigrationStore, rebuildRevision, rebuildTransportStore]);
   const computerReconnectTransport = rebuildTransportStore?.getTransportState() ?? "connected";
   const restoreComputerProgress = useCallback(() => {
     setOverlay(null);
@@ -2535,6 +2544,7 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
   useStrictModeSafeDisposal(rebuildMigrationStore);
   useStrictModeSafeDisposal(rebuildBoxStore);
   useStrictModeSafeDisposal(rebuildTransportStore);
+  useStrictModeSafeDisposal(runtimeHealthStore);
 
   useEffect(() => {
     setAccessFirstBox((previous) => projectFirstBoxGate(previous, {
@@ -3396,9 +3406,10 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
     connectionController?.setReadiness({
       hasReachedBox: rosterAccessReadiness.hasReachedBox,
       isPrivacyBlocked: rosterAccessReadiness.isPrivacyBlocked,
-      failureCode: rosterAccessReadiness.rosterFailureCode
+      failureCode: rosterAccessReadiness.rosterFailureCode,
+      coordinatorHealthy,
     });
-  }, [connectionController, rosterAccessReadiness.hasReachedBox, rosterAccessReadiness.isPrivacyBlocked, rosterAccessReadiness.rosterFailureCode]);
+  }, [connectionController, coordinatorHealthy, rosterAccessReadiness.hasReachedBox, rosterAccessReadiness.isPrivacyBlocked, rosterAccessReadiness.rosterFailureCode]);
   const rosterListStatus = rosterAccessReadiness.isLoaded
     ? agents.length === 0
       ? <RosterStatus kind="empty" />
@@ -3447,7 +3458,7 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
   return (
     <div className="sand-shell" data-empty={activeAgent == null ? true : undefined} data-loading={showRootLoading || undefined} data-runtime={bridge == null ? "browser" : "electron"} data-theme={RUNTIME_THEME_CLASS[resolvedTheme]} style={{ height: "100%", position: "relative", width: "100%" }}>
       <WorkspaceIndicator isFullscreen={windowFullscreen} label={workspaceRoute == null ? activeAgent?.name ?? null : null} />
-      {bridge == null ? null : <WindowStatusBadge isFullscreen={windowFullscreen} transport={transport} />}
+      {bridge == null ? null : <WindowStatusBadge isFullscreen={windowFullscreen} transport={windowTransport} />}
       <RootShellNotificationHost bridge={bridge} client={client} />
       <BrowserNotificationHost client={client} openAgent={openAgent} />
       <SettingsNoticeView

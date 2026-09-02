@@ -317,6 +317,7 @@ export function createLocalExecDaemonSupervisor(options: LocalExecDaemonSupervis
 
   return {
     async start(): Promise<void> {
+      if (process.env.SAND_DISABLE_LOCAL_EXEC_DAEMON === "1") return;
       if (startPromise !== undefined) return startPromise;
       if (disposed) return;
       started = true;
@@ -336,7 +337,7 @@ export function createLocalExecDaemonSupervisor(options: LocalExecDaemonSupervis
       })();
       return startPromise;
     },
-    refreshConnection: () => enqueue(refreshConnectionInternal),
+    refreshConnection: () => process.env.SAND_DISABLE_LOCAL_EXEC_DAEMON === "1" ? Promise.resolve() : enqueue(refreshConnectionInternal),
     async setPaused(next: boolean): Promise<void> {
       await enqueue(async () => {
         if (disposed || paused === next) return;

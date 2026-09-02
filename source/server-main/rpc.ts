@@ -9,9 +9,17 @@ import { openRouterUsageToCursorSummary } from "../shared/openrouter-usage-summa
 import { fetchOpenRouterCatalog, readOpenRouterApiKey } from "../shared/node/openrouter-models.js";
 import {
   composioApiKeyFrom,
+  composioEffectivePlugins,
+  composioToolkitFromServerIdentifier,
+  createComposioToolkitAuthLink,
+  invalidateComposioMarketplaceCatalogCache,
   isComposioInstalledRow,
   listComposioBackendServers,
+  listComposioConnectedAccounts,
+  listComposioMarketplaceCatalog,
   mergeInstalledMcpServers,
+  parseComposioMarketplacePluginId,
+  resetComposioCachesForTests,
   toInstalledComposioServerTools,
   toInstalledComposioServers,
 } from "../shared/node/composio-mcp.js";
@@ -136,6 +144,40 @@ export function createRpcDispatcher(options: {
       servers: toInstalledComposioServers(backend),
       backend,
     };
+  };
+
+  const readComposioApiKey = () => composioApiKeyFrom(process.env, loadSecrets(options.secretsPath));
+
+  const refreshComposioRuntime = () => {
+    resetComposioCachesForTests();
+    invalidateComposioMarketplaceCatalogCache();
+  };
+
+  const composioConnectedToolkits = async (): Promise<Set<string>> => {
+    const apiKey = readComposioApiKey();
+    if (apiKey == null) return new Set();
+    const accounts = await listComposioConnectedAccounts(apiKey);
+    return new Set(accounts.map((account) => account.toolkit));
+  };
+
+  const composioMarketplaceCatalog = async () => listComposioMarketplaceCatalog(readComposioApiKey());
+
+  const composioAuthRedirect = async (toolkitSlug: string) => {
+    const apiKey = readComposioApiKey();
+    if (apiKey == null) {
+      throw new Error("Add COMPOSIO_API_KEY in Settings → Router before connecting Composio apps.");
+    }
+    refreshComposioRuntime();
+    return await createComposioToolkitAuthLink(apiKey, toolkitSlug, {
+      callbackUrl: config.publicUrl,
+      userId: "grok-bot",
+    });
+  };
+
+  const mergedMcpState = async () => {
+    const gateway = await gatewayInstalledServers();
+    const local = await localComposioInstalled();
+    return { servers: mergeInstalledMcpServers(gateway, local.servers) };
   };
 
   const snapshot = () => {
@@ -404,6 +446,7 @@ export function createRpcDispatcher(options: {
       try {
         await postGatewayCommand(config, "setBoxSecrets", { secrets: current });
         synced = true;
+        refreshComposioRuntime();
         await postGatewayCommand(config, "refreshMcp", {}).catch(() => undefined);
       } catch (error) {
         debug.logs.push({ at: new Date().toISOString(), stream: "control", text: `setBoxSecrets ${error instanceof Error ? error.message : String(error)}` });
@@ -424,20 +467,41 @@ export function createRpcDispatcher(options: {
       }
       return { keys: Object.keys(current).sort(), synced };
     },
-    getMcpState: async () => {
-      const gateway = await gatewayInstalledServers();
-      const local = await localComposioInstalled();
-      return { servers: mergeInstalledMcpServers(gateway, local.servers) };
+    getMcpState: mergedMcpState,
+    getEffectivePlugins: async () => {
+      const [catalog, connected] = await Promise.all([composioMarketplaceCatalog(), composioConnectedToolkits()]);
+      return composioEffectivePlugins(catalog, connected);
     },
-    getEffectivePlugins: () => [],
-    getMcpCatalog: () => [],
-    getMcpTeamPopularity: () => [],
-    getMcpPluginLogo: () => null,
-    installEntry: () => stub("installEntry"),
+    getMcpCatalog: composioMarketplaceCatalog,
+    getMcpTeamPopularity: () => ({}),
+    getMcpPluginLogo: (payload) => {
+      const url = (payload as JsonMap).url;
+      return typeof url === "string" && url.length > 0 ? url : null;
+    },
+    installEntry: async (payload) => {
+      const entryId = (payload as JsonMap).id;
+      if (typeof entryId !== "string") return stub("installEntry");
+      const toolkitSlug = parseComposioMarketplacePluginId(entryId);
+      if (toolkitSlug == null) return stub("installEntry");
+      const auth = await composioAuthRedirect(toolkitSlug);
+      const state = await mergedMcpState();
+      return { ...state, authorizationUrl: auth.redirectUrl, serverName: auth.serverName };
+    },
     updatePluginInstall: () => stub("updatePluginInstall"),
     removeMcpServer: () => stub("removeMcpServer"),
     uninstallPlugin: () => stub("uninstallPlugin"),
-    authenticateMcpServer: () => stub("authenticateMcpServer"),
+    authenticateMcpServer: async (payload) => {
+      const record = payload as JsonMap;
+      const serverId = typeof record.serverId === "string" ? record.serverId : "";
+      const state = await mergedMcpState();
+      const match = state.servers.find((row) => row != null && typeof row === "object" && String((row as JsonMap).id) === serverId);
+      if (match == null || !isComposioInstalledRow(match)) return stub("authenticateMcpServer");
+      const identifier = typeof (match as JsonMap).serverIdentifier === "string" ? (match as JsonMap).serverIdentifier as string : "";
+      const toolkitSlug = composioToolkitFromServerIdentifier(identifier);
+      const serverName = typeof (match as JsonMap).name === "string" ? (match as JsonMap).name as string : "Composio";
+      const auth = await composioAuthRedirect(toolkitSlug);
+      return { status: "started", authorizationUrl: auth.redirectUrl, serverName };
+    },
     renameMcpAccount: () => stub("renameMcpAccount"),
     removeMcpAccount: () => stub("removeMcpAccount"),
     setMcpCustomInstructions: () => stub("setMcpCustomInstructions"),
@@ -476,15 +540,27 @@ export function createRpcDispatcher(options: {
     "sand:secrets-upsert": (payload) => main.upsertSecrets!(payload),
     "sand:secrets-delete": (payload) => main.removeSecrets!(payload),
     "sand:mcp-list": () => main.getMcpState!({}),
-    "sand:mcp-effective-plugins": () => [],
-    "sand:mcp-catalog": () => [],
-    "sand:mcp-team-popularity": () => [],
-    "sand:mcp-plugin-logo": () => null,
-    "sand:mcp-install": () => stub("sand:mcp-install"),
+    "sand:mcp-effective-plugins": () => main.getEffectivePlugins!({}),
+    "sand:mcp-catalog": () => main.getMcpCatalog!({}),
+    "sand:mcp-team-popularity": () => main.getMcpTeamPopularity!({}),
+    "sand:mcp-plugin-logo": (payload) => main.getMcpPluginLogo!(payload),
+    "sand:mcp-install": async (payload) => {
+      const record = payload != null && typeof payload === "object" && !Array.isArray(payload) ? payload as JsonMap : {};
+      const entryId = typeof record.entryId === "string" ? record.entryId : "";
+      const result = await main.installEntry!({ id: entryId, ...(record.values == null ? {} : { values: record.values }) });
+      return result;
+    },
     "sand:mcp-update-plugin-install": () => stub("sand:mcp-update-plugin-install"),
     "sand:mcp-remove": () => stub("sand:mcp-remove"),
     "sand:mcp-uninstall-plugin": () => stub("sand:mcp-uninstall-plugin"),
-    "sand:mcp-auth": () => stub("sand:mcp-auth"),
+    "sand:mcp-auth": async (payload) => {
+      const record = payload != null && typeof payload === "object" && !Array.isArray(payload) ? payload as JsonMap : {};
+      return await main.authenticateMcpServer!({
+        serverId: record.serverId,
+        accountKey: record.accountKey,
+        trigger: record.trigger,
+      });
+    },
     "sand:mcp-rename-account": () => stub("sand:mcp-rename-account"),
     "sand:mcp-remove-account": () => stub("sand:mcp-remove-account"),
     "sand:mcp-set-instructions": () => stub("sand:mcp-set-instructions"),

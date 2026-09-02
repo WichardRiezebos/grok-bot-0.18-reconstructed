@@ -7,6 +7,9 @@ export const COMPOSIO_API_KEY_NAME = "COMPOSIO_API_KEY";
 export const COMPOSIO_MCP_SERVER_NAME = "composio";
 export const COMPOSIO_MCP_URL = "https://connect.composio.dev/mcp";
 export const COMPOSIO_CONNECTED_ACCOUNTS_URL = "https://backend.composio.dev/api/v3/connected_accounts";
+export const COMPOSIO_CONNECTED_ACCOUNTS_LINK_URL = "https://backend.composio.dev/api/v3.1/connected_accounts/link";
+export const COMPOSIO_TOOLKITS_URL = "https://backend.composio.dev/api/v3.1/toolkits";
+export const COMPOSIO_AUTH_CONFIGS_URL = "https://backend.composio.dev/api/v3.1/auth_configs";
 export const COMPOSIO_TOOL_ROUTER_SESSION_URL = "https://backend.composio.dev/api/v3.1/tool_router/session";
 export const COMPOSIO_TOOLS_URL = "https://backend.composio.dev/api/v3.1/tools";
 export const COMPOSIO_TOOL_EXECUTE_URL = "https://backend.composio.dev/api/v3.1/tools/execute";
@@ -26,7 +29,55 @@ const TOOLKIT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   googledrive: "Google Drive",
   googlecalendar: "Google Calendar",
   outlook: "Outlook",
+  trello: "Trello",
+  jira: "Jira",
+  asana: "Asana",
+  hubspot: "HubSpot",
+  salesforce: "Salesforce",
+  discord: "Discord",
+  dropbox: "Dropbox",
+  airtable: "Airtable",
+  zoom: "Zoom",
+  microsoftteams: "Microsoft Teams",
+  figma: "Figma",
+  stripe: "Stripe",
+  shopify: "Shopify",
 };
+
+export const COMPOSIO_MARKETPLACE_PLUGIN_PREFIX = "composio-toolkit:";
+export const COMPOSIO_MARKETPLACE_NAME = "composio";
+export const COMPOSIO_MARKETPLACE_DISPLAY_NAME = "Composio";
+
+const FALLBACK_COMPOSIO_TOOLKIT_SLUGS = [
+  "gmail", "slack", "github", "linear", "notion", "googledrive", "googlecalendar", "outlook",
+  "trello", "jira", "asana", "hubspot", "salesforce", "discord", "dropbox", "airtable",
+  "zoom", "microsoftteams", "figma", "stripe", "shopify",
+] as const;
+
+export type ComposioMarketplaceCatalogEntry = {
+  id: string;
+  name: string;
+  displayName: string;
+  description: string;
+  category: string;
+  homepage?: string;
+  iconUrl?: string;
+  connectors: unknown[];
+  skills: Array<{ name: string; description: string }>;
+  publisher: { name: string; displayName: string; isUserOwned: boolean };
+  marketplace: { name: string; displayName: string; ownership: "user" };
+};
+
+export type ComposioEffectivePlugin = {
+  pluginId: string;
+  name: string;
+  displayName: string;
+  installMode: "user";
+  isEnabled: boolean;
+};
+
+let cachedMarketplaceCatalog: { key: string; atMs: number; entries: ComposioMarketplaceCatalogEntry[] } | undefined;
+const COMPOSIO_MARKETPLACE_CACHE_MS = 5 * 60_000;
 
 type ComposioMcpRuntimeConfig = { mcpServers: Record<string, { type: "http"; url: string; headers: Record<string, string> }> };
 
@@ -826,8 +877,190 @@ export async function ensureComposioWebhookAndTriggers(args: {
   return { ...(secret == null ? {} : { secret }), enabled: true };
 }
 
+export function composioMarketplacePluginId(toolkitSlug: string): string {
+  return `${COMPOSIO_MARKETPLACE_PLUGIN_PREFIX}${toolkitSlug.trim().toLowerCase()}`;
+}
+
+export function parseComposioMarketplacePluginId(pluginId: string): string | null {
+  if (!pluginId.startsWith(COMPOSIO_MARKETPLACE_PLUGIN_PREFIX)) return null;
+  const slug = pluginId.slice(COMPOSIO_MARKETPLACE_PLUGIN_PREFIX.length).trim().toLowerCase();
+  return slug.length > 0 ? slug : null;
+}
+
+export function composioToolkitConnectFallbackUrl(toolkitSlug: string): string {
+  const slug = toolkitSlug.trim().toLowerCase();
+  return slug.length > 0 ? `https://app.composio.dev/apps/${encodeURIComponent(slug)}` : "https://app.composio.dev";
+}
+
+function composioCatalogEntryFromToolkit(args: {
+  slug: string;
+  name?: string;
+  description?: string;
+  category?: string;
+  logo?: string;
+  homepage?: string;
+}): ComposioMarketplaceCatalogEntry {
+  const slug = args.slug.trim().toLowerCase();
+  const displayName = args.name?.trim() || composioToolkitDisplayName(slug);
+  return {
+    id: composioMarketplacePluginId(slug),
+    name: slug,
+    displayName,
+    description: args.description?.trim() || `Connect ${displayName} through Composio.`,
+    category: args.category?.trim() || "Connectors",
+    ...(args.homepage?.trim() ? { homepage: args.homepage.trim() } : {}),
+    ...(args.logo?.trim() ? { iconUrl: args.logo.trim() } : {}),
+    connectors: [],
+    skills: [],
+    publisher: { name: COMPOSIO_MARKETPLACE_NAME, displayName: COMPOSIO_MARKETPLACE_DISPLAY_NAME, isUserOwned: false },
+    marketplace: { name: COMPOSIO_MARKETPLACE_NAME, displayName: COMPOSIO_MARKETPLACE_DISPLAY_NAME, ownership: "user" },
+  };
+}
+
+function fallbackComposioMarketplaceCatalog(): ComposioMarketplaceCatalogEntry[] {
+  return FALLBACK_COMPOSIO_TOOLKIT_SLUGS.map((slug) => composioCatalogEntryFromToolkit({ slug }));
+}
+
+async function fetchComposioAuthConfigId(apiKey: string, toolkitSlug: string): Promise<string | undefined> {
+  const url = new URL(COMPOSIO_AUTH_CONFIGS_URL);
+  url.searchParams.set("toolkit_slug", toolkitSlug);
+  url.searchParams.set("limit", "50");
+  const response = await fetch(url, { headers: { "x-api-key": apiKey } });
+  if (!response.ok) return undefined;
+  const body = await response.json() as { items?: Array<{ id?: unknown; status?: unknown }> };
+  for (const item of body.items ?? []) {
+    if (typeof item.id !== "string" || item.id.length === 0) continue;
+    if (item.status != null && String(item.status).toUpperCase() !== "ENABLED") continue;
+    return item.id;
+  }
+  return undefined;
+}
+
+async function fetchComposioToolkitsPage(
+  apiKey: string,
+  cursor?: string,
+): Promise<{ items: ComposioMarketplaceCatalogEntry[]; nextCursor: string | null }> {
+  const url = new URL(COMPOSIO_TOOLKITS_URL);
+  url.searchParams.set("limit", "1000");
+  url.searchParams.set("managed_by", "composio");
+  url.searchParams.set("sort_by", "alphabetically");
+  if (cursor != null && cursor.length > 0) url.searchParams.set("cursor", cursor);
+  const response = await fetch(url, { headers: { "x-api-key": apiKey } });
+  if (!response.ok) throw new Error(`Composio toolkits request failed (${response.status}).`);
+  const body = await response.json() as {
+    items?: Array<Record<string, unknown>>;
+    next_cursor?: unknown;
+  };
+  const items = (body.items ?? []).flatMap((item) => {
+    const slug = typeof item.slug === "string" ? item.slug.trim().toLowerCase() : "";
+    if (slug.length === 0) return [];
+    const meta = asRecord(item.meta);
+    const categories = Array.isArray(meta?.categories) ? meta.categories : [];
+    const category = categories.find((value): value is string => typeof value === "string" && value.length > 0);
+    return [composioCatalogEntryFromToolkit({
+      slug,
+      name: typeof item.name === "string" ? item.name : undefined,
+      description: typeof meta?.description === "string" ? meta.description : undefined,
+      category,
+      logo: typeof meta?.logo === "string" ? meta.logo : undefined,
+      homepage: typeof meta?.app_url === "string" ? meta.app_url : undefined,
+    })];
+  });
+  const nextCursor = typeof body.next_cursor === "string" && body.next_cursor.length > 0 ? body.next_cursor : null;
+  return { items, nextCursor };
+}
+
+export async function listComposioMarketplaceCatalog(apiKey: string | undefined): Promise<ComposioMarketplaceCatalogEntry[]> {
+  const cacheKey = apiKey ?? "missing";
+  const now = Date.now();
+  if (
+    cachedMarketplaceCatalog != null
+    && cachedMarketplaceCatalog.key === cacheKey
+    && now - cachedMarketplaceCatalog.atMs < COMPOSIO_MARKETPLACE_CACHE_MS
+  ) {
+    return cachedMarketplaceCatalog.entries;
+  }
+  if (apiKey == null) {
+    const entries = fallbackComposioMarketplaceCatalog();
+    cachedMarketplaceCatalog = { key: cacheKey, atMs: now, entries };
+    return entries;
+  }
+  try {
+    const byId = new Map<string, ComposioMarketplaceCatalogEntry>();
+    let cursor: string | null = null;
+    do {
+      const page = await fetchComposioToolkitsPage(apiKey, cursor ?? undefined);
+      for (const entry of page.items) byId.set(entry.id, entry);
+      cursor = page.nextCursor;
+    } while (cursor != null);
+    const entries = [...byId.values()].sort((left, right) => left.displayName.localeCompare(right.displayName));
+    if (entries.length === 0) {
+      const fallback = fallbackComposioMarketplaceCatalog();
+      cachedMarketplaceCatalog = { key: cacheKey, atMs: now, entries: fallback };
+      return fallback;
+    }
+    cachedMarketplaceCatalog = { key: cacheKey, atMs: now, entries };
+    return entries;
+  } catch {
+    const fallback = fallbackComposioMarketplaceCatalog();
+    cachedMarketplaceCatalog = { key: cacheKey, atMs: now, entries: fallback };
+    return fallback;
+  }
+}
+
+export function composioEffectivePlugins(
+  catalog: readonly ComposioMarketplaceCatalogEntry[],
+  connectedToolkits: ReadonlySet<string>,
+): ComposioEffectivePlugin[] {
+  return catalog.map((entry) => {
+    const slug = parseComposioMarketplacePluginId(entry.id);
+    return {
+      pluginId: entry.id,
+      name: entry.name,
+      displayName: entry.displayName,
+      installMode: "user",
+      isEnabled: slug != null && connectedToolkits.has(slug),
+    };
+  });
+}
+
+export async function createComposioToolkitAuthLink(
+  apiKey: string,
+  toolkitSlug: string,
+  options?: { callbackUrl?: string; userId?: string },
+): Promise<{ redirectUrl: string; serverName: string }> {
+  const slug = toolkitSlug.trim().toLowerCase();
+  const serverName = composioToolkitDisplayName(slug);
+  const authConfigId = await fetchComposioAuthConfigId(apiKey, slug);
+  if (authConfigId == null) {
+    return { redirectUrl: composioToolkitConnectFallbackUrl(slug), serverName };
+  }
+  const response = await fetch(COMPOSIO_CONNECTED_ACCOUNTS_LINK_URL, {
+    method: "POST",
+    headers: { "x-api-key": apiKey, "content-type": "application/json" },
+    body: JSON.stringify({
+      auth_config_id: authConfigId,
+      user_id: options?.userId ?? "grok-bot",
+      ...(options?.callbackUrl == null || options.callbackUrl.length === 0 ? {} : { callback_url: options.callbackUrl }),
+    }),
+  });
+  const body = await jsonFromComposio(response);
+  const redirectUrl = typeof body?.redirect_url === "string" && body.redirect_url.length > 0
+    ? body.redirect_url
+    : composioToolkitConnectFallbackUrl(slug);
+  if (!response.ok && redirectUrl === composioToolkitConnectFallbackUrl(slug)) {
+    throw new Error(typeof body?.message === "string" ? body.message : `Composio auth link failed (${response.status}).`);
+  }
+  return { redirectUrl, serverName };
+}
+
+export function invalidateComposioMarketplaceCatalogCache(): void {
+  cachedMarketplaceCatalog = undefined;
+}
+
 export function resetComposioCachesForTests(): void {
   cachedPlatformSession = undefined;
   cachedPlatformTools = undefined;
   cachedConnectSession = undefined;
+  cachedMarketplaceCatalog = undefined;
 }

@@ -61,7 +61,16 @@ export function createRendererPortServer(port: RendererPort, options: RendererPo
     );
   };
   const handleFrame = (frame: CoordinatorFrame) => {
-    if (frame.kind === "lifecycle" && frame.phase === "shutdown") { settle({ outcome: "shutdown-requested" }); return; }
+    if (frame.kind === "lifecycle" && frame.phase === "shutdown") {
+      if (frame.reason === "requested") {
+        phase = "awaiting-hello";
+        for (const controller of inFlight.values()) controller.abort();
+        inFlight.clear();
+        return;
+      }
+      settle({ outcome: "shutdown-requested" });
+      return;
+    }
     if (frame.kind === "reply" || frame.kind === "event") { breach(`client posted a server-direction ${frame.kind} frame`); return; }
     if (frame.kind === "lifecycle" && frame.phase === "ready") { breach("client posted a server-direction ready frame"); return; }
     if (phase === "awaiting-hello") {

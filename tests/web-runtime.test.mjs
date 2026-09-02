@@ -570,6 +570,9 @@ test("ungated /health, /debug, and websocket RPC", async () => {
     assert.match(shimSource, /grok-bot-superseded/);
     assert.match(shimSource, /1012/);
     assert.match(shimSource, /coordinator restarted; reconnecting/);
+    assert.match(shimSource, /noteToolSurfaceError/);
+    assert.match(shimSource, /grok-bot-tool-surface/);
+    assert.match(shimSource, /browserUse/);
     assert.doesNotMatch(shimSource, /coordinator restarted; reloading/);
     assert.match(shimSource, /owner\?\.onPort\(coordinatorPort\)/);
     assert.match(shimSource, /__SENTRY__RENDERER_INIT__/);
@@ -1219,6 +1222,79 @@ test("getMcpState returns local Composio when the gateway is empty", async () =>
   }
 });
 
+test("getMcpCatalog returns Composio marketplace entries in the web runtime", async () => {
+  const loaded = await loadModule("source/server-main/rpc.ts");
+  const configLoaded = await loadModule("source/server-main/config.ts");
+  const debugLoaded = await loadModule("source/server-main/debug-log.ts");
+  const settingsLoaded = await loadModule("source/shared/node/settings/sand-settings-store.ts");
+  const dataDir = await mkdtemp(path.join(tmpdir(), "grok-rpc-mcp-catalog-"));
+  const previousFetch = globalThis.fetch;
+  const previousKey = process.env.COMPOSIO_API_KEY;
+  process.env.COMPOSIO_API_KEY = "ak_web_catalog";
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/api/v3.1/toolkits")) {
+      return new Response(JSON.stringify({
+        items: [
+          { slug: "gmail", name: "Gmail", meta: { description: "Gmail", logo: "https://cdn.example/gmail.png", categories: ["Communication"] } },
+          { slug: "slack", name: "Slack", meta: { description: "Slack", logo: "https://cdn.example/slack.png", categories: ["Communication"] } },
+        ],
+        next_cursor: null,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.endsWith("/api/listInstalledMcpServers")) {
+      return new Response(JSON.stringify({ servers: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const dispatch = loaded.module.createRpcDispatcher({
+      config: configLoaded.module.resolveRuntimeConfig({
+        SAND_HOST_GATEWAY_URL: "http://box:1340",
+        SAND_GATEWAY_TOKEN: "gate-9999",
+      }),
+      debug: debugLoaded.module.createDebugState(),
+      settings: new settingsLoaded.module.SandSettingsStore(path.join(dataDir, "settings.json")),
+      secretsPath: path.join(dataDir, "box-secrets.json"),
+      persistencePath: path.join(dataDir, "client-persistence.json"),
+      restartCoordinator: () => {},
+    });
+    const catalog = await dispatch("sand-rpc:main:m:getMcpCatalog", {});
+    assert.equal(catalog.length, 2);
+    assert.equal(catalog[0].id, "composio-toolkit:gmail");
+    const effective = await dispatch("sand-rpc:main:m:getEffectivePlugins", {});
+    assert.equal(effective.every((entry) => entry.isEnabled === false), true);
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes("/api/v3.1/auth_configs")) {
+        return new Response(JSON.stringify({ items: [{ id: "ac_gmail", status: "ENABLED" }] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("/api/v3.1/connected_accounts/link") && init?.method === "POST") {
+        return new Response(JSON.stringify({ redirect_url: "https://connect.composio.dev/link/ln_gmail" }), { status: 201, headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("/api/v3.1/toolkits")) {
+        return new Response(JSON.stringify({ items: [], next_cursor: null }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.endsWith("/api/listInstalledMcpServers")) {
+        return new Response(JSON.stringify({ servers: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const install = await dispatch("sand-rpc:main:m:installEntry", { id: "composio-toolkit:gmail" });
+    assert.equal(install.authorizationUrl, "https://connect.composio.dev/link/ln_gmail");
+    assert.ok(Array.isArray(install.servers));
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousKey == null) delete process.env.COMPOSIO_API_KEY;
+    else process.env.COMPOSIO_API_KEY = previousKey;
+    await rm(dataDir, { recursive: true, force: true });
+    await loaded.dispose();
+    await configLoaded.dispose();
+    await debugLoaded.dispose();
+    await settingsLoaded.dispose();
+  }
+});
+
 test("POST /webhooks/composio verifies HMAC and forwards fireComposioTrigger", async () => {
   const loaded = await loadModule("source/server-main/http-server.ts");
   const configLoaded = await loadModule("source/server-main/config.ts");
@@ -1336,5 +1412,39 @@ test("web attachment handlers stage, commit via gateway, and read bytes", async 
     await loaded.dispose();
     await configLoaded.dispose();
     await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("live docker stack exposes coordinator and box health when running", async () => {
+  let response;
+  try {
+    response = await fetch("http://127.0.0.1:8080/health", { signal: AbortSignal.timeout(2_000) });
+  } catch {
+    return;
+  }
+  if (!response.ok) return;
+  const health = await response.json();
+  assert.equal(typeof health.coordinator?.alive, "boolean");
+  assert.equal(typeof health.box?.ok, "boolean");
+  if (health.coordinator?.alive === true && health.box?.ok === true) {
+    assert.equal(health.ok, true);
+    assert.equal(health.wsListenerReady, true);
+  }
+});
+
+test("live docker stack exposes coordinator and box health when running", async () => {
+  let response;
+  try {
+    response = await fetch("http://127.0.0.1:8080/health", { signal: AbortSignal.timeout(2_000) });
+  } catch {
+    return;
+  }
+  if (!response.ok) return;
+  const health = await response.json();
+  assert.equal(typeof health.coordinator?.alive, "boolean");
+  assert.equal(typeof health.box?.ok, "boolean");
+  if (health.coordinator?.alive === true && health.box?.ok === true) {
+    assert.equal(health.ok, true);
+    assert.equal(health.wsListenerReady, true);
   }
 });

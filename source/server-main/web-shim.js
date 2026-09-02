@@ -269,12 +269,95 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     connection: "connecting",
     lastError: null,
     debug: false,
+    runtimeHealth: null,
     health: async () => {
       const token = new URLSearchParams(location.search).get("token");
       const query = token ? `?token=${encodeURIComponent(token)}` : "";
       return fetch(`/health${query}`, { credentials: "same-origin" }).then((r) => r.json());
     },
   };
+
+  function probeRuntimeHealth() {
+    void state.health().then((value) => {
+      if (value == null || typeof value !== "object") return;
+      state.runtimeHealth = value;
+      window.dispatchEvent(new CustomEvent("grok-bot-runtime-health", { detail: value }));
+      paintRuntimeHealthNotice();
+    }, () => {});
+  }
+
+  function installRuntimeHealthNotice() {
+    let notice = null;
+    const ensureNotice = () => {
+      if (notice != null) return notice;
+      notice = document.createElement("div");
+      notice.dataset.testid = "grok-bot-runtime-health";
+      notice.setAttribute("role", "status");
+      notice.style.cssText = "position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:10001;display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:999px;background:color-mix(in srgb, var(--cursor-bg-primary, #111) 92%, transparent);border:1px solid color-mix(in srgb, var(--cursor-text-primary, #eee) 18%, transparent);color:var(--cursor-text-primary, #eee);font:13px/1.35 system-ui,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.28)";
+      const label = document.createElement("span");
+      label.dataset.testid = "grok-bot-runtime-health-label";
+      const detail = document.createElement("span");
+      detail.dataset.testid = "grok-bot-runtime-health-detail";
+      detail.style.cssText = "opacity:.72;font-size:12px";
+      notice.append(label, detail);
+      document.body.appendChild(notice);
+      return notice;
+    };
+    window.paintRuntimeHealthNotice = () => {
+      const health = state.runtimeHealth;
+      if (health == null || typeof health !== "object") return;
+      const coordinatorAlive = health.coordinator?.alive === true;
+      const ok = health.ok === true;
+      if (coordinatorAlive && ok) {
+        notice?.remove();
+        notice = null;
+        return;
+      }
+      const node = ensureNotice();
+      const label = node.querySelector("[data-testid='grok-bot-runtime-health-label']");
+      const detail = node.querySelector("[data-testid='grok-bot-runtime-health-detail']");
+      const reconnecting = !coordinatorAlive || state.connection === "reconnecting" || state.connection === "connecting";
+      node.dataset.variant = reconnecting ? "reconnecting" : "unhealthy";
+      if (label != null) {
+        label.textContent = reconnecting ? "Reconnecting to your computer…" : "Runtime health check failed";
+      }
+      if (detail != null) {
+        const parts = [];
+        if (!coordinatorAlive) parts.push("coordinator down");
+        if (health.box?.ok !== true) parts.push("box unreachable");
+        if (health.wsListenerReady !== true) parts.push("websocket not ready");
+        detail.textContent = parts.length > 0 ? parts.join(" · ") : "waiting for recovery";
+      }
+    };
+    window.addEventListener("grok-bot-runtime-health", () => paintRuntimeHealthNotice());
+    window.addEventListener("grok-bot-ws", () => paintRuntimeHealthNotice());
+    const mount = () => paintRuntimeHealthNotice();
+    if (document.body != null) mount();
+    else document.addEventListener("DOMContentLoaded", mount);
+  }
+
+  function paintRuntimeHealthNotice() {
+    window.paintRuntimeHealthNotice?.();
+  }
+
+  function installToolSurfaceNotice() {
+    let notice = null;
+    const LOCAL_MACHINE_HINT = "local machine isn't connected";
+    window.noteToolSurfaceError = (message) => {
+      const text = String(message ?? "");
+      if (!text.toLowerCase().includes(LOCAL_MACHINE_HINT)) return;
+      if (notice == null) {
+        notice = document.createElement("div");
+        notice.dataset.testid = "grok-bot-tool-surface";
+        notice.setAttribute("role", "status");
+        notice.style.cssText = "position:fixed;top:56px;left:50%;transform:translateX(-50%);z-index:10000;max-width:min(560px,calc(100vw - 24px));padding:10px 14px;border-radius:12px;background:color-mix(in srgb, var(--cursor-bg-primary, #111) 94%, transparent);border:1px solid color-mix(in srgb, #f5a623 40%, transparent);color:var(--cursor-text-primary, #eee);font:13px/1.4 system-ui,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.24)";
+        notice.textContent = "Mac desktop tools are unavailable in this web runtime. Use Task → browserUse for browser work on the box.";
+        document.body.appendChild(notice);
+      }
+      clearTimeout(notice._hideTimer);
+      notice._hideTimer = setTimeout(() => { notice?.remove(); notice = null; }, 12_000);
+    };
+  }
 
   function wsUrl() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -347,6 +430,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       reconnectMs = 500;
       state.connection = "connected";
       log("websocket open");
+      paintRuntimeHealthNotice();
       for (const payload of outbound.splice(0)) socket.send(payload);
       owner?.onPort(coordinatorPort);
       window.dispatchEvent(new Event("grok-bot-ws"));
@@ -355,6 +439,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       state.connection = "down";
       state.lastError = "websocket error";
       log("websocket error");
+      paintRuntimeHealthNotice();
     });
     socket.addEventListener("close", (event) => {
       rejectPending("websocket closed");
@@ -368,11 +453,13 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       if (event.code === 1012) {
         state.connection = "reconnecting";
         log("coordinator restarted; reconnecting");
+        paintRuntimeHealthNotice();
         setTimeout(attachSocket, 0);
         return;
       }
       state.connection = "reconnecting";
       log("websocket closed; reconnecting");
+      paintRuntimeHealthNotice();
       setTimeout(attachSocket, reconnectMs);
       reconnectMs = Math.min(reconnectMs * 2, 8000);
     });
@@ -425,6 +512,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       return value;
     }, (error) => {
       state.lastError = error.message;
+      window.noteToolSurfaceError?.(error.message);
       rpcLog.push({ method: channel, ok: false, durationMs: Date.now() - started, error: error.message });
       if (rpcLog.length > 100) rpcLog.shift();
       console.group("[grok-bot] rpc failed");
@@ -540,7 +628,13 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     readAttachmentBytes: (path, maxBytes) => edge.readAttachmentBytes({ path, maxBytes }),
     downloadAttachment: (path, suggestedName) => edge.downloadAttachment({ path, suggestedName }),
     getLinkMetadata: (url) => edge.getLinkMetadata({ url }),
-    async openExternal(url) { await edge.openExternal({ url }); },
+    async openExternal(url) {
+      const target = typeof url === "string" ? url : url?.url;
+      if (typeof target === "string" && target.length > 0) {
+        window.open(target, "_blank", "noopener,noreferrer");
+      }
+      await edge.openExternal(typeof url === "string" ? { url } : url ?? {});
+    },
     async openCloudAgent(bcId) { await edge.openCloudAgent({ bcId }); },
     stageAttachmentBytes: (filename, bytes) => edge.stageAttachmentBytes({ filename, bytes }),
     commitStagedAttachments: (paths, filenames) => edge.commitStagedAttachments({ paths, filenames }),
@@ -551,7 +645,14 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       catalog: () => ipc.invoke("sand:mcp-catalog"),
       teamPopularity: () => ipc.invoke("sand:mcp-team-popularity"),
       pluginLogo: (url) => ipc.invoke("sand:mcp-plugin-logo", { url }),
-      install: (request) => ipc.invoke("sand:mcp-install", request),
+      install: async (request) => {
+        const result = await ipc.invoke("sand:mcp-install", request);
+        if (result != null && typeof result === "object" && typeof result.authorizationUrl === "string" && result.authorizationUrl.length > 0) {
+          window.open(result.authorizationUrl, "_blank", "noopener,noreferrer");
+        }
+        if (result != null && typeof result === "object" && Array.isArray(result.servers)) return result;
+        return result?.state ?? result;
+      },
       updatePluginInstall: (request) => ipc.invoke("sand:mcp-update-plugin-install", request),
       remove: (serverId) => ipc.invoke("sand:mcp-remove", { serverId }),
       uninstallPlugin: (pluginId) => ipc.invoke("sand:mcp-uninstall-plugin", { pluginId }),
@@ -857,8 +958,13 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
   window.__grokBotDebug = {
     get connection() { return state.connection; },
     get lastError() { return state.lastError; },
+    get runtimeHealth() { return state.runtimeHealth; },
     get rpcLog() { return rpcLog.slice(); },
     health: state.health,
   };
+  probeRuntimeHealth();
+  setInterval(probeRuntimeHealth, 2_000);
+  installRuntimeHealthNotice();
+  installToolSurfaceNotice();
   attachSocket();
 })();

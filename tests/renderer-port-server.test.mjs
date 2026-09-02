@@ -24,6 +24,28 @@ async function loadModule(entry) {
   return { module, dispose: () => rm(temporary, { recursive: true, force: true }) };
 }
 
+test("client-requested shutdown resets the session instead of settling the port", async () => {
+  const loaded = await loadModule("source/node-agent-coordinator/renderer-port-server.ts");
+  try {
+    const posted = [];
+    const server = loaded.module.createRendererPortServer({
+      post(frame) { posted.push(frame); },
+      close() {},
+    });
+    server.handleMessage({ kind: "lifecycle", phase: "hello", protocolVersion: 1 });
+    server.handleMessage({ kind: "lifecycle", phase: "shutdown", reason: "requested", detail: null });
+    server.handleMessage({ kind: "lifecycle", phase: "hello", protocolVersion: 1 });
+    const settled = await Promise.race([
+      server.settled.then((value) => value),
+      new Promise((resolve) => setTimeout(() => resolve("still-open"), 30)),
+    ]);
+    assert.equal(settled, "still-open");
+    assert.equal(posted.filter((frame) => frame.kind === "lifecycle" && frame.phase === "ready").length, 2);
+  } finally {
+    await loaded.dispose();
+  }
+});
+
 test("repeated hello clears in-flight requests so the same requestId can be reused", async () => {
   const loaded = await loadModule("source/node-agent-coordinator/renderer-port-server.ts");
   try {

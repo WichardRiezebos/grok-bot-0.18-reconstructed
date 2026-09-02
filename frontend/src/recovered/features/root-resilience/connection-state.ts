@@ -16,6 +16,7 @@ export interface CoordinatorConnectionReadiness {
   readonly hasReachedBox: boolean;
   readonly isPrivacyBlocked: boolean;
   readonly failureCode: string | null;
+  readonly coordinatorHealthy?: boolean | null;
 }
 
 export interface CoordinatorConnectionSnapshot extends CoordinatorConnectionReadiness {
@@ -75,7 +76,8 @@ export function CoordinatorConnectionHost({ controller }: CoordinatorConnectionH
 const INITIAL_READINESS: CoordinatorConnectionReadiness = {
   hasReachedBox: false,
   isPrivacyBlocked: false,
-  failureCode: null
+  failureCode: null,
+  coordinatorHealthy: null,
 };
 
 const INITIAL_SNAPSHOT: CoordinatorConnectionSnapshot = {
@@ -93,8 +95,9 @@ function accountIdentity(status: CursorAuthStatus): string {
     : status.kind;
 }
 
-function phaseFor(snapshot: Omit<CoordinatorConnectionSnapshot, "phase">): CoordinatorConnectionPhase {
+function phaseFor(snapshot: Omit<CoordinatorConnectionSnapshot, "phase"> & { readonly coordinatorHealthy?: boolean | null }): CoordinatorConnectionPhase {
   if (snapshot.accountKind !== "logged-in" || snapshot.isPrivacyBlocked) return "hidden";
+  if (snapshot.coordinatorHealthy === false) return "reconnecting";
   if (snapshot.transport === "connecting") return "loading";
   if (snapshot.transport === "connected" && snapshot.failureCode == null) return "connected";
   return snapshot.hasReachedBox ? "reconnecting" : "unreachable";

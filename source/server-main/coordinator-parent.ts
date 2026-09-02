@@ -43,6 +43,7 @@ export function forkCoordinator(config: RuntimeConfig, debug: DebugState): Coord
       SAND_HOST_GATEWAY_URL: config.gatewayUrl,
       SAND_HOST_GATEWAY_TOKEN: config.gatewayToken,
       SAND_DATA_ROOT: config.dataDir,
+      SAND_DISABLE_LOCAL_EXEC_DAEMON: "1",
     },
   });
   debug.coordinatorPid = child.pid ?? null;

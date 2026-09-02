@@ -5,8 +5,11 @@
   const paint = () => {
     const debug = window.__grokBotDebug;
     const connection = debug?.connection ?? "unknown";
+    const health = debug?.runtimeHealth;
+    const healthOk = health?.ok === true ? "ok" : health?.ok === false ? "bad" : "?";
+    const coordinator = health?.coordinator?.alive === true ? "alive" : health?.coordinator?.alive === false ? "dead" : "?";
     const error = debug?.lastError ? ` · ${debug.lastError}` : "";
-    badge.textContent = `ws ${connection}${error}`;
+    badge.textContent = `ws ${connection} · health ${healthOk} · coordinator ${coordinator}${error}`;
   };
   paint();
   setInterval(paint, 500);

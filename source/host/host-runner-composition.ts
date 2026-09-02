@@ -905,6 +905,10 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
   ): Runner {
     const isSharedRoomTurn = overrides.isSharedRoomTurn === true;
     const localExec = extensions.api("local-exec");
+    const resolveLocalExecAvailable = (): boolean => {
+      const hasProvider = method(localExec, "hasProvider");
+      return typeof hasProvider === "function" ? Boolean(hasProvider()) : true;
+    };
     const attachments = extensions.api("attachments");
     const memory = extensions.api("memory");
     const transcript = extensions.api("transcript");
@@ -1293,6 +1297,7 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
           uploadAttachmentsIntoBox: async paths =>
             new Map(await method(attachments, "stageIntoBox")?.(session.id, paths) ?? []),
           getRemoteBoxAvailable: () => method(remoteBox, "isAvailable")?.() !== false,
+          getLocalExecAvailable: resolveLocalExecAvailable,
           getConversationId: () => session.id,
           resolveBoxId: () => session.id,
           ...(mcpCustomInstructions === undefined
@@ -2075,7 +2080,9 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
           enableJobCompletionNotifications: true,
         },
       }),
-      createExternalReadToolInputs: (_turn, props): TurnReadToolFactoryInput => ({
+      createExternalReadToolInputs: (_turn, props) => {
+        if (!resolveLocalExecAvailable()) return undefined;
+        return {
         resourceAccessor: props.resourceAccessor as unknown as TurnReadToolFactoryInput["resourceAccessor"],
         formattingOptions: SAND_READ_FORMATTING_OPTIONS,
         promptVersion: "latest",
@@ -2088,7 +2095,8 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
           // preserves ordinary Read while making the unrecoverable PDF branch
           // fail closed in createReadTool.
         },
-      }),
+      };
+      },
       createBoxReadToolInputs: (turn, _props): TurnReadToolFactoryInput => {
         if (turn.remoteBoxResourceAccessor === undefined) {
           throw new TypeError("remote box resource accessor is not bound");
@@ -2132,7 +2140,8 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
         && method(remoteBox, "getTerminalsFolder") === undefined
         ? {}
         : {
-            createExternalAwaitToolInputs: (_turn, props): TurnAwaitToolFactoryInput => {
+            createExternalAwaitToolInputs: (_turn, props) => {
+              if (!resolveLocalExecAvailable()) return undefined;
               const externalAwait = props.externalAwait
                 ?? turnInputs?.externalAwait
                 ?? createTurnWebAndAwaitProjections(props).externalAwait;
@@ -2322,6 +2331,7 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
         remoteBoxHasDesktop: true,
         getConversationId: () => session.id,
         getRemoteBoxAvailable: () => method(remoteBox, "isAvailable")?.() !== false,
+        getLocalExecAvailable: resolveLocalExecAvailable,
         cloudAgentsDisabledByTeam: () => method(experiments, "isCloudAgentsDisabledByTeam")?.() ?? false,
         spotlightEnabled: () => method(experiments, "isSpotlightEnabled")?.() ?? false,
         isDynamicToolsEnabled: () => method(experiments, "isDynamicToolsEnabled")?.() ?? false,

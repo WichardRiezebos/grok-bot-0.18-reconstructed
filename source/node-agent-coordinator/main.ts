@@ -263,9 +263,15 @@ export async function composeCoordinator(dependencies: ComposeCoordinatorDepende
   );
 
   let exitSettled = false;
-  function settleProcess(exitCode: number): void {
+  function formatPortSettlement(port: "renderer-data" | "renderer-main" | "control", settlement: { readonly outcome: string; readonly detail?: string; readonly reason?: string }): string {
+    const detail = settlement.detail != null && settlement.detail.length > 0 ? ` (${settlement.detail})` : "";
+    const reason = settlement.reason != null && settlement.reason.length > 0 ? ` reason=${settlement.reason}` : "";
+    return `${port} ${settlement.outcome}${reason}${detail}`;
+  }
+  function settleProcess(exitCode: number, source: string): void {
     if (exitSettled) return;
     exitSettled = true;
+    process.stderr.write(`node-agent-coordinator: settleProcess exit=${exitCode} source=${source}\n`);
     gatewayClient.close();
     toolRelay.clear();
     localExecSupervisor.dispose();
@@ -277,23 +283,26 @@ export async function composeCoordinator(dependencies: ComposeCoordinatorDepende
     carrier.exitProcess(exitCode);
   }
   void server.settled.then((settlement) => {
-    if (settlement.outcome === "protocol-breach") { process.stderr.write(`node-agent-coordinator: protocol breach: ${settlement.detail}\n`); settleProcess(1); }
-    else settleProcess(0);
+    const label = formatPortSettlement("renderer-data", settlement);
+    if (settlement.outcome === "protocol-breach") { process.stderr.write(`node-agent-coordinator: protocol breach: ${label}\n`); settleProcess(1, label); }
+    else settleProcess(0, label);
   });
   void mainServer.settled.then((settlement) => {
-    if (settlement.outcome === "protocol-breach") { process.stderr.write(`node-agent-coordinator: main-data protocol breach: ${settlement.detail}\n`); settleProcess(1); }
-    else settleProcess(0);
+    const label = formatPortSettlement("renderer-main", settlement);
+    if (settlement.outcome === "protocol-breach") { process.stderr.write(`node-agent-coordinator: main-data protocol breach: ${label}\n`); settleProcess(1, label); }
+    else settleProcess(0, label);
   });
   void controlClient.settled.then((settlement) => {
-    if (settlement.outcome === "protocol-breach") { process.stderr.write(`node-agent-coordinator: control protocol breach: ${settlement.detail}\n`); settleProcess(1); }
-    else settleProcess(0);
+    const label = formatPortSettlement("control", settlement);
+    if (settlement.outcome === "protocol-breach") { process.stderr.write(`node-agent-coordinator: control protocol breach: ${label}\n`); settleProcess(1, label); }
+    else settleProcess(0, label);
   });
   const settleOnCrash = (kind: "uncaughtException" | "unhandledRejection", value: unknown) => {
     const error = value instanceof Error ? value : new Error(String(value));
     process.stderr.write(`node-agent-coordinator: ${kind}: ${error.stack ?? String(error)}\n`);
     void command(commands, "reportProcessCrash", { kind, errorName: error.name, errorMessage: error.message, errorStack: error.stack ?? null })
       .catch((reportError) => process.stderr.write(`node-agent-coordinator: crash report undelivered: ${String(reportError)}\n`));
-    settleProcess(1);
+    settleProcess(1, kind);
   };
   process.on("uncaughtException", (value) => settleOnCrash("uncaughtException", value));
   process.on("unhandledRejection", (value) => settleOnCrash("unhandledRejection", value));
@@ -303,7 +312,11 @@ export async function composeCoordinator(dependencies: ComposeCoordinatorDepende
     onMainDataFrame: (value) => mainServer.handleMessage(value),
     onClosed: () => { controlClient.handlePortClosed(); server.handlePortClosed(); mainServer.handlePortClosed(); }
   });
-  void localExecSupervisor.start();
+  if (process.env.SAND_DISABLE_LOCAL_EXEC_DAEMON !== "1") {
+    void localExecSupervisor.start();
+  } else {
+    process.stderr.write("node-agent-coordinator: local-exec daemon supervisor disabled (headless runtime)\n");
+  }
   gatewayClient.start();
 }
 

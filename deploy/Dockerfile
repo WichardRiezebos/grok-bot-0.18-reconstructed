@@ -29,6 +29,7 @@ COPY --from=build /src/.build/web-runtime/static /app/static
 COPY --from=build /src/.build/web-runtime/web-shim.js /app/web-shim.js
 COPY --from=build /src/.build/web-runtime/overlay.js /app/overlay.js
 COPY --from=build /src/.build/web-runtime/renderer /app/renderer
+COPY --from=build /src/scripts/debug-coordinator-fork.cjs /app/scripts/debug-coordinator-fork.cjs
 EXPOSE 8080
 CMD ["node", "/app/server-main.cjs"]
 

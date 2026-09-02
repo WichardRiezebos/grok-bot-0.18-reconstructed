@@ -741,7 +741,7 @@ export interface TurnToolsetHostFactoryProvider {
   readonly createExternalAwaitToolInputs?: (
     turn: TurnToolsetTurnInput,
     props: TurnToolsetBuildProps,
-  ) => TurnAwaitToolFactoryInput;
+  ) => TurnAwaitToolFactoryInput | undefined;
   readonly createBoxAwaitToolInputs?: (
     turn: TurnToolsetTurnInput,
     props: TurnToolsetBuildProps,
@@ -1159,6 +1159,7 @@ export function createTurnToolsetFactoriesForTurn(
   const externalRead = provider.createExternalReadToolInputs?.(turn, props);
   const boxShell = provider.createBoxShellToolInputs?.(turn, props);
   const boxRead = provider.createBoxReadToolInputs?.(turn, props);
+  const externalAwait = provider.createExternalAwaitToolInputs?.(turn, props);
   return createTurnToolsetFactories({
     ...(provider.createTaskToolInputs === undefined
       ? {}
@@ -1195,7 +1196,7 @@ export function createTurnToolsetFactoriesForTurn(
       : { webFetch: provider.createWebFetchToolInputs(turn, props) }),
     ...(provider.createExternalAwaitToolInputs === undefined
       ? {}
-      : { externalAwait: provider.createExternalAwaitToolInputs(turn, props) }),
+      : externalAwait === undefined ? {} : { externalAwait }),
     ...(provider.createBoxAwaitToolInputs === undefined
       ? {}
       : { boxAwait: provider.createBoxAwaitToolInputs(turn, props) }),
@@ -1258,6 +1259,7 @@ export interface TurnToolsetHost {
   readonly localToolPermission?: LocalToolPermission;
   getConversationId(): string;
   getRemoteBoxAvailable(): boolean;
+  getLocalExecAvailable?(): boolean;
   cloudAgentsDisabledByTeam(): boolean;
   spotlightEnabled(): boolean;
   isDynamicToolsEnabled?(): boolean;
@@ -1404,13 +1406,17 @@ export function buildTurnTools(
       action,
     );
 
+  const localExecAvailable = host.getLocalExecAvailable?.() !== false;
+
   if (!host.isBoxScopedSubagent) {
-    const externalShell = scoped(factories.externalShell?.(), "run-command");
-    if (externalShell !== undefined) tools.push(externalShell);
-    const externalRead = scoped(factories.externalRead?.(), "read-file");
-    if (externalRead !== undefined) tools.push(externalRead);
-    const externalAwait = scoped(factories.externalAwait?.(), "read-file");
-    if (externalAwait !== undefined) tools.push(externalAwait);
+    if (localExecAvailable) {
+      const externalShell = scoped(factories.externalShell?.(), "run-command");
+      if (externalShell !== undefined) tools.push(externalShell);
+      const externalRead = scoped(factories.externalRead?.(), "read-file");
+      if (externalRead !== undefined) tools.push(externalRead);
+      const externalAwait = scoped(factories.externalAwait?.(), "read-file");
+      if (externalAwait !== undefined) tools.push(externalAwait);
+    }
     const webSearch = factories.webSearch?.();
     if (webSearch !== undefined) tools.push(webSearch);
     const webFetch = factories.webFetch?.();
@@ -1438,8 +1444,10 @@ export function buildTurnTools(
     if (!host.isBoxScopedSubagent) {
       const boxAwait = scoped(factories.boxAwait?.());
       if (boxAwait !== undefined) tools.push(boxAwait);
-      const fileTransfer = factories.fileTransfer?.();
-      if (fileTransfer !== undefined) tools.push(...fileTransfer.map((tool) => withLocalToolScope(tool, agentId, host.localToolPermission)));
+      if (localExecAvailable) {
+        const fileTransfer = factories.fileTransfer?.();
+        if (fileTransfer !== undefined) tools.push(...fileTransfer.map((tool) => withLocalToolScope(tool, agentId, host.localToolPermission)));
+      }
     }
   }
 

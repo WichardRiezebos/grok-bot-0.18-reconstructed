@@ -392,3 +392,107 @@ test("ensureComposioWebhookAndTriggers subscribes and upserts Gmail", async () =
     await loaded.dispose();
   }
 });
+
+test("listComposioMarketplaceCatalog paginates toolkits and maps auth links", async () => {
+  const loaded = await loadModule();
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/api/v3.1/toolkits")) {
+      return jsonResponse({
+        items: [{
+          slug: "gmail",
+          name: "Gmail",
+          meta: {
+            description: "Read and send Gmail",
+            logo: "https://cdn.example/gmail.png",
+            app_url: "https://mail.google.com",
+            categories: ["Communication"],
+          },
+        }],
+        next_cursor: null,
+      });
+    }
+    if (url.includes("/api/v3.1/auth_configs")) {
+      return jsonResponse({ items: [{ id: "ac_gmail", status: "ENABLED" }] });
+    }
+    if (url.includes("/api/v3.1/connected_accounts/link") && init?.method === "POST") {
+      return jsonResponse({ redirect_url: "https://connect.composio.dev/link/ln_test" }, 201);
+    }
+    return jsonResponse({}, 404);
+  };
+  try {
+    loaded.module.resetComposioCachesForTests();
+    const catalog = await loaded.module.listComposioMarketplaceCatalog("ak_catalog");
+    assert.equal(catalog.length, 1);
+    assert.equal(catalog[0].id, "composio-toolkit:gmail");
+    assert.equal(catalog[0].displayName, "Gmail");
+    assert.equal(catalog[0].iconUrl, "https://cdn.example/gmail.png");
+    const effective = loaded.module.composioEffectivePlugins(catalog, new Set(["gmail"]));
+    assert.equal(effective[0].isEnabled, true);
+    const auth = await loaded.module.createComposioToolkitAuthLink("ak_catalog", "gmail", { callbackUrl: "http://127.0.0.1:8080/" });
+    assert.equal(auth.redirectUrl, "https://connect.composio.dev/link/ln_test");
+    assert.equal(auth.serverName, "Gmail");
+  } finally {
+    globalThis.fetch = previousFetch;
+    await loaded.dispose();
+  }
+});
+
+test("listComposioMarketplaceCatalog falls back without an API key", async () => {
+  const loaded = await loadModule();
+  try {
+    loaded.module.resetComposioCachesForTests();
+    const catalog = await loaded.module.listComposioMarketplaceCatalog(undefined);
+    assert.ok(catalog.length >= 8);
+    assert.ok(catalog.some((entry) => entry.id === "composio-toolkit:gmail"));
+  } finally {
+    await loaded.dispose();
+  }
+});
+
+test("Moneybird toolkit can be installed from the Composio marketplace catalog", async () => {
+  const loaded = await loadModule();
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/api/v3.1/toolkits")) {
+      return new Response(JSON.stringify({
+        items: [{
+          slug: "moneybird",
+          name: "Moneybird",
+          meta: { description: "Moneybird accounting", logo: "https://cdn.example/moneybird.png", categories: ["Finance"] },
+        }],
+        next_cursor: null,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.includes("/api/v3.1/auth_configs")) {
+      return new Response(JSON.stringify({ items: [{ id: "ac_moneybird", status: "ENABLED" }] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.includes("/api/v3.1/connected_accounts/link") && init?.method === "POST") {
+      return new Response(JSON.stringify({ redirect_url: "https://connect.composio.dev/link/ln_moneybird" }), { status: 201, headers: { "content-type": "application/json" } });
+    }
+    if (url.includes("/api/v3.1/tools")) {
+      return new Response(JSON.stringify({
+        items: [{ slug: "MONEYBIRD_LIST_INVOICES", description: "List invoices", toolkit: { slug: "moneybird" } }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.includes("connected_accounts")) {
+      return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    loaded.module.resetComposioCachesForTests();
+    const catalog = await loaded.module.listComposioMarketplaceCatalog("ak_moneybird_test");
+    const moneybird = catalog.find((entry) => entry.id === "composio-toolkit:moneybird");
+    assert.ok(moneybird);
+    assert.equal(moneybird.displayName, "Moneybird");
+    const install = await loaded.module.createComposioToolkitAuthLink("ak_moneybird_test", "moneybird");
+    assert.match(String(install.redirectUrl), /connect\.composio\.dev/);
+    assert.equal(install.serverName, "Moneybird");
+  } finally {
+    globalThis.fetch = previousFetch;
+    await loaded.dispose();
+  }
+});
