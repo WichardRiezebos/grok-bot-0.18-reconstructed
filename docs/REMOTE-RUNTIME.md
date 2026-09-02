@@ -107,10 +107,11 @@ tool timings, retries, deadline, stop/supersede/timeout classification) both to
 `routed-inference.log` in the coordinator data dir and to connected browsers as
 `routed-log` events.
 
-- In the web UI, press **Ctrl+Shift+D** (Cmd+Shift+D on a Mac) to toggle the
+-   In the web UI, press **Ctrl+Shift+D** (Cmd+Shift+D on a Mac) to toggle the
   live turns overlay: a colorized event feed that also marks gaps of silence
   between events, so a slow/stalled provider is visible immediately. Errors open
-  a small red marker button that jumps to the feed.
+  a small red marker button that jumps to the feed. Appending
+  `?turndebug=1` to the page URL opens it automatically.
   `window.__grokBotDebug.turnDebug.toggle()` does the same from DevTools.
 - From the coordinator host (or any mount of its data dir):
 

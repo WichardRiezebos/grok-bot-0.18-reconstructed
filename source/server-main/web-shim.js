@@ -921,7 +921,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       toggle();
     }, true);
     setInterval(() => { if (open) renderStatus(); }, 1000);
-    const mount = () => { if (document.body != null) { document.body.appendChild(root); } else { setTimeout(mount, 50); } };
+    const mount = () => { if (document.body != null) { document.body.appendChild(root); if (new URLSearchParams(location.search).has("turndebug")) toggle(); } else { setTimeout(mount, 50); } };
     mount();
     noteRoutedLine = noteRoutedLineImpl;
     window.__grokBotTurnDebug = {
