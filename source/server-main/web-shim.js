@@ -943,7 +943,8 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     overlay.style.cssText = "display:none;position:fixed;z-index:40;margin:0;border:0;border-radius:50%;background:#fff;color:#171914;width:30px;height:30px;padding:0;cursor:pointer";
     overlay.innerHTML = '<span aria-hidden="true" style="display:block;width:10px;height:10px;margin:10px auto;background:#171914;border-radius:2px"></span>';
     function stopNow() {
-      const agentId = lastAgentId || [...running][0];
+      const lastSent = lastAgentId;
+      const agentId = (lastSent.length > 0 && running.has(lastSent)) ? lastSent : ([...running][0] || lastSent);
       if (!agentId || coordinatorPort == null) return;
       coordinatorPort.postMessage({
         kind: "request",

@@ -27,9 +27,18 @@ import {
   turnNeedsRoutedComputer,
 } from "../shared/routed-computer-tools.js";
 import {
+  buildRoutedAgentIntroductionWakePrompt,
+  isRoutedAgentManagementTool,
   isRoutedSendToAgentTool,
+  listRoutedAgentManagementToolDefinitions,
   listRoutedSendToAgentToolDefinitions,
+  parseRoutedCreateAgentArgs,
   parseRoutedSendToAgentArgs,
+  parseRoutedUpdateAgentArgs,
+  routedAgentManagementFailedAck,
+  routedCreateAgentAck,
+  routedCreateAgentNeedsBriefAck,
+  routedNewAgentIntroductionClause,
   routedSendToAgentDeliveredAck,
   routedSendToAgentEmptyAck,
   routedSendToAgentGroupAck,
@@ -37,6 +46,10 @@ import {
   routedSendToAgentSelfAck,
   routedSendToAgentSharedRoomAck,
   routedTeammatesOf,
+  routedUpdateAgentAck,
+  routedUpdateAgentNeedsFieldsAck,
+  routedUpdateAgentSelfAck,
+  ROUTED_CREATE_AGENT_TOOL_NAME,
   type RoutedAgentImage,
 } from "../shared/routed-agent-tools.js";
 import { buildAgentInboundWakePrompt, renderAgentDirectorySystemPrompt } from "../host/agents/agent-messaging.js";
@@ -652,6 +665,7 @@ export function createCoordinatorInferenceRouter(options: {
       emitTranscript(agentId, "appended", { kind: "send-message", id, message: { type: "text", content }, timestampMs: now() });
       return { accepted: true, clientNonce, provider };
     }
+    const brandNewAgent = (withUser.agents[agentId] ?? []).length === 0;
     const messages = coalesceRoutedProviderMessages(withUser.agents[agentId] ?? []);
     if (hidden) messages.push({ role: "user", content: effectivePrompt });
     if (routedPromptTraceEnabled()) {
@@ -678,7 +692,7 @@ export function createCoordinatorInferenceRouter(options: {
     };
     const drive = turnNeedsRoutedComputer(effectivePrompt, chromeAlreadyOpen);
     const listRoutedTools = async (): Promise<unknown[]> => {
-      const native = [...listRoutedSendToAgentToolDefinitions()];
+      const native = [...listRoutedSendToAgentToolDefinitions(), ...listRoutedAgentManagementToolDefinitions()];
       const plugins = await dispatchRemote("listRoutedMcpTools", {});
       const pluginList = Array.isArray(plugins) ? plugins : [];
       if (!drive) return mergeRoutedToolLists(native, pluginList);
@@ -871,6 +885,58 @@ export function createCoordinatorInferenceRouter(options: {
         log(`tool-finish ${name} ${Date.now() - started}ms`);
         return routedComputerMcpResult({ text: ack });
       }
+      if (isRoutedAgentManagementTool(definition)) {
+        if (name === ROUTED_CREATE_AGENT_TOOL_NAME) {
+          const created = parseRoutedCreateAgentArgs(toolArgs);
+          if (created == null) {
+            log(`tool-finish ${name} ${Date.now() - started}ms needs-brief`);
+            return routedComputerMcpResult({ text: routedCreateAgentNeedsBriefAck(), isError: true });
+          }
+          let remote: unknown;
+          try {
+            remote = await dispatchRemote("createAgent", {
+              description: created.description,
+              name: created.name ?? "New bot",
+              origin: "agent",
+            });
+          } catch (error) {
+            log(`tool-error ${name} ${error instanceof Error ? error.message : String(error)}`);
+            return routedComputerMcpResult({ text: routedAgentManagementFailedAck(error instanceof Error ? error.message : String(error)), isError: true });
+          }
+          const agentRow = (asRecord(remote)?.agent ?? asRecord(remote)) as Record<string, unknown> | null;
+          const newId = typeof agentRow?.id === "string" ? agentRow.id : "";
+          const newName = typeof agentRow?.name === "string" && agentRow.name.trim().length > 0 ? agentRow.name.trim() : created.name ?? "New bot";
+          if (newId.length === 0) {
+            log(`tool-error ${name} gateway returned no agent id`);
+            return routedComputerMcpResult({ text: routedAgentManagementFailedAck("gateway returned no agent id"), isError: true });
+          }
+          enqueueTurn(newId, provider, { agentId: newId, prompt: buildRoutedAgentIntroductionWakePrompt(created.description), hidden: true, clientNonce: randomUUID() });
+          log(`create-agent ${newId} (${newName})`);
+          log(`tool-finish ${name} ${Date.now() - started}ms`);
+          return routedComputerMcpResult({ text: routedCreateAgentAck(newName, newId) });
+        }
+        const update = parseRoutedUpdateAgentArgs(toolArgs);
+        if (update == null) {
+          log(`tool-finish ${name} ${Date.now() - started}ms needs-fields`);
+          return routedComputerMcpResult({ text: routedUpdateAgentNeedsFieldsAck(), isError: true });
+        }
+        const targetId = update.self ? agentId : update.agentId ?? "";
+        const targetName = (await loadRoster()).find(agent => agent.id === targetId);
+        if (targetName == null) {
+          log(`tool-error ${name} missing ${targetId}`);
+          return routedComputerMcpResult({ text: routedAgentManagementFailedAck(`no agent with id ${targetId}`), isError: true });
+        }
+        try {
+          await dispatchRemote("updateAgent", { id: targetId, name: update.name, description: update.description });
+        } catch (error) {
+          log(`tool-error ${name} ${error instanceof Error ? error.message : String(error)}`);
+          return routedComputerMcpResult({ text: routedAgentManagementFailedAck(error instanceof Error ? error.message : String(error)), isError: true });
+        }
+        log(`update-agent ${targetId}${update.self ? " self" : ""}`);
+        log(`tool-finish ${name} ${Date.now() - started}ms`);
+        const displayName = typeof targetName.name === "string" && targetName.name.trim().length > 0 ? targetName.name.trim() : targetId;
+        return routedComputerMcpResult({ text: update.self ? routedUpdateAgentSelfAck(update.name) : routedUpdateAgentAck(displayName) });
+      }
       if (name === ROUTED_BOX_CHROME_TOOL_NAME && shouldSkipRoutedBoxChromeReload(routedBoxChromeUrl(toolArgs), chromeOpenByAgent.has(agentId))) {
         log("box-chrome-skip already-open");
         return routedComputerMcpResult({ text: routedBoxChromeAlreadyOpenMessage() });
@@ -940,7 +1006,7 @@ export function createCoordinatorInferenceRouter(options: {
       const listedTools = await listRoutedTools();
       const pluginTools = listedTools.some((tool) => {
         const row = asRecord(tool) ?? {};
-        return !isRoutedComputerTool(row) && !isRoutedSendToAgentTool(row);
+        return !isRoutedComputerTool(row) && !isRoutedSendToAgentTool(row) && !isRoutedAgentManagementTool(row);
       });
       if (!hidden && !pluginTools && !drive && promptLooksLikeComposioPluginUse(effectivePrompt)) {
         await persistThenEmit(assistantId, COMPOSIO_TOOLS_MISSING_MESSAGE, assistantTimestampMs);
@@ -948,11 +1014,19 @@ export function createCoordinatorInferenceRouter(options: {
         return { accepted: true, clientNonce, provider };
       }
       const roster = await loadRoster();
-      const systemExtra = await loadRoutedSystemExtra(
+      const systemExtraBase = await loadRoutedSystemExtra(
         dispatchRemote,
         agentId,
         renderAgentDirectorySystemPrompt(routedTeammatesOf(roster, agentId)),
       );
+      const selfProfile = roster.find(agent => agent.id === agentId);
+      const introductionClause = hidden ? null : routedNewAgentIntroductionClause(
+        typeof selfProfile?.name === "string" && selfProfile.name.trim().length > 0 ? selfProfile.name.trim() : undefined,
+        typeof selfProfile?.description === "string" ? selfProfile.description : undefined,
+      );
+      const systemExtra = brandNewAgent && introductionClause != null
+        ? `${systemExtraBase}${systemExtraBase.trim().length > 0 ? "\n\n" : ""}${introductionClause}`
+        : systemExtraBase;
       if (drive) {
         const url = extractRoutedBrowserUrl(effectivePrompt);
         if (url != null && shouldSkipRoutedBoxChromeReload(url, chromeOpenByAgent.has(agentId))) {
