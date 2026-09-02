@@ -184,6 +184,23 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
   const OWNER_FRAME_BUFFER_TTL_MS = 2_000;
   let coordinatorRestartAttempts = 0;
   let ownerFrameBuffer: Array<{ at: number; frame: string }> = [];
+  const COORDINATOR_FRAME_BACKLOG_LIMIT = 100;
+  const COORDINATOR_FRAME_BACKLOG_TTL_MS = 8_000;
+  let coordinatorFrameBacklog: Array<{ at: number; frame: unknown }> = [];
+  const flushCoordinatorFrameBacklog = () => {
+    const session = coordinator;
+    const now2 = Date.now();
+    const pending = coordinatorFrameBacklog;
+    coordinatorFrameBacklog = [];
+    if (session == null || pending.length === 0) return;
+    setTimeout(() => {
+      for (const entry of pending) {
+        if (closing || coordinator !== session) return;
+        if (now2 - entry.at > COORDINATOR_FRAME_BACKLOG_TTL_MS) continue;
+        try { coordinator.postData(entry.frame); } catch {}
+      }
+    }, 300).unref?.();
+  };
   const forwardCoordinatorFrame = (kind: "coordinator" | "coordinator-main", frame: unknown) => {
     const data = JSON.stringify({ kind, frame });
     const socket = ownerSocket;
@@ -225,6 +242,7 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
       }
       const session = (options.fork ?? forkCoordinator)(config, debug);
       coordinator = session;
+      flushCoordinatorFrameBacklog();
       const stableTimer = setTimeout(() => { coordinatorRestartAttempts = 0; }, COORDINATOR_STABLE_MS);
       stableTimer.unref?.();
       session.onData((frame) => {
@@ -504,7 +522,16 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
         }
         if (message.kind === "coordinator") {
           claimOwner(socket);
-          try { coordinator?.postData(message.frame); }
+          if (coordinator == null) {
+            if (coordinatorFrameBacklog.length < COORDINATOR_FRAME_BACKLOG_LIMIT) coordinatorFrameBacklog.push({ at: Date.now(), frame: message.frame });
+            noteLog(debug, "control", `coordinator frame buffered (no session): ${JSON.stringify(message.frame).slice(0, 120)}`);
+            return;
+          }
+          const frameKind = (message.frame as { kind?: string; method?: string } | null)?.kind;
+          if (frameKind === "request") {
+            noteLog(debug, "control", `coordinator request ${String((message.frame as { method?: string }).method)}`);
+          }
+          try { coordinator.postData(message.frame); }
           catch (error) { noteLog(debug, "control", `coordinator post failed: ${String(error)}`); }
           return;
         }

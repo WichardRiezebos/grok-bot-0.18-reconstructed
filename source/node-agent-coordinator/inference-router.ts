@@ -358,6 +358,12 @@ function routedPromptTraceEnabled(): boolean {
   return (process.env.GROK_BOT_ROUTED_TRACE ?? "").toLowerCase().includes("prompt");
 }
 
+function routedCleanAgentMessage(message: string): string {
+  return message.replace(/<\|\s*(?:eos|im_end|end|start)\s*\|>|<\s*\/?\s*eos\s*>/giu, "").trim();
+}
+
+const ROUTED_BOX_CALL_TIMEOUT_MS = 30_000;
+
 export function createCoordinatorInferenceRouter(options: {
   readonly dataDir: string;
   readonly postEvent: (family: string, payload: unknown) => void;
@@ -370,6 +376,26 @@ export function createCoordinatorInferenceRouter(options: {
 }) {
   const settings = new SandSettingsStore(join(options.dataDir, "settings.json"));
   const storePath = join(options.dataDir, "inference-router-transcript.json");
+  const dispatchRemote = async (method: string, args: unknown): Promise<unknown> => {
+    const startedAt = Date.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        options.dispatchRemote(method, args),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`The box did not answer ${method} within 30 seconds (box control-plane is stuck; restart the box).`)), ROUTED_BOX_CALL_TIMEOUT_MS);
+          timer.unref?.();
+        }),
+      ]);
+    } catch (error) {
+      if (Date.now() - startedAt >= ROUTED_BOX_CALL_TIMEOUT_MS - 1_500) {
+        routedLogLine(options.dataDir, "openrouter", "*", `box-unresponsive ${method}`, options.postEvent);
+      }
+      throw error;
+    } finally {
+      if (timer != null) clearTimeout(timer);
+    }
+  };
   const now = options.now ?? Date.now;
   const queues = new Map<string, Promise<unknown>>();
   const streamingByAgent = new Map<string, { readonly id: string; readonly content: string; readonly timestampMs: number }>();
@@ -462,7 +488,7 @@ export function createCoordinatorInferenceRouter(options: {
   const idleTurnActivity = (): TurnActivity => ({ stop() {}, reveal() {} });
   const beginActivity = async (agentId: string): Promise<TurnActivity> => {
     try {
-      let remote = await options.dispatchRemote("listAgents", {});
+      let remote = await dispatchRemote("listAgents", {});
       if (!Array.isArray(remote)) return idleTurnActivity();
       let live = true;
       const surface: { composing: boolean; activity: RoutedActivity } = { composing: true, activity: { kind: "thinking" } };
@@ -485,7 +511,7 @@ export function createCoordinatorInferenceRouter(options: {
       };
       publishRunning();
       const pulse = setInterval(() => {
-        void options.dispatchRemote("listAgents", {}).then(next => {
+        void dispatchRemote("listAgents", {}).then(next => {
           if (Array.isArray(next)) remote = next;
           publishRunning();
         }).catch(() => publishRunning());
@@ -545,12 +571,12 @@ export function createCoordinatorInferenceRouter(options: {
     const timestampMs = now();
     const attachmentMaterial = attachmentPaths.length === 0
       ? { promptSuffix: "", images: [] as readonly RoutedAgentImage[], videoAttachments: [] as readonly { readonly path: string; readonly name: string }[] }
-      : await materializeRoutedSendPromptAttachments(options.dispatchRemote, agentId, attachmentPaths, attachmentNames);
+      : await materializeRoutedSendPromptAttachments(dispatchRemote, agentId, attachmentPaths, attachmentNames);
     const videoReviewSuffix = attachmentMaterial.videoAttachments.length === 0
       ? ""
-      : await reviewRoutedVideoAttachments(options.dispatchRemote, agentId, attachmentMaterial.videoAttachments);
+      : await reviewRoutedVideoAttachments(dispatchRemote, agentId, attachmentMaterial.videoAttachments);
     const effectivePrompt = `${prompt}${attachmentMaterial.promptSuffix}${videoReviewSuffix}`;
-    const [remote, beforeUser] = await Promise.all([options.dispatchRemote("getAgentTranscriptTail", { id: agentId }), load()]);
+    const [remote, beforeUser] = await Promise.all([dispatchRemote("getAgentTranscriptTail", { id: agentId }), load()]);
     const remoteEntries = Array.isArray(asRecord(remote)?.entries) ? asRecord(remote)!.entries as unknown[] : [];
     const remoteTurn = remoteEntries.reduce<number>((highest, raw) => {
       const id = asRecord(raw)?.id;
@@ -601,6 +627,7 @@ export function createCoordinatorInferenceRouter(options: {
     }
     const userAbort = new AbortController();
     turnControllers.set(agentId, userAbort);
+    routedLogLine(options.dataDir, provider, agentId, `execute-enter ${hidden ? "hidden" : "visible"}`, options.postEvent);
     const turnActivity = await beginActivity(agentId);
     turnActivities.set(agentId, turnActivity);
     if (userAbort.signal.aborted) turnActivity.stop();
@@ -652,10 +679,10 @@ export function createCoordinatorInferenceRouter(options: {
     const drive = turnNeedsRoutedComputer(effectivePrompt, chromeAlreadyOpen);
     const listRoutedTools = async (): Promise<unknown[]> => {
       const native = [...listRoutedSendToAgentToolDefinitions()];
-      const plugins = await options.dispatchRemote("listRoutedMcpTools", {});
+      const plugins = await dispatchRemote("listRoutedMcpTools", {});
       const pluginList = Array.isArray(plugins) ? plugins : [];
       if (!drive) return mergeRoutedToolLists(native, pluginList);
-      const computer = await options.dispatchRemote("listRoutedComputerTools", {});
+      const computer = await dispatchRemote("listRoutedComputerTools", {});
       return mergeRoutedToolLists(native, mergeRoutedToolLists(Array.isArray(computer) ? computer : [], pluginList));
     };
     let visibleText = "";
@@ -736,7 +763,7 @@ export function createCoordinatorInferenceRouter(options: {
     let screenshotStreak = 0;
     let boxHandedOff = false;
     const loadRoster = async () => {
-      const remote = await options.dispatchRemote("listAgents", {});
+      const remote = await dispatchRemote("listAgents", {});
       if (!Array.isArray(remote)) return [];
       const roster: Array<{ id: string; name?: unknown; description?: unknown; isGroup?: unknown; remoteRoom?: unknown }> = [];
       for (const row of remote) {
@@ -754,6 +781,12 @@ export function createCoordinatorInferenceRouter(options: {
     ): Promise<string> => {
       if (message.length === 0) return routedSendToAgentEmptyAck();
       if (targetId === agentId) return routedSendToAgentSelfAck();
+      const cleanedMessage = routedCleanAgentMessage(message);
+      const routedMessage = cleanedMessage.length > 0 ? cleanedMessage : routedCleanAgentMessage(visibleText);
+      if (routedMessage.length === 0) {
+        log(`send-to-agent-dropped ${targetId} degenerate-model-output`);
+        return routedSendToAgentEmptyAck();
+      }
       const roster = await loadRoster();
       const target = roster.find(agent => agent.id === targetId);
       if (target == null) return routedSendToAgentMissingAck(targetId);
@@ -765,12 +798,13 @@ export function createCoordinatorInferenceRouter(options: {
       const sentAt = now();
       const outboundId = `peer-out-${randomUUID()}`;
       const inboundId = `peer-in-${randomUUID()}`;
+      if (cleanedMessage.length === 0) log(`send-to-agent-fallback  narration used instead of degenerate tool message`);
       const toAgent = { id: targetId, name: targetName, kind: "agent" as const };
       const fromAgent = { id: agentId, name: senderName };
       await append(agentId, [{
         provider,
         role: "assistant",
-        content: message,
+        content: routedMessage,
         id: outboundId,
         timestampMs: sentAt,
         toAgent,
@@ -787,7 +821,7 @@ export function createCoordinatorInferenceRouter(options: {
       await append(targetId, [{
         provider,
         role: "user",
-        content: message,
+        content: routedMessage,
         id: inboundId,
         timestampMs: sentAt,
         fromAgent,
@@ -797,7 +831,7 @@ export function createCoordinatorInferenceRouter(options: {
         kind: "message",
         id: inboundId,
         role: "user",
-        content: message,
+        content: routedMessage,
         fromAgent,
         isStreaming: false,
         timestampMs: sentAt,
@@ -805,7 +839,7 @@ export function createCoordinatorInferenceRouter(options: {
       });
       const wake = buildAgentInboundWakePrompt({
         from: { id: agentId, name: senderName },
-        text: message,
+        text: routedMessage,
         ...(images.length === 0 ? {} : { images }),
         ...(priority ? { priority: true } : {}),
       });
@@ -855,7 +889,7 @@ export function createCoordinatorInferenceRouter(options: {
         screenshotStreak = 0;
       }
       try {
-        const result = await options.dispatchRemote(
+        const result = await dispatchRemote(
           isRoutedComputerTool(definition) ? "executeRoutedComputerTool" : "executeRoutedMcpTool",
           {
             providerIdentifier: definition.providerIdentifier,
@@ -915,7 +949,7 @@ export function createCoordinatorInferenceRouter(options: {
       }
       const roster = await loadRoster();
       const systemExtra = await loadRoutedSystemExtra(
-        options.dispatchRemote,
+        dispatchRemote,
         agentId,
         renderAgentDirectorySystemPrompt(routedTeammatesOf(roster, agentId)),
       );
@@ -927,7 +961,7 @@ export function createCoordinatorInferenceRouter(options: {
           log(`box-chrome-auto ${url}`);
           turnActivity.reveal({ composing: false, activity: { kind: "tool", tool: ROUTED_BOX_CHROME_TOOL_NAME, callId: `box-chrome-auto-t${turn}` } });
           try {
-            await options.dispatchRemote("executeRoutedComputerTool", {
+            await dispatchRemote("executeRoutedComputerTool", {
               name: ROUTED_BOX_CHROME_TOOL_NAME,
               toolName: ROUTED_BOX_CHROME_TOOL_NAME,
               args: { url },
@@ -1090,16 +1124,16 @@ export function createCoordinatorInferenceRouter(options: {
         }
       }
       if (provider !== "cursor" && method === "listAgents") {
-        const remote = await options.dispatchRemote(method, args);
+        const remote = await dispatchRemote(method, args);
         const local = await load();
         return { handled: true, value: stampLiveTurnState(overlayRoutedRosterLastEntry(remote, local)) };
       }
       if (provider !== "cursor" && ["getAgentTranscriptTail", "openAgentTail", "getAgentTranscriptWindow"].includes(method)) {
         const record = asRecord(args) ?? {};
         const agentId = typeof record.id === "string" ? record.id : "";
-        const remote = await options.dispatchRemote(method, args);
+        const remote = await dispatchRemote(method, args);
         if (agentId.length > 0) {
-          const roster = await options.dispatchRemote("listAgents", {});
+          const roster = await dispatchRemote("listAgents", {});
           if (Array.isArray(roster)) {
             const target = roster.find((row) => {
               const entry = asRecord(row);
@@ -1136,7 +1170,7 @@ export function createCoordinatorInferenceRouter(options: {
       }
       if (method === "deleteAgent" || method === "deleteAgents") {
         const ids = deletedAgentIdsFromArgs(method, args);
-        const remote = await options.dispatchRemote(method, args);
+        const remote = await dispatchRemote(method, args);
         await dropAgents(ids);
         return { handled: true, value: remote };
       }
@@ -1144,7 +1178,7 @@ export function createCoordinatorInferenceRouter(options: {
       const record = asRecord(args) ?? {};
       const agentId = typeof record.agentId === "string" ? record.agentId : "";
       if (agentId.length > 0) {
-        const remote = await options.dispatchRemote("listAgents", {});
+        const remote = await dispatchRemote("listAgents", {});
         if (Array.isArray(remote)) {
           const target = remote.find((row) => {
             const entry = asRecord(row);
