@@ -97,13 +97,13 @@ test("bundled CJS entrypoint still matches node server-main.cjs", async () => {
   assert.match(source, /server-main\.cjs/);
 });
 
-test("Dokploy compose uses named volumes, env interpolation, and no host ports", async () => {
+test("Dokploy compose uses named volumes, env_file secrets, and no host ports", async () => {
   const base = await readFile(path.join(repoRoot, "deploy", "docker-compose.yml"), "utf8");
   const local = await readFile(path.join(repoRoot, "deploy", "docker-compose.local.yml"), "utf8");
-  assert.match(base, /\$\{OPENROUTER_API_KEY\}/);
-  assert.match(base, /\$\{SAND_GATEWAY_TOKEN\}/);
+  assert.match(base, /env_file:\n\s+- deploy\/\.env/);
+  assert.doesNotMatch(base, /\$\{OPENROUTER_API_KEY\}/);
   assert.doesNotMatch(base, /RUNTIME_ACCESS_TOKEN/);
-  assert.match(base, /\$\{PUBLIC_URL\}/);
+  assert.match(local, /\$\{PUBLIC_URL:-http:\/\/127\.0\.0\.1:8080\}/);
   assert.match(base, /box-workspace:/);
   assert.match(base, /box-data:/);
   assert.match(base, /control-data:/);
@@ -1276,6 +1276,63 @@ test("POST /webhooks/composio verifies HMAC and forwards fireComposioTrigger", a
     if (previousKey == null) delete process.env.COMPOSIO_API_KEY;
     else process.env.COMPOSIO_API_KEY = previousKey;
     await server.close();
+    await loaded.dispose();
+    await configLoaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("web attachment handlers stage, commit via gateway, and read bytes", async () => {
+  const loaded = await loadModule("source/server-main/web-attachments.ts");
+  const configLoaded = await loadModule("source/server-main/config.ts");
+  const dataDir = await mkdtemp(path.join(tmpdir(), "grok-web-attachments-"));
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/api/uploadAttachment")) {
+      return new Response(JSON.stringify({ path: "/attachments/note.txt" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.endsWith("/api/readAttachmentChunk")) {
+      return new Response(JSON.stringify({
+        totalSize: 5,
+        bytesBase64: Buffer.from("hello").toString("base64"),
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    const config = configLoaded.module.resolveRuntimeConfig({
+      GROK_BOT_DATA_DIR: dataDir,
+      GROK_BOT_PUBLIC_URL: "http://127.0.0.1:8080",
+      SAND_HOST_GATEWAY_URL: "http://box:1340",
+      SAND_GATEWAY_TOKEN: "gate-9999",
+    });
+    const handlers = loaded.module.createWebAttachmentHandlers(config);
+    const staged = await handlers.stageAttachmentBytes({
+      filename: "note.txt",
+      bytes: [...Buffer.from("hello")],
+    });
+    assert.equal(staged.ok, true);
+    assert.match(String(staged.path), /attachment-staging/);
+    const committed = await handlers.commitStagedAttachments({
+      paths: [staged.path],
+      filenames: ["note.txt"],
+    });
+    assert.deepEqual(committed, ["/attachments/note.txt"]);
+    const bytes = await handlers.readAttachmentBytes({ path: "/attachments/note.txt", maxBytes: 100 });
+    assert.deepEqual(bytes, { kind: "bytes", bytes: [...Buffer.from("hello")] });
+    assert.equal(
+      await handlers.commitStagedAttachments({ paths: ["/etc/passwd"], filenames: ["note.txt"] }),
+      null,
+    );
+  } finally {
+    globalThis.fetch = previousFetch;
     await loaded.dispose();
     await configLoaded.dispose();
     await rm(dataDir, { recursive: true, force: true });

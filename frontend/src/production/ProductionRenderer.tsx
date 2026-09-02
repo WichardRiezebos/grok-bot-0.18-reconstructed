@@ -138,8 +138,13 @@ import type { TranscriptMessageReactionSlotProps } from "../recovered/features/c
 import { LocalToolPermissionDock, type LocalToolPermissionRequest } from "../recovered/features/permissions/local-tool/view";
 import {
   parseDesktopIntent,
+  applyRendererAgentTranscriptPreview,
+  mergeRendererAgentSidebarPreview,
+  mergeRendererAgentsRoster,
   projectRendererAgent,
+  projectRendererAgentFromRosterEvent,
   projectRendererAgents,
+  compareRendererAgentsForSidebar,
   projectTranscriptEntry,
   projectTranscriptFeedEntries,
   projectTranscriptPageResult,
@@ -2164,7 +2169,7 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
       setPrivacyBlocked(false);
       setRosterLoadFailed(false);
       setRosterFailure(null);
-      setAgents(projected);
+      setAgents((current) => mergeRendererAgentsRoster(current, projected));
       completeRosterAgentIdsRef.current = projected.map((agent) => agent.id);
       selectionStore.reconcile({ agentIds: projected.map((agent) => agent.id), isRosterComplete: true });
       setHasLoadedAgents(true);
@@ -2243,6 +2248,11 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
         || accountRef.current?.kind !== "logged-in") return;
       const projectedPage = projectTranscriptPageResult(page, agentName, agentId);
       setEntriesByAgent((current) => ({ ...current, [agentId]: projectedPage.entries }));
+      setAgents((current) => current.map((agent) => agent.id === agentId
+        ? applyRendererAgentTranscriptPreview(agent, typeof page === "object" && page != null && Array.isArray((page as { entries?: unknown }).entries)
+          ? (page as { entries: unknown[] }).entries
+          : [])
+        : agent));
       transcriptPaginationController.installInitialPage(projectedPage);
       selectionStore.settle(agentId);
       selectionStore.reconcile({ agentIds: completeRosterAgentIdsRef.current, isRosterComplete: hasLoadedAgentsRef.current });
@@ -2324,15 +2334,22 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
       setPrivacyBlocked(false);
       setRosterLoadFailed(false);
       setRosterFailure(null);
-      setAgents(projected);
+      setAgents((current) => mergeRendererAgentsRoster(current, projected));
       completeRosterAgentIdsRef.current = projected.map((agent) => agent.id);
       selectionStore.reconcile({ agentIds: projected.map((agent) => agent.id), isRosterComplete: true });
       setHasLoadedAgents(true);
     });
     const stopUpsert = client.subscribe("agent-upserted", (value) => {
       if (!isCurrent() || accountRef.current?.kind !== "logged-in") return;
-      const projected = projectRendererAgent(value);
-      if (projected != null) setAgents((current) => [projected, ...current.filter((agent) => agent.id !== projected.id)].sort((a, b) => b.updatedAt - a.updatedAt));
+      const projected = projectRendererAgentFromRosterEvent(value);
+      if (projected == null) return;
+      setAgents((current) => {
+        const existing = current.find((agent) => agent.id === projected.id);
+        let merged = existing == null ? projected : mergeRendererAgentSidebarPreview(existing, projected);
+        const rawEntries = entriesByAgentRef.current[projected.id];
+        if (rawEntries != null) merged = applyRendererAgentTranscriptPreview(merged, rawEntries);
+        return [...current.filter((agent) => agent.id !== merged.id), merged].sort(compareRendererAgentsForSidebar);
+      });
     });
     const stopTranscript = reactionRoot?.feed.observeEntriesFeed({
       onBaseline: ({ agentId: ownerId, entries: rawEntries }) => {

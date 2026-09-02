@@ -14,7 +14,7 @@ import {
   type SidebarSectionMovePosition
 } from "./sidebar-sections-state";
 import { projectSidebarAgentStatus, SidebarAgentActivity, SidebarAgentStatusCorner, SidebarAgentStatusView, SidebarStatusDot, type SidebarStatusDotStatus } from "./sidebar-agent-status";
-import { AgentPreviewCompositor } from "./sidebar-agent-preview-content";
+import { AgentPreviewCompositor, previewTextFromLastEntry } from "./sidebar-agent-preview-content";
 import type { AgentPreviewAvatarProjection } from "./sidebar-agent-preview-header";
 import { SidebarSectionHeader } from "./sidebar-section-header";
 import { AgentAvatar } from "./agent-avatar";
@@ -207,11 +207,13 @@ export function AgentSidebarItem({ agent, active, now, isCollapsed = false, isSe
   const status = projectSidebarAgentStatus({ hasUnread: agent.hasUnread, isRunning: agent.isRunning, layout: agent.isPinned === true ? "pinned" : isCollapsed ? "collapsed" : "expanded", waitingReason: agent.waitingReason });
   const rowLayout = agent.isPinned === true ? "pinned" : isCollapsed ? "collapsed" : "expanded";
   const canMoveToSection = !agent.isPinned && sourceSectionId != null && onMoveAgentToSection != null;
-  const detail = agent.draftPrompt?.trim()
-      ? <>Draft: {agent.draftPrompt}</>
-      : agent.waitingReason
+  const draftPreview = active ? "" : (agent.draftPrompt?.trim() ?? "");
+  const previewText = previewTextFromLastEntry(agent.lastEntry ?? null) || agent.lastMessage || null;
+  const detail = agent.waitingReason
         ? <>Waiting for you: {agent.waitingReason}</>
-      : agent.lastMessage ?? null;
+      : draftPreview.length > 0
+        ? <>Draft: {draftPreview}</>
+      : previewText;
   const row = <button
     aria-label={agent.name}
     aria-current={active ? "page" : undefined}
@@ -273,8 +275,8 @@ export function AgentSidebarItem({ agent, active, now, isCollapsed = false, isSe
       <span className="sand-agent-item__body">
         <strong className="sand-agent-item__name">{isRenaming ? <AgentNameEditor initialValue={agent.name} onCommit={(name) => onRename?.(agent.id, name)} onExit={() => setIsRenaming(false)} /> : agent.name}</strong>
         {status.isWorking || activity === "Working"
-          ? <SidebarAgentActivity preview={agent.lastMessage ?? null} previewTitle={agent.lastMessage ?? undefined} />
-          : detail == null ? null : <small className="sand-agent-item__preview">{detail}</small>}
+          ? <SidebarAgentActivity preview={previewText} previewTitle={previewText ?? undefined} />
+          : previewText == null || previewText.length === 0 ? null : <small className="sand-agent-item__preview">{detail}</small>}
       </span>
       <span className="sand-agent-item__trailing">
         <time className="sand-agent-item__time" dateTime={new Date(agent.updatedAt).toISOString()}>{relativeTime(agent.updatedAt, now)}</time>

@@ -115,11 +115,12 @@ export async function composeCoordinator(dependencies: ComposeCoordinatorDepende
       toolRelay.accept(event.payload);
       return;
     }
-    const agentsPayload = event.channel === "agents" ? overlayAgentsEvent(event.payload) : event.payload;
-    if (event.channel === "agents") controlClient.postEvent("agents-event", { kind: "agents", event: agentsPayload });
-    if (event.channel === "agent-upserted") controlClient.postEvent("agents-event", { kind: "agent-upserted", event: event.payload });
+    const shouldOverlayRoster = event.channel === "agents" || event.channel === "agent-upserted";
+    const rosterPayload = shouldOverlayRoster ? overlayAgentsEvent(event.payload) : event.payload;
+    if (event.channel === "agents") controlClient.postEvent("agents-event", { kind: "agents", event: rosterPayload });
+    if (event.channel === "agent-upserted") controlClient.postEvent("agents-event", { kind: "agent-upserted", event: rosterPayload });
     const family = coordinatorEventFamilyForSseChannel(event.channel);
-    if (family != null) server.postEvent(family, family === "agents" ? agentsPayload : event.payload);
+    if (family != null) server.postEvent(family, shouldOverlayRoster ? rosterPayload : event.payload);
   }
 
   async function seedAgentsRosterToMain(): Promise<void> {
@@ -221,7 +222,10 @@ export async function composeCoordinator(dependencies: ComposeCoordinatorDepende
   const gatewayDispatch = createGatewayRequestDispatch(gatewayClient);
   const inferenceRouter = createCoordinatorInferenceRouter({
     dataDir: bootstrap.processConfig.dataDir,
-    postEvent: (family, payload) => server.postEvent(family, payload),
+    postEvent: (family, payload) => {
+      const rosterPayload = family === "agents" || family === "agent-upserted" ? overlayAgentsEvent(payload) : payload;
+      server.postEvent(family, rosterPayload);
+    },
     dispatchRemote: (method, args) => method === "listRoutedMcpTools"
       ? command(commands, "listRoutedMcpTools", args)
       : method === "executeRoutedMcpTool"

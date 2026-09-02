@@ -83,3 +83,95 @@ test("projectRendererAgents unwraps the coordinator { agents } payload", async (
     await loaded.dispose();
   }
 });
+
+test("projectRendererAgents keeps a stable sidebar order when updatedAt ties", async () => {
+  const loaded = await loadModule("frontend/src/production/model.ts");
+  try {
+    const first = loaded.module.projectRendererAgents([
+      { id: "b-bot", name: "Bravo", updatedAt: 1_000 },
+      { id: "a-bot", name: "Alpha", updatedAt: 1_000 },
+    ]);
+    const second = loaded.module.projectRendererAgents([
+      { id: "a-bot", name: "Alpha", updatedAt: 1_000, hasUnread: false },
+      { id: "b-bot", name: "Bravo", updatedAt: 1_000, hasUnread: true },
+    ]);
+    assert.deepEqual(first.map((agent) => agent.id), second.map((agent) => agent.id));
+    assert.deepEqual(first.map((agent) => agent.id), ["a-bot", "b-bot"]);
+  } finally {
+    await loaded.dispose();
+  }
+});
+
+test("projectRendererAgentFromRosterEvent unwraps agent-upserted payloads", async () => {
+  const loaded = await loadModule("frontend/src/production/model.ts");
+  try {
+    const projected = loaded.module.projectRendererAgentFromRosterEvent({
+      activeAgentId: "agent-1",
+      agent: { id: "agent-1", name: "Grok", updatedAt: 1_000, lastMessagePreview: "hello" },
+      ordered: 1,
+    });
+    assert.equal(projected?.id, "agent-1");
+    assert.equal(projected?.lastMessage, "hello");
+  } finally {
+    await loaded.dispose();
+  }
+});
+
+test("mergeRendererAgentSidebarPreview keeps preview when upsert omits it", async () => {
+  const loaded = await loadModule("frontend/src/production/model.ts");
+  try {
+    const existing = loaded.module.projectRendererAgent({
+      id: "agent-1",
+      name: "Grok",
+      updatedAt: 1_000,
+      lastMessagePreview: "hello",
+    });
+    const incoming = loaded.module.projectRendererAgent({
+      id: "agent-1",
+      name: "Grok",
+      updatedAt: 2_000,
+      lastMessagePreview: null,
+      lastEntry: { kind: "text", text: "" },
+    });
+    const merged = loaded.module.mergeRendererAgentSidebarPreview(existing, incoming);
+    assert.equal(merged.updatedAt, 2_000);
+    assert.equal(merged.lastMessage, "hello");
+  } finally {
+    await loaded.dispose();
+  }
+});
+
+test("mergeRendererAgentsRoster preserves previews across full roster refresh", async () => {
+  const loaded = await loadModule("frontend/src/production/model.ts");
+  try {
+    const existing = [loaded.module.projectRendererAgent({
+      id: "agent-1",
+      name: "Grok",
+      updatedAt: 1_000,
+      lastMessagePreview: "hello",
+    })];
+    const incoming = [loaded.module.projectRendererAgent({
+      id: "agent-1",
+      name: "Grok",
+      updatedAt: 2_000,
+      lastMessagePreview: null,
+      lastEntry: null,
+    })];
+    const merged = loaded.module.mergeRendererAgentsRoster(existing, incoming);
+    assert.equal(merged[0]?.lastMessage, "hello");
+  } finally {
+    await loaded.dispose();
+  }
+});
+
+test("rendererAgentPreviewPatchFromRawTranscript reads assistant send-message tails", async () => {
+  const loaded = await loadModule("frontend/src/production/model.ts");
+  try {
+    const patch = loaded.module.rendererAgentPreviewPatchFromRawTranscript([
+      { kind: "send-message", id: "m1", message: { type: "text", content: "Still here" } },
+    ]);
+    assert.equal(patch?.lastMessage, "Still here");
+  } finally {
+    await loaded.dispose();
+  }
+});

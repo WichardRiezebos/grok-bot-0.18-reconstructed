@@ -243,7 +243,7 @@ test("Router settings use the trusted backend and display recorded inference usa
   assert.match(coordinator, /routedSettledAssistantContent/);
   assert.match(coordinator, /screenshot-loop/);
   assert.match(coordinator, /listRoutedComputerTools/);
-  assert.match(coordinator, /turnNeedsRoutedComputer\(prompt, chromeAlreadyOpen\)/);
+  assert.match(coordinator, /turnNeedsRoutedComputer\(effectivePrompt, chromeAlreadyOpen\)/);
   assert.match(coordinator, /const slot = drive \? "drive" as const : "think" as const/);
   assert.match(coordinator, /executeRoutedComputerTool/);
   assert.match(coordinator, /isRoutedComputerTool\(definition\) \? "executeRoutedComputerTool" : "executeRoutedMcpTool"/);

@@ -118,6 +118,65 @@ function parseStoredImages(value: unknown): readonly RoutedAgentImage[] | undefi
   return images;
 }
 
+export function parseRoutedSendPromptAttachments(args: Record<string, unknown>): { paths: string[]; names: string[] } {
+  if (Array.isArray(args.attachmentPaths)) {
+    const paths = args.attachmentPaths.filter((path): path is string => typeof path === "string" && path.length > 0);
+    const rawNames = Array.isArray(args.attachmentNames) ? args.attachmentNames : [];
+    const names = paths.map((path, index) => {
+      const name = rawNames[index];
+      return typeof name === "string" && name.length > 0 ? name : path.split("/").pop() ?? `attachment-${index + 1}`;
+    });
+    return { paths, names };
+  }
+  if (!Array.isArray(args.attachments)) return { paths: [], names: [] };
+  const paths: string[] = [];
+  const names: string[] = [];
+  for (const raw of args.attachments) {
+    const row = asRecord(raw);
+    if (row == null) continue;
+    const path = typeof row.path === "string" ? row.path : "";
+    if (path.length === 0) continue;
+    const name = typeof row.filename === "string" && row.filename.length > 0
+      ? row.filename
+      : typeof row.name === "string" && row.name.length > 0
+        ? row.name
+        : path.split("/").pop() ?? `attachment-${paths.length + 1}`;
+    paths.push(path);
+    names.push(name);
+  }
+  return { paths, names };
+}
+
+async function materializeRoutedSendPromptAttachments(
+  dispatchRemote: (method: string, args: unknown) => Promise<unknown>,
+  agentId: string,
+  paths: readonly string[],
+  names: readonly string[],
+): Promise<{ promptSuffix: string; images: readonly RoutedAgentImage[] }> {
+  const blocks: string[] = [];
+  const images: RoutedAgentImage[] = [];
+  for (let index = 0; index < paths.length; index += 1) {
+    const path = paths[index]!;
+    const name = names[index] ?? path.split("/").pop() ?? `attachment-${index + 1}`;
+    const textResult = await dispatchRemote("readAttachmentText", { path, agentId });
+    const textRecord = asRecord(textResult);
+    if (textRecord?.kind === "text" && typeof textRecord.text === "string") {
+      blocks.push(`Attached file "${name}":\n${textRecord.text}`);
+      continue;
+    }
+    const imageResult = await dispatchRemote("readAttachmentImage", { path });
+    const imageRecord = asRecord(imageResult);
+    if (typeof imageRecord?.dataUrl === "string" && imageRecord.dataUrl.length > 0) {
+      images.push({ url: imageRecord.dataUrl, alt: name });
+      blocks.push(`Attached image "${name}".`);
+    }
+  }
+  return {
+    promptSuffix: blocks.length === 0 ? "" : `\n\n${blocks.join("\n\n")}`,
+    images,
+  };
+}
+
 async function awaitRoutedRetryBackoff(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) {
     throw signal.reason instanceof Error ? signal.reason : new Error("The routed request timed out.");
@@ -165,6 +224,24 @@ export function parseInferenceRouterTranscriptStore(value: unknown): Store {
   return { schemaVersion: 2, agents };
 }
 
+export function overlayCoordinatorRosterEvent(
+  payload: unknown,
+  store: { readonly agents: Readonly<Record<string, readonly { readonly id: string; readonly content: string; readonly timestampMs: number }[]>> },
+  stampAgents: (agents: unknown) => unknown = (agents) => agents,
+): unknown {
+  const record = asRecord(payload);
+  if (record == null) return payload;
+  if (Array.isArray(record.agents)) {
+    return { ...record, agents: stampAgents(overlayRoutedRosterLastEntry(record.agents, store)) };
+  }
+  if (asRecord(record.agent) != null) {
+    const overlaid = stampAgents(overlayRoutedRosterLastEntry([record.agent], store));
+    const agent = Array.isArray(overlaid) ? overlaid[0] : record.agent;
+    return { ...record, agent };
+  }
+  return payload;
+}
+
 export function overlayRoutedRosterLastEntry(
   agents: unknown,
   store: { readonly agents: Readonly<Record<string, readonly { readonly id: string; readonly content: string; readonly timestampMs: number }[]>> },
@@ -173,6 +250,7 @@ export function overlayRoutedRosterLastEntry(
   return agents.map(raw => {
     const row = asRecord(raw);
     if (row == null) return raw;
+    if (row.isGroup === true) return raw;
     const id = typeof row.id === "string" ? row.id : "";
     const entries = store.agents[id];
     if (entries == null || entries.length === 0) return raw;
@@ -185,7 +263,6 @@ export function overlayRoutedRosterLastEntry(
       lastEntry: { kind: "text", text },
       lastMessageId: last.id,
       lastMessagePreview: text,
-      updatedAt: last.timestampMs,
     };
   });
 }
@@ -279,11 +356,7 @@ export function createCoordinatorInferenceRouter(options: {
       return { ...row, isRunning: false, isRunningTurn: false, isComposingMessage: false, currentActivity: undefined };
     });
   };
-  const overlayAgents = (payload: unknown): unknown => {
-    const record = asRecord(payload);
-    if (record == null || !Array.isArray(record.agents)) return payload;
-    return { ...record, agents: stampLiveTurnState(overlayRoutedRosterLastEntry(record.agents, snapshot)) };
-  };
+  const overlayAgents = (payload: unknown): unknown => overlayCoordinatorRosterEvent(payload, snapshot, stampLiveTurnState);
   const append = async (agentId: string, entries: readonly StoredEntry[]): Promise<Store> => withStore(async () => {
     const current = await load();
     const next: Store = { schemaVersion: 2, agents: { ...current.agents, [agentId]: [...(current.agents[agentId] ?? []), ...entries].slice(-200) } };
@@ -400,8 +473,15 @@ export function createCoordinatorInferenceRouter(options: {
     const richText = typeof args.richText === "string" ? args.richText : undefined;
     const clientNonce = typeof args.clientNonce === "string" ? args.clientNonce : randomUUID();
     const hidden = args.hidden === true;
-    if (agentId.length === 0 || prompt.length === 0) throw new Error("Local inference routing requires an agentId and prompt");
+    const { paths: attachmentPaths, names: attachmentNames } = parseRoutedSendPromptAttachments(args);
+    if (agentId.length === 0 || (prompt.length === 0 && attachmentPaths.length === 0)) {
+      throw new Error("Local inference routing requires an agentId and prompt");
+    }
     const timestampMs = now();
+    const { promptSuffix, images: attachmentImages } = attachmentPaths.length === 0
+      ? { promptSuffix: "", images: [] as readonly RoutedAgentImage[] }
+      : await materializeRoutedSendPromptAttachments(options.dispatchRemote, agentId, attachmentPaths, attachmentNames);
+    const effectivePrompt = `${prompt}${promptSuffix}`;
     const [remote, beforeUser] = await Promise.all([options.dispatchRemote("getAgentTranscriptTail", { id: agentId }), load()]);
     const remoteEntries = Array.isArray(asRecord(remote)?.entries) ? asRecord(remote)!.entries as unknown[] : [];
     const remoteTurn = remoteEntries.reduce<number>((highest, raw) => {
@@ -417,8 +497,38 @@ export function createCoordinatorInferenceRouter(options: {
     const chromeAlreadyOpen = chromeOpenByAgent.has(agentId);
     let withUser = beforeUser;
     if (!hidden) {
-      const userEntry = { kind: "message", id: `t${turn}u`, role: "user", content: prompt, ...(richText === undefined ? {} : { richText }), isStreaming: false, timestampMs, clientNonce };
-      withUser = await append(agentId, [{ provider, role: "user", content: prompt, ...(richText === undefined ? {} : { richText }), id: userEntry.id, clientNonce, timestampMs }]);
+      for (let attachmentIndex = 0; attachmentIndex < attachmentPaths.length; attachmentIndex += 1) {
+        const attachmentEntry = {
+          kind: "user-attachment",
+          id: `t${turn}a${attachmentIndex}`,
+          file_path: attachmentPaths[attachmentIndex],
+          file_name: attachmentNames[attachmentIndex] ?? attachmentPaths[attachmentIndex]!.split("/").pop(),
+          isStreaming: false,
+          timestampMs,
+          ...(clientNonce.length === 0 ? {} : { clientNonce }),
+        };
+        emitTranscript(agentId, "appended", attachmentEntry);
+      }
+      const userEntry = {
+        kind: "message",
+        id: `t${turn}u`,
+        role: "user",
+        content: effectivePrompt,
+        ...(richText === undefined ? {} : { richText }),
+        isStreaming: false,
+        timestampMs,
+        clientNonce,
+      };
+      withUser = await append(agentId, [{
+        provider,
+        role: "user",
+        content: effectivePrompt,
+        ...(richText === undefined ? {} : { richText }),
+        ...(attachmentImages.length === 0 ? {} : { images: attachmentImages }),
+        id: userEntry.id,
+        clientNonce,
+        timestampMs,
+      }]);
       emitTranscript(agentId, "appended", userEntry);
     }
     const userAbort = new AbortController();
@@ -448,7 +558,7 @@ export function createCoordinatorInferenceRouter(options: {
       return { accepted: true, clientNonce, provider };
     }
     const messages = coalesceRoutedProviderMessages(withUser.agents[agentId] ?? []);
-    if (hidden) messages.push({ role: "user", content: prompt });
+    if (hidden) messages.push({ role: "user", content: effectivePrompt });
     let assistantSlot = 0;
     let assistantTimestampMs = now();
     let assistantId = `t${turn}s${assistantSlot}`;
@@ -464,7 +574,7 @@ export function createCoordinatorInferenceRouter(options: {
       assistantTimestampMs = now();
       assistantStreamStarted = false;
     };
-    const drive = turnNeedsRoutedComputer(prompt, chromeAlreadyOpen);
+    const drive = turnNeedsRoutedComputer(effectivePrompt, chromeAlreadyOpen);
     const listRoutedTools = async (): Promise<unknown[]> => {
       const native = [...listRoutedSendToAgentToolDefinitions()];
       const plugins = await options.dispatchRemote("listRoutedMcpTools", {});
@@ -722,7 +832,7 @@ export function createCoordinatorInferenceRouter(options: {
         const row = asRecord(tool) ?? {};
         return !isRoutedComputerTool(row) && !isRoutedSendToAgentTool(row);
       });
-      if (!hidden && !pluginTools && !drive && promptLooksLikeComposioPluginUse(prompt)) {
+      if (!hidden && !pluginTools && !drive && promptLooksLikeComposioPluginUse(effectivePrompt)) {
         await persistThenEmit(assistantId, COMPOSIO_TOOLS_MISSING_MESSAGE, assistantTimestampMs);
         log("turn-finish composio-tools-missing");
         return { accepted: true, clientNonce, provider };
@@ -730,7 +840,7 @@ export function createCoordinatorInferenceRouter(options: {
       const roster = await loadRoster();
       const systemExtra = renderAgentDirectorySystemPrompt(routedTeammatesOf(roster, agentId));
       if (drive) {
-        const url = extractRoutedBrowserUrl(prompt);
+        const url = extractRoutedBrowserUrl(effectivePrompt);
         if (url != null && shouldSkipRoutedBoxChromeReload(url, chromeOpenByAgent.has(agentId))) {
           log("box-chrome-auto-skip already-open");
         } else if (url != null) {
@@ -896,7 +1006,18 @@ export function createCoordinatorInferenceRouter(options: {
       if (provider !== "cursor" && ["getAgentTranscriptTail", "openAgentTail", "getAgentTranscriptWindow"].includes(method)) {
         const record = asRecord(args) ?? {};
         const agentId = typeof record.id === "string" ? record.id : "";
-        const [remote, local] = await Promise.all([options.dispatchRemote(method, args), load()]);
+        const remote = await options.dispatchRemote(method, args);
+        if (agentId.length > 0) {
+          const roster = await options.dispatchRemote("listAgents", {});
+          if (Array.isArray(roster)) {
+            const target = roster.find((row) => {
+              const entry = asRecord(row);
+              return entry != null && entry.id === agentId;
+            });
+            if (asRecord(target)?.isGroup === true) return { handled: true, value: remote };
+          }
+        }
+        const local = await load();
         const result = asRecord(remote);
         if (result == null || !Array.isArray(result.entries) || agentId.length === 0) return { handled: true, value: remote };
         const persisted = (local.agents[agentId] ?? []).map(projectInferenceRouterTranscriptEntry);
@@ -931,6 +1052,16 @@ export function createCoordinatorInferenceRouter(options: {
       if (method !== "sendPrompt" || provider === "cursor") return { handled: false };
       const record = asRecord(args) ?? {};
       const agentId = typeof record.agentId === "string" ? record.agentId : "";
+      if (agentId.length > 0) {
+        const remote = await options.dispatchRemote("listAgents", {});
+        if (Array.isArray(remote)) {
+          const target = remote.find((row) => {
+            const entry = asRecord(row);
+            return entry != null && entry.id === agentId;
+          });
+          if (asRecord(target)?.isGroup === true) return { handled: false };
+        }
+      }
       const clientNonce = typeof record.clientNonce === "string" ? record.clientNonce : randomUUID();
       if (agentId.length > 0) abortAgentTurn(agentId, "supersede");
       enqueueTurn(agentId, provider, { ...record, clientNonce });

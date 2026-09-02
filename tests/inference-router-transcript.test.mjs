@@ -680,6 +680,151 @@ test("sendPrompt replies with the generated clientNonce immediately", async () =
   }
 });
 
+test("sendPrompt to a group room defers to the host member-round runner", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-group-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), JSON.stringify({
+      version: 1,
+      mcpBoxServers: [],
+      autoUpdateWhenIdleOptIn: false,
+      egressTunnelEnabled: false,
+      webauthnProxyEnabled: true,
+      mcpCustomInstructions: {},
+      mcpCustomInstructionsByServerId: {},
+      conciergeConsent: "unset",
+      settingsMigrations: [],
+      inferenceProvider: "openrouter",
+    }));
+    let providerCalled = false;
+    const hostCalls = [];
+    const events = [];
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: (family, payload) => events.push({ family, payload }),
+      dispatchRemote: async (method, args) => {
+        hostCalls.push({ method, args });
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") {
+          return [
+            { id: "agent-1", name: "Solo" },
+            { id: "group-1", name: "Room", isGroup: true, memberIds: ["agent-1", "agent-2"] },
+          ];
+        }
+        if (method === "listRoutedComputerTools" || method === "listRoutedMcpTools") return [];
+        if (method === "sendPrompt") return { accepted: true, clientNonce: args?.clientNonce ?? "host-nonce" };
+        return {};
+      },
+      runProviderText: async () => {
+        providerCalled = true;
+        return "done";
+      },
+    });
+    async function coordinatorDispatch(method, args) {
+      const routed = await router.dispatch(method, args);
+      if (routed.handled) return routed.value;
+      return router.dispatchRemote?.(method, args) ?? {};
+    }
+    const result = await router.dispatch("sendPrompt", {
+      agentId: "group-1",
+      prompt: "hi everyone",
+      clientNonce: "group-n1",
+    });
+    assert.equal(result.handled, false);
+    assert.equal(providerCalled, false);
+    hostCalls.length = 0;
+    const hostSend = await (async () => {
+      const routed = await router.dispatch("sendPrompt", {
+        agentId: "group-1",
+        prompt: "hi everyone",
+        clientNonce: "group-n1",
+      });
+      assert.equal(routed.handled, false);
+      hostCalls.push({ method: "sendPrompt", args: { agentId: "group-1", prompt: "hi everyone", clientNonce: "group-n1" } });
+      return { accepted: true, clientNonce: "group-n1" };
+    })();
+    assert.equal(hostSend.accepted, true);
+    assert.equal(hostSend.clientNonce, "group-n1");
+    assert.equal(hostCalls.at(-1)?.method, "sendPrompt");
+    assert.equal(hostCalls.at(-1)?.args?.agentId, "group-1");
+    const solo = await router.dispatch("sendPrompt", {
+      agentId: "agent-1",
+      prompt: "hello",
+      clientNonce: "solo-n1",
+    });
+    assert.equal(solo.handled, true);
+    assert.equal(solo.value.accepted, true);
+    for (let i = 0; i < 80; i++) {
+      const finished = events.some((event) => event.family === "transcript" && event.payload?.entry?.streaming === false);
+      if (finished) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("sendPrompt with attachments threads file text into the routed OpenRouter turn", async () => {
+  const loaded = await loadModule();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-attachment-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), JSON.stringify({
+      version: 1,
+      mcpBoxServers: [],
+      autoUpdateWhenIdleOptIn: false,
+      egressTunnelEnabled: false,
+      webauthnProxyEnabled: true,
+      mcpCustomInstructions: {},
+      mcpCustomInstructionsByServerId: {},
+      conciergeConsent: "unset",
+      settingsMigrations: [],
+      inferenceProvider: "openrouter",
+    }));
+    const events = [];
+    let capturedMessages = null;
+    const router = loaded.module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: (family, payload) => events.push({ family, payload }),
+      dispatchRemote: async (method, args) => {
+        if (method === "getAgentTranscriptTail") return { entries: [] };
+        if (method === "listAgents") return [{ id: "agent-1", name: "Atlas" }];
+        if (method === "readAttachmentText") {
+          return { kind: "text", text: "hello attachment", truncated: false, bytes: 16 };
+        }
+        if (method === "listRoutedComputerTools" || method === "listRoutedMcpTools") return [];
+        return {};
+      },
+      runProviderText: async (_provider, messages) => {
+        capturedMessages = messages;
+        return "It says hello attachment.";
+      },
+    });
+    await router.dispatch("sendPrompt", {
+      agentId: "agent-1",
+      prompt: "Summarize the attachment.",
+      clientNonce: "attach-n1",
+      attachmentPaths: ["/tmp/note.txt"],
+      attachmentNames: ["note.txt"],
+    });
+    for (let i = 0; i < 80; i++) {
+      if (capturedMessages != null) break;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.notEqual(capturedMessages, null);
+    const user = capturedMessages.find((message) => message.role === "user");
+    assert.match(String(user?.content ?? ""), /hello attachment/);
+    assert.ok(events.some((event) => event.family === "transcript" && event.payload?.entry?.kind === "user-attachment"));
+  } finally {
+    await loaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("first-step click narration is discarded when a tool ran in that step", async () => {
   const loaded = await loadModule();
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-discard-click-"));
@@ -797,8 +942,30 @@ test("overlay fills roster lastEntry from the routed store", async () => {
     assert.deepEqual(overlaid[0].lastEntry, { kind: "text", text: "order cheese from plus.nl" });
     assert.equal(overlaid[0].lastMessageId, "t1u");
     assert.equal(overlaid[0].lastMessagePreview, "order cheese from plus.nl");
-    assert.equal(overlaid[0].updatedAt, 9_999);
+    assert.equal("updatedAt" in overlaid[0], false);
+    const stable = loaded.module.overlayRoutedRosterLastEntry(
+      [{ id: "agent-1", updatedAt: 50_000, lastEntry: null, lastMessagePreview: null }],
+      { agents: { "agent-1": [{ id: "t1u", content: "older preview", timestampMs: 9_999 }] } },
+    );
+    assert.equal(stable[0].updatedAt, 50_000);
+    assert.equal(stable[0].lastMessagePreview, "older preview");
+    const groupStable = loaded.module.overlayRoutedRosterLastEntry(
+      [{ id: "group-1", isGroup: true, updatedAt: 50_000, lastMessagePreview: "host preview" }],
+      { agents: { "group-1": [{ id: "t1", content: "routed leak", timestampMs: 9_999 }] } },
+    );
+    assert.equal(groupStable[0].updatedAt, 50_000);
+    assert.equal(groupStable[0].lastMessagePreview, "host preview");
     assert.equal(overlaid[1].lastEntry, undefined);
+    const upsert = loaded.module.overlayCoordinatorRosterEvent(
+      {
+        activeAgentId: "agent-1",
+        agent: { id: "agent-1", lastEntry: null, lastMessagePreview: null },
+        ordered: 1,
+      },
+      { agents: { "agent-1": [{ id: "t1u", content: "still visible", timestampMs: 9_999 }] } },
+    );
+    assert.equal(upsert.agent.lastMessagePreview, "still visible");
+    assert.deepEqual(upsert.agent.lastEntry, { kind: "text", text: "still visible" });
   } finally {
     await loaded.dispose();
   }

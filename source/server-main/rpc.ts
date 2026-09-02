@@ -34,6 +34,7 @@ import type { DebugState } from "./debug-log.js";
 import { postGatewayCommand } from "./gateway-rpc.js";
 import { loadSecrets, persistSecrets } from "./secrets-file.js";
 import { DockerUnavailableError, unavailable } from "./unavailable.js";
+import { createWebAttachmentHandlers, readAttachmentMediaBytes } from "./web-attachments.js";
 
 type JsonMap = Record<string, unknown>;
 
@@ -84,6 +85,7 @@ export function createRpcDispatcher(options: {
   readonly emit?: (event: string, payload: unknown) => void;
 }): (channel: string, payload: unknown) => Promise<unknown> {
   const { config, debug, settings } = options;
+  const attachments = createWebAttachmentHandlers(config);
 
   const stub = (method: string, detail = "Unavailable in the Docker web runtime.") => {
     debug.stubs.push({ at: new Date().toISOString(), method, detail });
@@ -217,13 +219,13 @@ export function createRpcDispatcher(options: {
     pickAvatarSource: () => stub("pickAvatarSource"),
     pickAvatarFile: () => stub("pickAvatarFile"),
     generateAgentAvatarImage: () => stub("generateAgentAvatarImage"),
-    resolveAttachmentMedia: () => stub("resolveAttachmentMedia"),
-    readAttachmentText: () => stub("readAttachmentText"),
-    readAttachmentBytes: () => stub("readAttachmentBytes"),
-    stageAttachmentBytes: () => stub("stageAttachmentBytes"),
-    downloadAttachment: () => stub("downloadAttachment"),
-    commitStagedAttachments: () => stub("commitStagedAttachments"),
-    discardStagedAttachment: () => stub("discardStagedAttachment"),
+    resolveAttachmentMedia: (payload) => attachments.resolveAttachmentMedia(payload),
+    readAttachmentText: (payload) => attachments.readAttachmentText(payload),
+    readAttachmentBytes: (payload) => attachments.readAttachmentBytes(payload),
+    stageAttachmentBytes: (payload) => attachments.stageAttachmentBytes(payload),
+    downloadAttachment: () => stub("downloadAttachment", "Save to disk is unavailable in the Docker web runtime."),
+    commitStagedAttachments: (payload) => attachments.commitStagedAttachments(payload),
+    discardStagedAttachment: (payload) => attachments.discardStagedAttachment(payload),
     forceRecreateComputer: () => stub("forceRecreateComputer", "Reset the box container from your host instead."),
     updateComputer: async (payload) => {
       const record = payload as JsonMap;

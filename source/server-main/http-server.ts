@@ -26,6 +26,7 @@ import { createRpcDispatcher, initialRendererState } from "./rpc.js";
 import { loadSecrets, persistSecrets } from "./secrets-file.js";
 import { redactValue } from "./redact.js";
 import { normalizeRequestUrl, proxyVncHttp, proxyVncUpgrade, vncProxyMatch } from "./vnc-proxy.js";
+import { readAttachmentMediaBytes } from "./web-attachments.js";
 
 interface RuntimeSocket {
   readonly readyState: number;
@@ -352,6 +353,23 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
         return sendJson(res, 200, { ok: true, value: redactValue(value) });
       } catch (error) {
         return sendJson(res, 200, failureEnvelope(error));
+      }
+    }
+
+    if (req.method === "GET" && pathName === "/media") {
+      const filePath = url.searchParams.get("path");
+      if (filePath == null || filePath.length === 0) return send(res, 400, "missing path");
+      try {
+        const chunk = await readAttachmentMediaBytes(config, filePath);
+        if (chunk == null) return send(res, 404, "not found");
+        res.writeHead(200, {
+          "content-type": MIME[extname(filePath)] ?? "application/octet-stream",
+          "cache-control": "private, max-age=60",
+        });
+        res.end(chunk.bytes);
+        return;
+      } catch {
+        return send(res, 502, "attachment unavailable");
       }
     }
 

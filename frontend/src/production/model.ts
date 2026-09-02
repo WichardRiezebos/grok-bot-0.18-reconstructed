@@ -126,6 +126,86 @@ function derivedLastMessage(entry: RendererAgentLastEntry | null, fallback: unkn
   return undefined;
 }
 
+export function rosterEventAgentRecord(value: unknown): Record<string, unknown> | null {
+  if (!isRecord(value)) return null;
+  if (isRecord(value.agent)) return value.agent;
+  return typeof value.id === "string" && value.id.length > 0 ? value : null;
+}
+
+export function projectRendererAgentFromRosterEvent(value: unknown, now = Date.now()): RendererAgent | null {
+  const record = rosterEventAgentRecord(value);
+  return record == null ? null : projectRendererAgent(record, now);
+}
+
+function hasNonEmptySidebarPreview(agent: Pick<RendererAgent, "lastMessage">): boolean {
+  return agent.lastMessage != null && agent.lastMessage.trim().length > 0;
+}
+
+function effectiveRendererAgentLastEntry(entry: RendererAgentLastEntry | null | undefined): RendererAgentLastEntry | null {
+  if (entry == null) return null;
+  if (entry.kind === "text") return entry.text.trim().length > 0 ? entry : null;
+  return entry;
+}
+
+export function rendererAgentPreviewPatchFromRawTranscript(entries: unknown[]): Pick<RendererAgent, "lastEntry" | "lastMessagePreview" | "lastMessage" | "lastMessageId"> | null {
+  if (!Array.isArray(entries)) return null;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const value = entries[index];
+    if (!isRecord(value) || value.hidden === true || value.branched === true || value.peerAgentId != null) continue;
+    if (value.kind === "message" && typeof value.text === "string" && value.text.trim().length > 0) {
+      const text = value.text.trim().slice(0, 280);
+      const id = typeof value.id === "string" ? value.id : null;
+      return { lastEntry: { kind: "text", text }, lastMessagePreview: text, lastMessage: text, lastMessageId: id };
+    }
+    if (value.kind === "message" && typeof value.content === "string" && value.content.trim().length > 0) {
+      const text = value.content.trim().slice(0, 280);
+      const id = typeof value.id === "string" ? value.id : null;
+      return { lastEntry: { kind: "text", text }, lastMessagePreview: text, lastMessage: text, lastMessageId: id };
+    }
+    if (value.kind === "send-message" && isRecord(value.message) && value.message.type === "text") {
+      const content = value.message.content;
+      if (typeof content === "string" && content.trim().length > 0) {
+        const text = content.trim().slice(0, 280);
+        const id = typeof value.id === "string" ? value.id : null;
+        return { lastEntry: { kind: "text", text }, lastMessagePreview: text, lastMessage: text, lastMessageId: id };
+      }
+    }
+  }
+  return null;
+}
+
+export function mergeRendererAgentSidebarPreview(existing: RendererAgent, incoming: RendererAgent): RendererAgent {
+  if (hasNonEmptySidebarPreview(incoming)) return incoming;
+  if (!hasNonEmptySidebarPreview(existing)) return incoming;
+  return {
+    ...incoming,
+    lastEntry: effectiveRendererAgentLastEntry(incoming.lastEntry) ?? existing.lastEntry ?? null,
+    lastMessagePreview: typeof incoming.lastMessagePreview === "string" && incoming.lastMessagePreview.length > 0
+      ? incoming.lastMessagePreview
+      : existing.lastMessagePreview ?? incoming.lastMessagePreview,
+    lastMessageId: typeof incoming.lastMessageId === "string" && incoming.lastMessageId.length > 0
+      ? incoming.lastMessageId
+      : existing.lastMessageId ?? incoming.lastMessageId,
+    lastMessage: existing.lastMessage,
+  };
+}
+
+export function mergeRendererAgentsRoster(existing: readonly RendererAgent[], incoming: readonly RendererAgent[]): RendererAgent[] {
+  const existingById = new Map(existing.map((agent) => [agent.id, agent]));
+  return incoming
+    .map((agent) => {
+      const prior = existingById.get(agent.id);
+      return prior == null ? agent : mergeRendererAgentSidebarPreview(prior, agent);
+    })
+    .sort(compareRendererAgentsForSidebar);
+}
+
+export function applyRendererAgentTranscriptPreview(agent: RendererAgent, entries: unknown[]): RendererAgent {
+  if (hasNonEmptySidebarPreview(agent)) return agent;
+  const patch = rendererAgentPreviewPatchFromRawTranscript(entries);
+  return patch == null ? agent : { ...agent, ...patch };
+}
+
 export function projectRendererAgent(value: unknown, now = Date.now()): RendererAgent | null {
   if (!isRecord(value)) return null;
   const id = stringValue(value.id);
@@ -172,6 +252,17 @@ export function projectRendererAgent(value: unknown, now = Date.now()): Renderer
   };
 }
 
+export function compareRendererAgentsForSidebar(
+  left: Pick<RendererAgent, "id" | "updatedAt" | "name">,
+  right: Pick<RendererAgent, "id" | "updatedAt" | "name">,
+): number {
+  const byActivity = right.updatedAt - left.updatedAt;
+  if (byActivity !== 0) return byActivity;
+  const byName = left.name.localeCompare(right.name);
+  if (byName !== 0) return byName;
+  return left.id.localeCompare(right.id);
+}
+
 export function projectRendererAgents(value: unknown, now = Date.now()): RendererAgent[] {
   const roster = Array.isArray(value)
     ? value
@@ -182,7 +273,7 @@ export function projectRendererAgents(value: unknown, now = Date.now()): Rendere
   return roster
     .map((agent) => projectRendererAgent(agent, now))
     .filter((agent): agent is RendererAgent => agent != null)
-    .sort((left, right) => right.updatedAt - left.updatedAt);
+    .sort(compareRendererAgentsForSidebar);
 }
 
 function attachmentFromEntry(entry: Record<string, unknown>): DraftAttachment | null {
