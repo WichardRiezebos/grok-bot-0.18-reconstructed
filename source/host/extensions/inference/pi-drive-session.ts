@@ -46,7 +46,7 @@ function toPiTools(definitions: readonly Loose[] | undefined, executeTool: Route
       executionMode: "sequential" as const,
       execute: async (toolCallId: string, params: unknown, signal?: AbortSignal) => {
         if (signal?.aborted) {
-          throw signal.reason instanceof Error ? signal.reason : new Error("Stopped.");
+          throw routedAbortErrorFromSignal(signal, () => new Error("The routed request timed out."));
         }
         const result = await executeTool(definition, params, toolCallId);
         const parts = routedComputerResultParts(result);
@@ -184,6 +184,9 @@ export async function runPiDriveSession(options: {
   abortSignal?.addEventListener("abort", onAbort, { once: true });
   try {
     await agent.prompt(promptText);
+  } catch (error) {
+    if (abortSignal?.aborted) throw routedAbortErrorFromSignal(abortSignal, () => new Error("The routed request timed out."));
+    throw error;
   } finally {
     abortSignal?.removeEventListener("abort", onAbort);
   }
