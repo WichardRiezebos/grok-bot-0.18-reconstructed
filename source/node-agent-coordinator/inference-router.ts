@@ -1255,6 +1255,14 @@ export function createCoordinatorInferenceRouter(options: {
         const ids = deletedAgentIdsFromArgs(method, args);
         const remote = await dispatchRemote(method, args);
         await dropAgents(ids);
+        // The 0.36 renderer removes deleted rows locally only when its roster
+        // store generation still matches the reply; after a transport hiccup
+        // the rows linger. Push a fresh roster snapshot so the sidebar always
+        // reflects the deletion immediately.
+        try {
+          const agents = await dispatchRemote("listAgents", {});
+          if (Array.isArray(agents)) options.postEvent("agents", { agents });
+        } catch {}
         return { handled: true, value: remote };
       }
       if (method !== "sendPrompt" || provider === "cursor") return { handled: false };

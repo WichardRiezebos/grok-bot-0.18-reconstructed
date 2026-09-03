@@ -20,7 +20,15 @@ export class ForeverBoxService {
   releaseAgent(agentId: string): Promise<void> { return this.box.releaseWindow(this.ctx, agentId); }
   async captureScreenshot(agentId: string): Promise<Uint8Array | null> { if (this.options.captureScreenshot == null) return null; try { return await this.options.screenshotDeadline.run(async () => this.options.captureScreenshot!(await this.box.ensureReady(this.ctx, agentId), this.abort.signal), this.abort.signal); } catch { return null; } }
   dispose(): void { if (this.stopped) return; this.stopped = true; this.abort.abort(); this.imagePollingStartDelay?.dispose(); this.imagePolling?.dispose(); this.migrationExpiry?.dispose(); this.unsubscribeBox(); this.listeners.clear(); }
-  private decorateStatus(status: BoxStatus): BoxStatus { return this.migrating ? { ...status, vncUrl: null, pull: { percent: 0 } } : status; } private emit(status: BoxStatus): void { for (const listener of this.listeners) listener(status); }
+  private decorateStatus(status: BoxStatus): BoxStatus {
+    if (this.isAutoUpdateEnabled) return this.migrating ? { ...status, vncUrl: null, pull: { percent: 0 } } : status;
+    // With auto-update off (Docker compose runtime) a `pull` field makes the
+    // 0.36 renderer latch its computer-update lock and hold every send
+    // ("Waiting to send…") until the migration TTL expires. Never emit one.
+    const clean: BoxStatus = { ...status };
+    delete (clean as { pull?: { percent: number } }).pull;
+    return this.migrating ? { ...clean, vncUrl: null } : clean;
+  } private emit(status: BoxStatus): void { for (const listener of this.listeners) listener(status); }
   private async recreate(agentId: string, options: { preserveData: boolean; force?: boolean }): Promise<BoxStatus> { let result: { started: boolean; reason?: string }; try { result = await this.requestRecreate(options); } catch (error) { throw new SandForeverBoxError(RECREATE_UNAVAILABLE_MESSAGE, { cause: error }); } if (!result.started) throw new SandForeverBoxError(`Couldn't ${options.preserveData ? "update" : "reset"} the computer (${result.reason?.length ? result.reason : "the service declined the recreate"}). It is unchanged.`); this.updateFailureNotified = false; return this.decorateStatus({ agentId, state: "running", vncUrl: null, pull: { percent: 0 } }); }
   private async requestRecreate(options: { preserveData: boolean; force?: boolean }): Promise<{ started: boolean; reason?: string }> { try { await this.options.recreateFlushWaitDeadline.run(() => this.options.flushPendingUploads(), this.abort.signal); } catch (error) { if (this.abort.signal.aborted) throw error; this.options.log(`snapshot upload flush failed before box recreate: ${String(error)}`); } this.abort.signal.throwIfAborted(); try { return await this.options.lifecycleClient.recreateInBox(options); } catch (error) { if (!this.options.isInBox() || options.preserveData !== true) throw error; this.options.log(`cloud recreate unavailable; starting in-box restart: ${String(error)}`); try { const local = await this.box.recreateInBox(this.ctx, options); if (local.started) return local; } catch {} this.scheduleInBoxRestart(); return { started: true, reason: "in-box-restart" }; } }
   private scheduleInBoxRestart(): void {
