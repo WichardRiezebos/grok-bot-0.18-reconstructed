@@ -10,6 +10,7 @@ import { HostExtensions } from "../extension-ids.generated.js";
 import { createBackendRelaySources } from "./backend-relay-source.js";
 import { ListenerConnectWatcher } from "./listener-connect-watcher.js";
 import { createListenerIntegrationReads } from "./listener-integrations.js";
+import { LocalDueRunScheduler, LOCAL_DUE_RUN_INTERVAL_MS, type LocalDueRunPass } from "./local-due-run-scheduler.js";
 import { SandAutomationCloudSync, type CloudSyncClient, type ScheduledCloudAutomation } from "./sand-automation-cloud-sync.js";
 import { SandAutomationFireConsumer } from "./sand-automation-fire-consumer.js";
 import { SandTriggerHub } from "./sand-trigger-hub.js";
@@ -21,6 +22,7 @@ export function reconcileWhenAuthenticated(args: { auth: { peekAccessToken(): st
 
 interface AutomationTranscript {
   listAgents(): Promise<readonly { id: string }[]>;
+  listAllAutomations(): Promise<readonly { agentId: string; automation: ScheduledCloudAutomation & { nextRunAt?: number | null; runs?: readonly { id: string; status: string; detail?: string; coalescedRunIds?: readonly string[] }[] } }[]>;
   listAllAutomationDefinitions(): Promise<readonly { agentId: string; automation: ScheduledCloudAutomation & { runs?: readonly { id: string; status: string; detail?: string; coalescedRunIds?: readonly string[] }[] } }[]>;
   runAutomationForEvent(agentId: string, automation: ScheduledCloudAutomation, event: Record<string, unknown>): Promise<unknown>;
   runServerScheduledAutomation(args: { agentId: string; automation: ScheduledCloudAutomation; runUuid: string; scheduledForMs?: number }): Promise<string | undefined>;
@@ -74,14 +76,25 @@ export const automationsExtension = defineHostExtension({
     context.onStop(deps["notify-bus"].onNotify("automation-fires", () => fireConsumer.requestDrain()));
     context.onStop(deps["notify-bus"].onNotify("listener-events", () => relay.requestDrain()));
     const hub = new SandTriggerHub({ polling: createRealPollingPolicy({ name: "automations.hub-reconcile", intervalMs: HUB_RECONCILE_INTERVAL_MS }), sources: [relay.slack, relay.github], listAutomations: () => deps.transcript.listAllAutomationDefinitions(), fire: (agentId, automation, event) => deps.transcript.runAutomationForEvent(agentId, automation as ScheduledCloudAutomation, event), isReady: () => deps["turn-execution"].isRunReady(), shouldScheduleLocally: (agentId, automation) => cloudSync.shouldScheduleLocally({ agentId, automation }), onReconcile: () => { void cloudSync.reconcileNow(); void fireConsumer.tick(); } });
+    let localDueRunStatus: LocalDueRunPass | null = null;
+    const localDueRunScheduler = new LocalDueRunScheduler({
+      polling: createRealPollingPolicy({ name: "automations.local-due-run", intervalMs: LOCAL_DUE_RUN_INTERVAL_MS }),
+      listAutomations: () => deps.transcript.listAllAutomations(),
+      isReady: () => deps["turn-execution"].isRunReady(),
+      hasCloudCredential: () => deps.auth.peekAccessToken() != null,
+      fire: (args) => deps.transcript.runServerScheduledAutomation(args),
+      log: (message) => host.log(message),
+      onPass: (pass) => { localDueRunStatus = pass; },
+    });
     notifySchedulingAuthorityChanged = () => { void hub.reconcileNow(); };
     const listenerReads = createListenerIntegrationReads({ auth: deps.auth, transcript: deps.transcript, sourceStatuses: () => hub.getSourceStatuses(), log: host.log });
     const watcher = new ListenerConnectWatcher({ polling: createRealPollingPolicy({ name: "automations.connect-watch", intervalMs: CONNECT_WATCH_POLL_INTERVAL_MS }), isPlatformConnected: listenerReads.isPlatformConnected, onConnected: (agentId, platform) => void deps.transcript.resumeAfterListenerConnect(agentId, platform) });
     const offConfigChanged = host.events.on("transcript.automation-config-changed", () => { fireConsumer.resetPollDelay(); void hub.reconcileNow(); });
     const offConnectCard = host.events.on("transcript.listener-connect-card", ({ agentId, platform }: { agentId: string; platform: "slack" | "github" }) => watcher.watch(agentId, platform));
     hub.start();
+    localDueRunScheduler.start();
     const stopAuth = reconcileWhenAuthenticated({ auth: deps.auth, reconcile: () => void hub.reconcileNow() });
-    context.onStop(async () => { stopAuth(); offConfigChanged(); offConnectCard(); watcher.dispose(); fireConsumer.stop(); await hub.stop(); });
-    return { sourceStatuses: () => hub.getSourceStatuses(), suspendWakes: async () => { watcher.suspend(); fireConsumer.stop(); await hub.stop(); }, resumeWakes: () => { watcher.resume(); hub.start(); fireConsumer.start(); }, deleteAgentSchedules: (agentId: string) => cloudSync.deleteAgent(agentId), reconcileNow: () => hub.reconcileNow(), getListenerIntegrations: () => listenerReads.getIntegrations(), getListenerConnectUrl: (platform: "slack" | "github") => listenerReads.getConnectUrl(platform), isListenerPlatformConnected: (platform: "slack" | "github") => listenerReads.isPlatformConnected(platform), getAgentChannels: (agentId: string) => listenerReads.getAgentChannels(agentId) };
+    context.onStop(async () => { stopAuth(); offConfigChanged(); offConnectCard(); watcher.dispose(); fireConsumer.stop(); localDueRunScheduler.stop(); await hub.stop(); });
+    return { sourceStatuses: () => hub.getSourceStatuses(), suspendWakes: async () => { watcher.suspend(); fireConsumer.stop(); localDueRunScheduler.stop(); await hub.stop(); }, resumeWakes: () => { watcher.resume(); hub.start(); fireConsumer.start(); localDueRunScheduler.start(); }, deleteAgentSchedules: (agentId: string) => cloudSync.deleteAgent(agentId), reconcileNow: () => hub.reconcileNow(), getListenerIntegrations: () => listenerReads.getIntegrations(), getListenerConnectUrl: (platform: "slack" | "github") => listenerReads.getConnectUrl(platform), isListenerPlatformConnected: (platform: "slack" | "github") => listenerReads.isPlatformConnected(platform), getAgentChannels: (agentId: string) => listenerReads.getAgentChannels(agentId), getLocalDueRunSchedulerStatus: () => localDueRunScheduler.getStatus() };
   }
 });

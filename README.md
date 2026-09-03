@@ -120,10 +120,16 @@ stack (`control` + `box`). You open a URL. Bots keep running after you close
 the tab. OpenRouter is the only provider in that stack. The web app renders
 the pinned Grok Bot **0.36.0** shipped frontend with the reconstructed Router
 settings (Settings → Router) and composio Gmail routines integrated.
+Because there is no cloud backend, scheduled routines fire locally on a
+30-second due-run loop (`source/host/extensions/automations/local-due-run-scheduler.ts`),
+so cron routines run with the tab closed, exactly like the shipped product's
+cloud-scheduled runs.
 
 See [docs/REMOTE-RUNTIME.md](docs/REMOTE-RUNTIME.md) for Dokploy steps, the
 local Compose overlay on `http://127.0.0.1:8080`, and the `/health` plus
-`/debug` verification surface.
+`/debug` verification surface. Behavioral parity with the shipped Grok Bot
+product is audited against the official design essay in
+[docs/DESIGN-PARITY.md](docs/DESIGN-PARITY.md).
 
 ## Requirements
 
