@@ -527,7 +527,8 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
         return;
       }
       if (message.kind === "event") {
-        emitEvent(message.channel, message.payload);
+        const channel = String(message.channel ?? "");
+        emitEvent(channel.startsWith("sand-rpc:main:e:") ? channel : `sand-rpc:main:e:${channel}`, message.payload);
         return;
       }
       if (message.kind === "coordinator" && coordinatorPort != null) {
