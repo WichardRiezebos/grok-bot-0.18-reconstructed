@@ -132,7 +132,21 @@ export class SandHostSupervisor {
   invalidateHealthCache(): void {
     this.healthEpoch += 1;
     this.lastHealthyAtMs = Number.NEGATIVE_INFINITY;
-    this.latestConnectionAttempt?.retire();
+  }
+
+  /**
+   * Probe only the cached connection (never starts a resolve attempt) and refresh the
+   * health TTL on success, so sends can skip the serialized health probe while the
+   * event stream is reconnecting. Returns whether the cached gateway answered.
+   */
+  async refreshCachedConnectionHealth(): Promise<boolean> {
+    const cached = this.connection;
+    if (cached == null) return false;
+    if (await fetchHealth(this.options.timing, cached.baseUrl, cached.headers, this.options.onReachability) != null) {
+      this.lastHealthyAtMs = this.options.timing.clock.monotonicNow();
+      return true;
+    }
+    return false;
   }
 
   async ensureConnection(signal?: AbortSignal): Promise<GatewayConnection> {

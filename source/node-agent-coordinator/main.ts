@@ -98,6 +98,12 @@ export async function composeCoordinator(dependencies: ComposeCoordinatorDepende
     isTransportLive: () => isGatewayStreamLive,
     onReachability: reportReachability
   });
+  const GATEWAY_KEEP_WARM_INTERVAL_MS = 4_000;
+  const keepWarmTimer = setInterval(() => {
+    if (isGatewayStreamLive) return;
+    void hostSupervisor.refreshCachedConnectionHealth();
+  }, GATEWAY_KEEP_WARM_INTERVAL_MS);
+  keepWarmTimer.unref?.();
   const oauthPendingHandlers = new Set<(pending: McpOAuthPending) => void>();
   let server: ReturnType<typeof createRendererPortServer>;
   let localExecSupervisor: ReturnType<typeof createLocalExecDaemonSupervisor>;
@@ -139,6 +145,7 @@ export async function composeCoordinator(dependencies: ComposeCoordinatorDepende
     if (event.family === "transport-down") {
       isGatewayStreamLive = false;
       hostSupervisor.invalidateHealthCache();
+      void hostSupervisor.refreshCachedConnectionHealth();
       server.postEvent(COORDINATOR_TRANSPORT_STATE_FAMILY, { state: "down" });
       return;
     }
