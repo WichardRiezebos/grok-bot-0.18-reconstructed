@@ -1211,6 +1211,45 @@ export function createCoordinatorInferenceRouter(options: {
         const local = await load();
         return { handled: true, value: stampLiveTurnState(overlayRoutedRosterLastEntry(remote, local)) };
       }
+      if (provider !== "cursor" && method === "searchAgents") {
+        // The 0.36 palette's cross-conversation message search asks the gateway
+        // (roster-search on the box), but routed transcripts persist in this
+        // coordinator's store — the box never sees them, so a pure forward
+        // always answers []. Scan the routed store and merge with the gateway.
+        const record = asRecord(args) ?? {};
+        const query = typeof record.query === "string" ? record.query.trim().toLowerCase() : "";
+        const limit = typeof record.limit === "number" && Number.isInteger(record.limit) && record.limit > 0 ? record.limit : 20;
+        if (query.length === 0) return { handled: true, value: [] };
+        const local = await load();
+        const results: Record<string, unknown>[] = [];
+        for (const [agentId, entries] of Object.entries(local.agents)) {
+          for (const entry of entries) {
+            const index = entry.content.toLowerCase().indexOf(query);
+            if (index < 0) continue;
+            const start = Math.max(0, index - 48);
+            const end = Math.min(entry.content.length, index + query.length + 96);
+            results.push({
+              agentId,
+              entryId: entry.id,
+              role: entry.role,
+              timestampMs: entry.timestampMs,
+              snippet: `${start > 0 ? "…" : ""}${entry.content.slice(start, end)}${end < entry.content.length ? "…" : ""}`,
+            });
+          }
+        }
+        const remote = await dispatchRemote(method, args);
+        const merged = [...(Array.isArray(remote) ? remote : []), ...results];
+        const seen = new Set<string>();
+        const deduped = merged.filter((row) => {
+          const entry = asRecord(row);
+          const key = `${typeof entry?.agentId === "string" ? entry.agentId : ""}:${typeof entry?.entryId === "string" ? entry.entryId : ""}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        deduped.sort((left, right) => Number(asRecord(right)?.timestampMs ?? 0) - Number(asRecord(left)?.timestampMs ?? 0));
+        return { handled: true, value: deduped.slice(0, limit) };
+      }
       if (provider !== "cursor" && ["getAgentTranscriptTail", "openAgentTail", "getAgentTranscriptWindow"].includes(method)) {
         const record = asRecord(args) ?? {};
         const agentId = typeof record.id === "string" ? record.id : "";
