@@ -12,6 +12,9 @@ export class WebAuthnChannelError extends Error {
   override readonly name = "WebAuthnChannelError";
 }
 
+const WEBAUTHN_POST_TIMEOUT_MS = 15_000;
+const WEBAUTHN_CONNECT_TIMEOUT_MS = 15_000;
+
 export interface WebAuthnConnection {
   readonly baseUrl: string;
   readonly headers?: Readonly<Record<string, string>>;
@@ -55,11 +58,12 @@ export function createWebAuthnProvider(options: WebAuthnProviderOptions): { star
 
   async function postFrames(connection: WebAuthnConnection, frames: readonly WebAuthnResponseFrame[], signal?: AbortSignal): Promise<void> {
     const batch = providerId === undefined ? { frames } : { providerId, frames };
+    const timeoutSignal = AbortSignal.timeout(WEBAUTHN_POST_TIMEOUT_MS);
     const response = await fetch(`${connection.baseUrl}${GATEWAY_WEBAUTHN_RESPONSES_PATH}`, {
       method: "POST",
       headers: { ...headersFor(connection), "content-type": "application/json" },
       body: JSON.stringify(batch),
-      ...(signal === undefined ? {} : { signal })
+      signal: signal === undefined ? timeoutSignal : AbortSignal.any([signal, timeoutSignal])
     });
     if (!response.ok) throw new WebAuthnChannelError(`webauthn response POST rejected: HTTP ${response.status}`);
   }
@@ -134,7 +138,7 @@ export function createWebAuthnProvider(options: WebAuthnProviderOptions): { star
 
   async function connectOnce(signal: AbortSignal): Promise<never> {
     const connection = await options.resolveConnection();
-    const response = await fetch(`${connection.baseUrl}${GATEWAY_WEBAUTHN_REQUESTS_PATH}`, { headers: headersFor(connection), signal });
+    const response = await fetch(`${connection.baseUrl}${GATEWAY_WEBAUTHN_REQUESTS_PATH}`, { headers: headersFor(connection), signal: AbortSignal.any([signal, AbortSignal.timeout(WEBAUTHN_CONNECT_TIMEOUT_MS)]) });
     if (!response.ok || response.body == null) throw new WebAuthnChannelError(`webauthn request stream refused: HTTP ${response.status}`);
     log("webauthn request stream open");
     providerId = undefined;

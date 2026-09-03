@@ -34,19 +34,21 @@ import { SseBlockDecoder } from "./sse-block-decoder.js";
 
 export const PERMANENT_REFUSAL_KINDS = new Set(["no_storage", "box_blocked", "access_denied"]);
 export const PRE_DISPATCH_KINDS = new Set(["refused", "dns"]);
-export const CREATE_AGENT_RETRY_POLICY = { name: "gateway-create-agent-retry", maxAttempts: 3, initialDelayMs: 1_000, maxDelayMs: 4_000, backoffFactor: 2 } as const;
+export const CREATE_AGENT_RETRY_POLICY = { name: "gateway-create-agent-retry", maxAttempts: 3, initialDelayMs: 1_000, maxDelayMs: 4_000, backoffFactor: 2, jitterRatio: 0.2 } as const;
 export const SSE_RECONNECT_MIN_MS = 1_000;
 export const SSE_RECONNECT_MAX_MS = 10_000;
 export const SSE_STALL_TIMEOUT_MS = 35_000;
 export const SSE_CONNECT_TIMEOUT_MS = 15_000;
 export const SEND_POST_TIMEOUT_MS = 15_000;
 export const ROSTER_READ_TIMEOUT_MS = 15_000;
+export const REQUEST_TIMEOUT_MS = 15_000;
 export const TRACE_WINDOW_ROOT_CACHE_MS = 5_000;
 export const HOST_ACCOUNT_SLOT = "host";
 
 const DISABLE_SEND_ACCEPT_RETURN_ENV = "SAND_DISABLE_SEND_ACCEPT_RETURN";
 const SEND_POST_TIMEOUT_ENV = "SAND_SEND_POST_TIMEOUT_MS";
 const ROSTER_READ_TIMEOUT_ENV = "SAND_ROSTER_READ_TIMEOUT_MS";
+const REQUEST_TIMEOUT_ENV = "SAND_GATEWAY_REQUEST_TIMEOUT_MS";
 const DISABLE_SLIM_AVATARS_ENV = "SAND_DISABLE_SLIM_AVATARS";
 
 export function extractGatewayErrorMessage(body: string): string | null {
@@ -66,6 +68,7 @@ export interface GatewayClientTiming {
   readonly stallWatchdog: IdleWatchdogPolicy;
   readonly sendPostDeadline: DeadlinePolicy;
   readonly rosterReadDeadline: DeadlinePolicy;
+  readonly requestDeadline: DeadlinePolicy;
   readonly createAgentRetry: RetryPolicy;
 }
 
@@ -74,13 +77,16 @@ export function createCoordinatorGatewayClientTiming(): GatewayClientTiming {
   const sendPostTimeoutMs = Number.isFinite(overrideMs) && overrideMs > 0 ? overrideMs : SEND_POST_TIMEOUT_MS;
   const rosterReadOverrideMs = Number(process.env[ROSTER_READ_TIMEOUT_ENV]);
   const rosterReadTimeoutMs = Number.isFinite(rosterReadOverrideMs) && rosterReadOverrideMs > 0 ? rosterReadOverrideMs : ROSTER_READ_TIMEOUT_MS;
+  const requestOverrideMs = Number(process.env[REQUEST_TIMEOUT_ENV]);
+  const requestTimeoutMs = Number.isFinite(requestOverrideMs) && requestOverrideMs > 0 ? requestOverrideMs : REQUEST_TIMEOUT_MS;
   return {
     clock: realClock,
-    reconnectBackoff: createRetryPolicy(realClock, { name: "gateway-sse-reconnect-backoff", maxAttempts: Number.MAX_SAFE_INTEGER, initialDelayMs: SSE_RECONNECT_MIN_MS, maxDelayMs: SSE_RECONNECT_MAX_MS, backoffFactor: 2 }),
+    reconnectBackoff: createRetryPolicy(realClock, { name: "gateway-sse-reconnect-backoff", maxAttempts: Number.MAX_SAFE_INTEGER, initialDelayMs: SSE_RECONNECT_MIN_MS, maxDelayMs: SSE_RECONNECT_MAX_MS, backoffFactor: 2, jitterRatio: 0.2 }),
     connectDeadline: createDeadlinePolicy(realClock, { name: "gateway-sse-connect", timeoutMs: SSE_CONNECT_TIMEOUT_MS }),
     stallWatchdog: createIdleWatchdogPolicy(realClock, { name: "gateway-sse-stall", idleMs: SSE_STALL_TIMEOUT_MS }),
     sendPostDeadline: createDeadlinePolicy(realClock, { name: "gateway-send-post", timeoutMs: sendPostTimeoutMs }),
     rosterReadDeadline: createDeadlinePolicy(realClock, { name: "gateway-roster-read", timeoutMs: rosterReadTimeoutMs }),
+    requestDeadline: createDeadlinePolicy(realClock, { name: "gateway-request", timeoutMs: requestTimeoutMs }),
     createAgentRetry: createRetryPolicy(realClock, CREATE_AGENT_RETRY_POLICY)
   };
 }
@@ -258,25 +264,32 @@ export class CoordinatorGatewayClient {
       const traceparent = child?.traceparent ?? root;
       fetchStartMonotonicMs = this.options.timing.clock.monotonicNow();
       fetchStartEpochMs = this.options.timing.clock.now();
-      const response = await fetch(`${connection.baseUrl}${GATEWAY_API_PREFIX}/${method}`, {
-        method: "POST",
-        headers: this.requestHeaders({ "content-type": "application/json", ...(traceparent === undefined ? {} : { [GATEWAY_TRACEPARENT_HEADER]: traceparent }) }, connection),
-        body: JSON.stringify(args ?? {}),
-        ...(init?.signal == null ? {} : { signal: init.signal })
-      });
-      if (!response.ok) {
-        const detail = await response.text().catch(() => response.statusText);
-        const message = extractGatewayErrorMessage(detail) ?? `gateway ${method} failed: ${detail}`;
-        if (response.status < 500) throw new SandGatewayCommandError(message);
-        throw new SandGatewayUnreachableError("http_5xx", message, { httpStatus: response.status, attemptedBaseUrl: connection.baseUrl });
-      }
-      const result = await response.json() as unknown;
-      if (response.headers.get(GATEWAY_MINT_DEDUPE_HEADER) === "1") this.mintDedupeProvenBaseUrls.add(connection.baseUrl);
+      const baseUrl = connection.baseUrl;
+      const resolvedConnection = connection;
+      const deadlineOutcome = await this.options.timing.requestDeadline.run(async (deadlineSignal) => {
+        const response = await fetch(`${baseUrl}${GATEWAY_API_PREFIX}/${method}`, {
+          method: "POST",
+          headers: this.requestHeaders({ "content-type": "application/json", ...(traceparent === undefined ? {} : { [GATEWAY_TRACEPARENT_HEADER]: traceparent }) }, resolvedConnection),
+          body: JSON.stringify(args ?? {}),
+          signal: deadlineSignal
+        });
+        if (!response.ok) {
+          const detail = await response.text().catch(() => response.statusText);
+          const message = extractGatewayErrorMessage(detail) ?? `gateway ${method} failed: ${detail}`;
+          if (response.status < 500) throw new SandGatewayCommandError(message);
+          throw new SandGatewayUnreachableError("http_5xx", message, { httpStatus: response.status, attemptedBaseUrl: baseUrl });
+        }
+        const result = await response.json() as unknown;
+        return { result, mintDedupe: response.headers.get(GATEWAY_MINT_DEDUPE_HEADER) === "1" };
+      }, init?.signal);
+      if (deadlineOutcome.mintDedupe) this.mintDedupeProvenBaseUrls.add(connection.baseUrl);
+      const result = deadlineOutcome.result;
       this.reportCommandSpan(method, commandTrace, { startEpochMs: fetchStartEpochMs, durationMs: this.options.timing.clock.monotonicNow() - fetchStartMonotonicMs, isError: false });
       return { result, connection };
     } catch (error) {
       this.reportCommandSpan(method, commandTrace, { startEpochMs: fetchStartEpochMs, durationMs: this.options.timing.clock.monotonicNow() - fetchStartMonotonicMs, isError: true });
       if (error instanceof SandGatewayCommandError || error instanceof GatewayEndpointChangedError) throw error;
+      if (error instanceof DeadlineExceededError) throw new SandGatewayUnreachableError("timeout", `gateway ${method} unreachable (timeout)`, { cause: error, ...(connection === undefined ? {} : { attemptedBaseUrl: connection.baseUrl }), isPreDispatch: connection === undefined });
       const classified = classifyGatewayError(error);
       this.reportReachability({ outcome: classified.outcome, method, latencyMs: this.options.timing.clock.monotonicNow() - startMonotonicMs, baseUrlKind: classifyBaseUrlKind(connection?.baseUrl), ...(classified.httpStatus === undefined ? {} : { httpStatus: classified.httpStatus }), ...(classified.causeSummary === undefined ? {} : { causeSummary: classified.causeSummary }) }, connection?.baseUrl);
       if (error instanceof SandGatewayUnreachableError) throw error;

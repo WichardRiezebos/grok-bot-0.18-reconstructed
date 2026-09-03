@@ -20,6 +20,12 @@ export const COMPOSIO_MODEL_TOOL_LIMIT = 32;
 export const COMPOSIO_WEBHOOK_TOLERANCE_SECONDS = 300;
 export const COMPOSIO_TOOLS_MISSING_MESSAGE = "Composio is saved but tools did not load. Open Plugins → Yours to see the connector, or save the key again in Settings after the computer is running.";
 export const DEFAULT_COMPOSIO_TRIGGER_SLUGS: Readonly<Record<string, string>> = { gmail: "GMAIL_NEW_GMAIL_MESSAGE" };
+const COMPOSIO_TIMEOUT_MS = 15_000;
+const COMPOSIO_TRIGGER_UPSERT_CONCURRENCY = 8;
+
+function composioFetch(url: string | URL, init?: RequestInit): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(COMPOSIO_TIMEOUT_MS) });
+}
 const TOOLKIT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   gmail: "Gmail",
   linear: "Linear",
@@ -213,7 +219,7 @@ function projectKeyRuntimeConfig(apiKey: string, url: string): ComposioMcpRuntim
 }
 
 export async function listComposioConnectedAccounts(apiKey: string): Promise<ComposioConnectedAccount[]> {
-  const response = await fetch(COMPOSIO_CONNECTED_ACCOUNTS_URL, { headers: { "x-api-key": apiKey } });
+  const response = await composioFetch(COMPOSIO_CONNECTED_ACCOUNTS_URL, { headers: { "x-api-key": apiKey } });
   if (!response.ok) return [];
   const body = await response.json() as {
     items?: Array<{ user_id?: unknown; status?: unknown; id?: unknown; toolkit?: { slug?: unknown } }>;
@@ -244,7 +250,7 @@ export async function resolveComposioMcpRuntimeConfig(apiKey: string | undefined
       (connectedAccounts[account.toolkit] ??= []).push(account.id);
       userId = account.userId;
     }
-    const sessionResponse = await fetch(COMPOSIO_TOOL_ROUTER_SESSION_URL, {
+    const sessionResponse = await composioFetch(COMPOSIO_TOOL_ROUTER_SESSION_URL, {
       method: "POST",
       headers: { "x-api-key": apiKey, "content-type": "application/json" },
       body: JSON.stringify({
@@ -347,7 +353,7 @@ async function fetchToolkitTools(apiKey: string, toolkit: string, account?: Comp
     url.searchParams.set("toolkit_slug", toolkit);
     url.searchParams.set("limit", "100");
     if (important) url.searchParams.set("important", "true");
-    const response = await fetch(url, { headers: { "x-api-key": apiKey } });
+    const response = await composioFetch(url, { headers: { "x-api-key": apiKey } });
     if (!response.ok) return;
     const body = await response.json() as { items?: unknown[]; tools?: unknown[] };
     const rows = Array.isArray(body.items) ? body.items : Array.isArray(body.tools) ? body.tools : Array.isArray(body) ? body as unknown[] : [];
@@ -392,7 +398,7 @@ export async function executeComposioPlatformTool(
   const accounts = cachedPlatformTools?.key === apiKey ? cachedPlatformTools.accounts : {};
   const userId = tool?.userId ?? cachedPlatformTools?.userId ?? "grok-bot";
   const connectedAccountId = tool?.connectedAccountId ?? (tool != null ? accounts[tool.toolkit] : undefined);
-  const response = await fetch(`${COMPOSIO_TOOL_EXECUTE_URL}/${encodeURIComponent(slug)}`, {
+  const response = await composioFetch(`${COMPOSIO_TOOL_EXECUTE_URL}/${encodeURIComponent(slug)}`, {
     method: "POST",
     headers: { "x-api-key": apiKey, "content-type": "application/json" },
     body: JSON.stringify({
@@ -441,7 +447,7 @@ async function mcpJsonRpc(
     accept: "application/json, text/event-stream",
   };
   if (sessionId != null && sessionId.length > 0) requestHeaders["mcp-session-id"] = sessionId;
-  const response = await fetch(url, {
+  const response = await composioFetch(url, {
     method: "POST",
     headers: requestHeaders,
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
@@ -809,7 +815,7 @@ async function jsonFromComposio(response: Response): Promise<Record<string, unkn
 }
 
 async function subscribeComposioWebhook(apiKey: string, webhookUrl: string): Promise<string | undefined> {
-  const listed = await fetch(COMPOSIO_WEBHOOK_SUBSCRIPTIONS_URL, { headers: { "x-api-key": apiKey } });
+  const listed = await composioFetch(COMPOSIO_WEBHOOK_SUBSCRIPTIONS_URL, { headers: { "x-api-key": apiKey } });
   if (listed.ok) {
     const body = await jsonFromComposio(listed);
     const items = Array.isArray(body?.items) ? body.items : Array.isArray(body?.webhooks) ? body.webhooks : [];
@@ -820,7 +826,7 @@ async function subscribeComposioWebhook(apiKey: string, webhookUrl: string): Pro
       if (url === webhookUrl && secret.length > 0) return secret;
     }
   }
-  const created = await fetch(COMPOSIO_WEBHOOK_SUBSCRIPTIONS_URL, {
+  const created = await composioFetch(COMPOSIO_WEBHOOK_SUBSCRIPTIONS_URL, {
     method: "POST",
     headers: { "x-api-key": apiKey, "content-type": "application/json" },
     body: JSON.stringify({ webhook_url: webhookUrl, enabled_events: ["composio.trigger.message"] }),
@@ -832,7 +838,7 @@ async function subscribeComposioWebhook(apiKey: string, webhookUrl: string): Pro
 }
 
 async function upsertDefaultTriggerInstances(apiKey: string, accounts: readonly ComposioConnectedAccount[]): Promise<void> {
-  const existing = await fetch(`${COMPOSIO_TRIGGER_INSTANCES_URL}?limit=100`, { headers: { "x-api-key": apiKey } });
+  const existing = await composioFetch(`${COMPOSIO_TRIGGER_INSTANCES_URL}?limit=100`, { headers: { "x-api-key": apiKey } });
   const existingSlugs = new Set<string>();
   if (existing.ok) {
     const body = await jsonFromComposio(existing);
@@ -846,19 +852,24 @@ async function upsertDefaultTriggerInstances(apiKey: string, accounts: readonly 
       if (slug.length > 0 && status !== "DISABLED") existingSlugs.add(`${record?.connected_account_id ?? ""}:${slug}`);
     }
   }
+  const upserts: Array<{ slug: string; account: ComposioConnectedAccount }> = [];
   for (const account of accounts) {
     const slug = DEFAULT_COMPOSIO_TRIGGER_SLUGS[account.toolkit];
     if (slug == null) continue;
     if (existingSlugs.has(`${account.id}:${slug}`)) continue;
-    await fetch(`${COMPOSIO_TRIGGER_INSTANCES_URL}/${encodeURIComponent(slug)}/upsert`, {
-      method: "POST",
-      headers: { "x-api-key": apiKey, "content-type": "application/json" },
-      body: JSON.stringify({
-        connected_account_id: account.id,
-        user_id: account.userId,
-        trigger_config: {},
-      }),
-    }).catch(() => undefined);
+    upserts.push({ slug, account });
+  }
+  for (let index = 0; index < upserts.length; index += COMPOSIO_TRIGGER_UPSERT_CONCURRENCY) {
+    await Promise.allSettled(upserts.slice(index, index + COMPOSIO_TRIGGER_UPSERT_CONCURRENCY).map(({ slug, account }) =>
+      composioFetch(`${COMPOSIO_TRIGGER_INSTANCES_URL}/${encodeURIComponent(slug)}/upsert`, {
+        method: "POST",
+        headers: { "x-api-key": apiKey, "content-type": "application/json" },
+        body: JSON.stringify({
+          connected_account_id: account.id,
+          user_id: account.userId,
+          trigger_config: {},
+        }),
+      })));
   }
 }
 
@@ -870,9 +881,11 @@ export async function ensureComposioWebhookAndTriggers(args: {
   if (!isComposioProjectKey(args.apiKey) || !isPublicComposioWebhookBase(args.webhookUrl)) {
     return { enabled: false };
   }
-  const secret = await subscribeComposioWebhook(args.apiKey, args.webhookUrl);
+  const [secret, accounts] = await Promise.all([
+    subscribeComposioWebhook(args.apiKey, args.webhookUrl),
+    listComposioConnectedAccounts(args.apiKey),
+  ]);
   if (secret != null && secret.length > 0) args.persistSecret?.(secret);
-  const accounts = await listComposioConnectedAccounts(args.apiKey);
   await upsertDefaultTriggerInstances(args.apiKey, accounts);
   return { ...(secret == null ? {} : { secret }), enabled: true };
 }
@@ -925,7 +938,7 @@ async function fetchComposioAuthConfigId(apiKey: string, toolkitSlug: string): P
   const url = new URL(COMPOSIO_AUTH_CONFIGS_URL);
   url.searchParams.set("toolkit_slug", toolkitSlug);
   url.searchParams.set("limit", "50");
-  const response = await fetch(url, { headers: { "x-api-key": apiKey } });
+  const response = await composioFetch(url, { headers: { "x-api-key": apiKey } });
   if (!response.ok) return undefined;
   const body = await response.json() as { items?: Array<{ id?: unknown; status?: unknown }> };
   for (const item of body.items ?? []) {
@@ -945,7 +958,7 @@ async function fetchComposioToolkitsPage(
   url.searchParams.set("managed_by", "composio");
   url.searchParams.set("sort_by", "alphabetically");
   if (cursor != null && cursor.length > 0) url.searchParams.set("cursor", cursor);
-  const response = await fetch(url, { headers: { "x-api-key": apiKey } });
+  const response = await composioFetch(url, { headers: { "x-api-key": apiKey } });
   if (!response.ok) throw new Error(`Composio toolkits request failed (${response.status}).`);
   const body = await response.json() as {
     items?: Array<Record<string, unknown>>;
@@ -1035,7 +1048,7 @@ export async function createComposioToolkitAuthLink(
   if (authConfigId == null) {
     return { redirectUrl: composioToolkitConnectFallbackUrl(slug), serverName };
   }
-  const response = await fetch(COMPOSIO_CONNECTED_ACCOUNTS_LINK_URL, {
+  const response = await composioFetch(COMPOSIO_CONNECTED_ACCOUNTS_LINK_URL, {
     method: "POST",
     headers: { "x-api-key": apiKey, "content-type": "application/json" },
     body: JSON.stringify({

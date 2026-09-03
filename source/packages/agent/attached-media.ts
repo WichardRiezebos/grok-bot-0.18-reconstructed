@@ -47,7 +47,7 @@ export async function uploadAttachedMediaToSignedUrl(options: UploadAttachedMedi
     headers: {
       "Content-Type": options.mimeType,
     },
-    signal: options.signal!,
+    signal: AbortSignal.any([options.signal!, AbortSignal.timeout(60_000)]),
   });
   if (!response.ok) {
     throw new Error(`Failed to upload attached media: ${response.status} ${response.statusText}`);

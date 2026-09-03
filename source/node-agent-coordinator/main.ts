@@ -49,7 +49,7 @@ export function recordEchoIfUserEcho(payload: unknown, recorder: { recordSendEch
 }
 
 export function createWebAuthnReconnectPolicy() {
-  return createRealRetryPolicy({ name: "sand-webauthn-reconnect", maxAttempts: Number.MAX_SAFE_INTEGER, initialDelayMs: 1_000, maxDelayMs: 30_000 });
+  return createRealRetryPolicy({ name: "sand-webauthn-reconnect", maxAttempts: Number.MAX_SAFE_INTEGER, initialDelayMs: 1_000, maxDelayMs: 30_000, jitterRatio: 0.2 });
 }
 
 type Commands = Record<string, (args: unknown) => Promise<unknown>>;
@@ -213,7 +213,7 @@ export async function composeCoordinator(dependencies: ComposeCoordinatorDepende
       }),
       heartbeatPolicy: createRealPollingPolicy({ name: "sand-webauthn-heartbeat", intervalMs: SAND_WEBAUTHN_HEARTBEAT_INTERVAL_MS }),
       reconnectPolicy: createWebAuthnReconnectPolicy(),
-      deliveryPolicy: createRealRetryPolicy({ name: "sand-webauthn-delivery", maxAttempts: 5, initialDelayMs: 250, maxDelayMs: 4_000 }),
+      deliveryPolicy: createRealRetryPolicy({ name: "sand-webauthn-delivery", maxAttempts: 5, initialDelayMs: 250, maxDelayMs: 4_000, jitterRatio: 0.2 }),
       label: hostname()
     });
     webauthnProvider.start();

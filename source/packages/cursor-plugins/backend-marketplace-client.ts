@@ -9,6 +9,7 @@ import { resolveGitRemoteRef } from "./git-remote-ref-resolve.js";
 import { materializeSparseDirs, materializeSpecForGitPaths, resolveSparseClonePlan, serverIgnoredFilter, setSparseCheckoutDirs, type MaterializeSpec } from "./git-sparse-clone.js";
 import { execGitNonInteractive, resolveExtraGitConfig, type ExtraGitConfig, type ExtraGitConfigProvider } from "./git-subprocess-env.js";
 import { toScmSshUrl } from "./git-url-parsing.js";
+import { fetchWithConnectTimeout } from "../../shared/node/fetch-with-connect-timeout.js";
 import { synthesizeInlinePluginDir } from "./inline-plugin-synthesizer.js";
 import { containsPluginRootDir, isPathSafe, MARKETPLACE_MANIFEST_PATHS, parseMarketplaceManifest, resolvePluginSourcePath } from "./manifest-parser.js";
 import { getCanonicalMarketplacePathSegments, isKilledSubprocessError, LOCAL_GIT_TIMEOUT_MS, LS_REMOTE_TIMEOUT_MS, MarketplaceCacheManager, REMOTE_GIT_TIMEOUT_MS, type MarketplaceCacheOptions } from "./marketplace-cache.js";
@@ -23,6 +24,7 @@ const MAX_UNCOMPRESSED_EXTRACT_BYTES = 500 * 1024 * 1024;
 const MAX_EXTRACT_FILE_COUNT = 50_000;
 const MAX_EXTRACT_COMPRESSION_RATIO = 100;
 const MAX_RELEASE_ASSET_BYTES = 100 * 1024 * 1024;
+const RELEASE_FETCH_TIMEOUT_MS = 15_000;
 
 export interface EffectiveMarketplace {
   id?: string | number | bigint;
@@ -161,14 +163,14 @@ function isAllowedReleaseDownloadHost(downloadHost: string, repoHost: string): b
 async function downloadReleaseAssetBuffer(options: { repo: string; asset: string; tag?: string | undefined; expectedSha256?: string | undefined; githubToken?: string | undefined }): Promise<Buffer> {
   const { repo, asset, tag } = options, { apiBase, ownerRepo, host } = parseReleaseRepo(repo), authHeaders = host === "github.com" && options.githubToken !== undefined && options.githubToken.length > 0 ? { Authorization: `token ${options.githubToken}` } : {};
   const releaseUrl = tag ? `${apiBase}/repos/${ownerRepo}/releases/tags/${encodeURIComponent(tag)}` : `${apiBase}/repos/${ownerRepo}/releases/latest`;
-  const releaseResponse = await fetch(releaseUrl, { headers: { Accept: "application/vnd.github.v3+json", "User-Agent": "CursorPluginInstaller", ...authHeaders } });
+  const releaseResponse = await fetch(releaseUrl, { headers: { Accept: "application/vnd.github.v3+json", "User-Agent": "CursorPluginInstaller", ...authHeaders }, signal: AbortSignal.timeout(RELEASE_FETCH_TIMEOUT_MS) });
   if (!releaseResponse.ok) throw new Error(`Failed to fetch release from ${releaseUrl}: ${releaseResponse.status} ${releaseResponse.statusText}`);
   const release = await releaseResponse.json() as { assets: Array<{ name: string; size: number; browser_download_url: string }> }, matchingAsset = release.assets.find(candidate => candidate.name === asset);
   if (!matchingAsset) throw new Error(`Release asset "${asset}" not found. Available assets: ${release.assets.map(candidate => candidate.name).join(", ")}`);
   if (matchingAsset.size > MAX_RELEASE_ASSET_BYTES) throw new Error(`Release asset "${asset}" exceeds maximum size of ${MAX_RELEASE_ASSET_BYTES} bytes (actual: ${matchingAsset.size})`);
   const downloadUrl = new URL(matchingAsset.browser_download_url);
   if (downloadUrl.protocol !== "https:" || !isAllowedReleaseDownloadHost(downloadUrl.hostname, host)) throw new Error(`Refusing to download release asset from untrusted host: ${downloadUrl.hostname}`);
-  const assetResponse = await fetch(matchingAsset.browser_download_url, { headers: { "User-Agent": "CursorPluginInstaller", Accept: "application/octet-stream", ...authHeaders } });
+  const assetResponse = await fetchWithConnectTimeout(matchingAsset.browser_download_url, { headers: { "User-Agent": "CursorPluginInstaller", Accept: "application/octet-stream", ...authHeaders } }, RELEASE_FETCH_TIMEOUT_MS);
   if (!assetResponse.ok) throw new Error(`Failed to download release asset: ${assetResponse.status} ${assetResponse.statusText}`);
   if (assetResponse.url) { const finalUrl = new URL(assetResponse.url); if (finalUrl.protocol !== "https:" || !isAllowedReleaseDownloadHost(finalUrl.hostname, host)) throw new Error(`Refusing to download release asset: redirected to untrusted host: ${finalUrl.hostname}`); }
   const buffer = Buffer.from(await assetResponse.arrayBuffer());

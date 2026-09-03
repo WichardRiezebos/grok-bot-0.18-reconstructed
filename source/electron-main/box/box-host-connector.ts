@@ -121,7 +121,7 @@ export class BrokeredHostConnector {
     let accessToken: string;
     try { accessToken = await this.deps.getAccessToken({ backendUrl }); } catch { return undefined; }
     let response: Response;
-    try { response = await fetch(new URL(LOCAL_EXEC_DAEMON_CREDENTIAL_PATH, backendUrl).toString(), { method: "POST", headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json", ...getSandBackendClientHeaders(), "x-ghost-mode": "true" }, body: "{}" }); } catch { return undefined; }
+    try { response = await fetch(new URL(LOCAL_EXEC_DAEMON_CREDENTIAL_PATH, backendUrl).toString(), { method: "POST", headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json", ...getSandBackendClientHeaders(), "x-ghost-mode": "true" }, body: "{}", signal: AbortSignal.timeout(15_000) }); } catch { return undefined; }
     if (!response.ok) return undefined;
     let parsed: unknown; try { parsed = await response.json(); } catch { return undefined; }
     if (typeof parsed !== "object" || parsed == null) return undefined;

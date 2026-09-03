@@ -105,6 +105,8 @@ export function createRetryPolicy(clock: Clock, options: {
   initialDelayMs: number;
   maxDelayMs: number;
   backoffFactor?: number;
+  /** Fraction of full-jitter randomization applied to each delay (0.2 = ±20%). Defaults to 0. */
+  jitterRatio?: number;
   shouldRetry?: (error: unknown, attempt: number) => boolean;
 }): RetryPolicy {
   if (options.name.trim().length === 0) throw new TypeError("name must not be empty");
@@ -114,13 +116,16 @@ export function createRetryPolicy(clock: Clock, options: {
   if (options.maxDelayMs < options.initialDelayMs) throw new RangeError("maxDelayMs must be at least initialDelayMs");
   const backoffFactor = options.backoffFactor ?? 2;
   if (!Number.isFinite(backoffFactor) || backoffFactor < 1) throw new RangeError("backoffFactor must be a finite number at least 1");
+  const jitterRatio = options.jitterRatio ?? 0;
+  if (!Number.isFinite(jitterRatio) || jitterRatio < 0 || jitterRatio >= 1) throw new RangeError("jitterRatio must be a finite number in [0, 1)");
   const shouldRetry = options.shouldRetry ?? (() => true);
   const policy: RetryPolicy = {
     name: options.name,
     schedule(attempt, signal) {
       if (!Number.isInteger(attempt) || attempt < 1) throw new RangeError("attempt must be a positive integer");
       const growth = Math.min(backoffFactor ** (attempt - 1), Number.MAX_VALUE);
-      return createDelay(clock, Math.min(options.maxDelayMs, options.initialDelayMs * growth), signal);
+      const jitterFactor = jitterRatio > 0 ? 1 + (Math.random() * 2 - 1) * jitterRatio : 1;
+      return createDelay(clock, Math.min(options.maxDelayMs, options.initialDelayMs * growth * jitterFactor), signal);
     },
     async runWithRetry<T>(work: (attempt: number, signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
       const workSignal = signal ?? new AbortController().signal;

@@ -23,6 +23,7 @@ import { BOX_SECRETS_FILENAME, getBoxSecretsStorePath } from "../secrets/secrets
 import { streamCodexDirectResponses, type CodexDirectTool } from "./codex-direct-responses.js";
 import type { LabelMessage, PromptExecutor } from "./sand-labeling.js";
 import { awaitAbortRace, routedStreamEventToolName, routedStreamProgressLine } from "../../../shared/routed-inference-log.js";
+import { fetchWithConnectTimeout } from "../../../shared/node/fetch-with-connect-timeout.js";
 import { grokRouterSystemPrompt } from "../../runner/routed-system-prompt.js";
 
 export { grokRouterSystemPrompt, GROK_ROUTER_SYSTEM_PROMPT } from "../../runner/routed-system-prompt.js";
@@ -33,6 +34,7 @@ type RoutedProvider = Exclude<SandInferenceProvider, "cursor">;
 type UsageRecord = { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; costUsd?: number };
 type OpenRouterTurnUsage = { cacheReadTokens: number; cacheWriteTokens: number; costUsd: number };
 type RoutedToolExecutor = (tool: Loose, args: unknown, toolCallId: string) => Promise<unknown>;
+const OPENROUTER_CONNECT_TIMEOUT_MS = 15_000;
 
 function routedToolNames(definitions: readonly Loose[] | undefined): string[] {
   if (definitions == null) return [];
@@ -157,7 +159,7 @@ function openRouterFetch(effort: OpenRouterReasoningEffort, modelId: string, usa
         return init;
       }
     })();
-    const response = await fetch(input, nextInit);
+    const response = await fetchWithConnectTimeout(input, nextInit, OPENROUTER_CONNECT_TIMEOUT_MS);
     if (response.ok) return observeOpenRouterSseUsage(response, usage);
     const text = await response.text();
     let message = `OpenRouter HTTP ${response.status}`;
@@ -196,6 +198,7 @@ function response(text: string, id: string, modelId: string) {
 }
 
 type CodexCredentials = { accessToken: string; refreshToken: string; idToken: string; accountId: string; path: string; document: Loose };
+const CODEX_REFRESH_TIMEOUT_MS = 15_000;
 
 function codexCredentials(): CodexCredentials {
   const path = join(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"), "auth.json");
@@ -227,6 +230,7 @@ async function refreshCodexCredentials(current: CodexCredentials): Promise<Codex
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: current.refreshToken, client_id: clientId }),
+    signal: AbortSignal.timeout(CODEX_REFRESH_TIMEOUT_MS),
   });
   if (!refresh.ok) throw new Error("Codex login expired and could not be refreshed. Run `codex login` again.");
   const payload = await refresh.json() as Loose;

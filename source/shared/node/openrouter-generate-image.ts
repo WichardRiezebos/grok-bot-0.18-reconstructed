@@ -1,6 +1,8 @@
 import { SandGenerateImageError } from "./cursor-backend/cursor-generate-image.js";
+import { fetchWithConnectTimeout } from "./fetch-with-connect-timeout.js";
 
 export const DEFAULT_OPENROUTER_IMAGE_MODEL = "black-forest-labs/flux-2-pro";
+const OPENROUTER_CONNECT_TIMEOUT_MS = 15_000;
 
 type OpenRouterImageResponse = {
   readonly choices?: readonly {
@@ -20,7 +22,7 @@ function dataUrlToBase64(dataUrl: string): { imageData: string; mimeType: string
 }
 
 async function fetchImageAsBase64(url: string): Promise<{ imageData: string; mimeType: string }> {
-  const response = await fetch(url);
+  const response = await fetchWithConnectTimeout(url, undefined, OPENROUTER_CONNECT_TIMEOUT_MS);
   if (!response.ok) throw new SandGenerateImageError(`OpenRouter image download failed (${response.status}).`);
   const mimeType = response.headers.get("content-type")?.split(";")[0]?.trim() || "image/png";
   const buffer = Buffer.from(await response.arrayBuffer());
@@ -84,7 +86,7 @@ export function createOpenRouterGenerateImageService(options: {
         image_url: { url: `data:${image.mimeType};base64,${image.data}` },
       });
     }
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const response = await fetchWithConnectTimeout("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -97,7 +99,7 @@ export function createOpenRouterGenerateImageService(options: {
         messages: [{ role: "user", content }],
         modalities: ["image", "text"],
       }),
-    });
+    }, OPENROUTER_CONNECT_TIMEOUT_MS);
     const payload = await response.json() as OpenRouterImageResponse;
     if (!response.ok) {
       const message = payload.error?.message?.trim() || `OpenRouter image generation failed (${response.status}).`;
