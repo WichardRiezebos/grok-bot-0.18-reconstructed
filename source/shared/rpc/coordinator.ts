@@ -107,6 +107,7 @@ export const COORDINATOR_METHOD_TABLE = {
   countAgents: { args: "none", reply: "count" },
   searchAgents: { args: "object", reply: "array" },
   searchMedia: { args: "object", reply: "array" },
+  resolveAgentCreation: { args: "none", reply: "record" },
   createAgent: { args: "object", reply: "record" },
   createGroup: { args: "object", reply: "record" },
   setGroupMembers: { args: "object", reply: "record-or-null" },

@@ -83,12 +83,26 @@ test("web runtime host bundle inlines jsonc-parser instead of UMD relative requi
   }
 });
 
-test("control image ships the checksum-pinned renderer", async () => {
+test("control image ships the checksum-pinned 0.36 renderer", async () => {
   const html = await readFile(path.join(repoRoot, "deploy/control/shipped-renderer/index.html"), "utf8");
-  assert.match(html, /index-UbX-y3il\.js/);
-  assert.match(html, /index-lCyB53CO\.css/);
-  const entry = await readFile(path.join(repoRoot, "deploy/control/shipped-renderer/assets/index-UbX-y3il.js"), "utf8");
+  assert.match(html, /index-Dl1Aho6j\.js/);
+  assert.match(html, /index-FcTs3Vos\.css/);
+  const entry = await readFile(path.join(repoRoot, "deploy/control/shipped-renderer/assets/index-Dl1Aho6j.js"), "utf8");
   assert.match(entry, /sand-/);
+  const provenance = JSON.parse(await readFile(path.join(repoRoot, "deploy/control/shipped-renderer-provenance.json"), "utf8"));
+  assert.equal(provenance.version, "0.36.0");
+  assert.equal(provenance.upstreamAsarSha256, "2ae381b92f9f19dd33b2404b512cedaa3d2e1b4a08640be088dc6a06b1cf98d3");
+  assert.equal(provenance.dmgSha256, "5aacc48244fea0a99d56d5d0a0748a71de5514cf2e0e11b4934f56aae53b48a6");
+  assert.equal(provenance.patchMode, "unpatched-stock-renderer");
+  assert.equal(provenance.entryAssets.entryChunk, "assets/index-Dl1Aho6j.js");
+  assert.equal(provenance.entryAssets.entryCss, "assets/index-FcTs3Vos.css");
+  const { stat } = await import("node:fs/promises");
+  const stats = await stat(path.join(repoRoot, "deploy/control/shipped-renderer"));
+  assert.ok(stats.isDirectory());
+  const buildScript = await readFile(path.join(repoRoot, "scripts/build-web-runtime.mjs"), "utf8");
+  const shippedIndex = buildScript.indexOf("deploy/control/shipped-renderer");
+  const bootstrappedIndex = buildScript.indexOf("src/app/dist/renderer");
+  assert.ok(shippedIndex >= 0 && bootstrappedIndex > shippedIndex, "committed 0.36 renderer wins over any bootstrapped desktop payload");
 });
 
 test("bundled CJS entrypoint still matches node server-main.cjs", async () => {

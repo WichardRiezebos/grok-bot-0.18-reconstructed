@@ -3,7 +3,7 @@ import { GROK_DRIVE_SYSTEM_PROMPT } from "../extensions/inference/pi-drive-sessi
 import { spotlightPromptSection } from "../../shared/sand-spotlight.js";
 
 export interface RoutedSystemPromptOptions {
-  readonly slot: "think" | "drive";
+  readonly slot: "think" | "drive" | "summarize";
   readonly pluginTools: boolean;
   readonly toolNames: readonly string[];
   readonly extra?: string;

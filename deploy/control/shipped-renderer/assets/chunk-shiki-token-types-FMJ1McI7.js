@@ -1,0 +1,1 @@
+function e(i){if(!i)return{};const t={};i&1&&(t.fontStyle="italic"),i&2&&(t.fontWeight="bold");const n=[];return i&4&&n.push("underline"),i&8&&n.push("line-through"),n.length>0&&(t.textDecoration=n.join(" ")),t}export{e as g};

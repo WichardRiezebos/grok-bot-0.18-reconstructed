@@ -516,11 +516,13 @@ export function createStableCoordinatorSource(initial: RawPortCoordinatorSource)
 const TELEMETRY_DOMAIN_BY_METHOD: Record<CoordinatorMethod, string> = {
   getAgentTranscriptWindow: "transcript", getAgentThread: "transcript", getAgentTranscriptTail: "transcript", openAgentTail: "transcript", getConversationOutline: "transcript",
   sendPrompt: "send", stopRoutedTurn: "send", promptAcceptanceStatus: "send", reactToMessage: "send",
+  getRoutedSystemPromptExtra: "send", reviewRoutedVideoAttachment: "send",
   listRoutedMcpTools: "plugins", executeRoutedMcpTool: "plugins",
   listRoutedComputerTools: "computer", executeRoutedComputerTool: "computer",
   respondToWidget: "widgets", dismissWidget: "widgets", submitSecret: "widgets",
   resolveAutoReviewApproval: "approvals", resolveLocalToolPermission: "approvals",
   listAgents: "roster", countAgents: "roster", searchAgents: "roster", createAgent: "roster",
+  resolveAgentCreation: "roster",
   createGroup: "roster", setGroupMembers: "roster", updateAgent: "roster", deleteAgents: "roster",
   duplicateAgent: "roster", kickstartAgent: "roster", requestDiskSaverAudit: "roster",
   broadcastToAgents: "roster", setAgentUnread: "roster", setAgentHiddenFromSidebar: "roster",

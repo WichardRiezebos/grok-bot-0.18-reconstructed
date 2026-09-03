@@ -959,11 +959,11 @@ async function fetchComposioToolkitsPage(
     const category = categories.find((value): value is string => typeof value === "string" && value.length > 0);
     return [composioCatalogEntryFromToolkit({
       slug,
-      name: typeof item.name === "string" ? item.name : undefined,
-      description: typeof meta?.description === "string" ? meta.description : undefined,
-      category,
-      logo: typeof meta?.logo === "string" ? meta.logo : undefined,
-      homepage: typeof meta?.app_url === "string" ? meta.app_url : undefined,
+      ...(typeof item.name === "string" ? { name: item.name } : {}),
+      ...(typeof meta?.description === "string" ? { description: meta.description } : {}),
+      ...(category === undefined ? {} : { category }),
+      ...(typeof meta?.logo === "string" ? { logo: meta.logo } : {}),
+      ...(typeof meta?.app_url === "string" ? { homepage: meta.app_url } : {}),
     })];
   });
   const nextCursor = typeof body.next_cursor === "string" && body.next_cursor.length > 0 ? body.next_cursor : null;

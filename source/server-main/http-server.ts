@@ -116,9 +116,19 @@ function stripCrossOrigin(html: string): string {
   return html.replace(/\s+crossorigin(?:=(?:"[^"]*"|'[^']*'|[^\s>]+))?/gi, "");
 }
 
+function allowSelfFraming(html: string): string {
+  return html.replace(
+    /(<meta[^>]*http-equiv=["']?Content-Security-Policy["']?[^>]*content=")([^"]*)("\s*\/?>)/i,
+    (whole, head: string, policy: string, tail: string) => {
+      if (!/frame-src/i.test(policy)) return whole;
+      return `${head}${policy.replace(/frame-src([^;]*)/i, (_all, sources: string) => sources.includes("'self'") ? `frame-src${sources}` : `frame-src 'self'${sources}`)}${tail}`;
+    },
+  );
+}
+
 function injectRenderer(html: string, debug: boolean): string {
   const tags = `<script src="/__grok_bot/shim.js"></script>${debug ? '<script src="/__grok_bot/overlay.js"></script>' : ""}`;
-  const prepared = stripCrossOrigin(html);
+  const prepared = allowSelfFraming(stripCrossOrigin(html));
   if (prepared.includes("<head>")) return prepared.replace("<head>", `<head>${tags}`);
   const htmlOpen = prepared.match(/<html[^>]*>/i);
   if (htmlOpen != null) return prepared.replace(htmlOpen[0], `${htmlOpen[0]}${tags}`);
@@ -505,7 +515,7 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
     }));
     socket.on("message", (raw?: Buffer | string) => {
       void (async () => {
-        let message: { kind?: string; id?: string; channel?: string; payload?: unknown; frame?: unknown };
+        let message: { kind?: string; id?: string; channel?: string; payload?: unknown; frame?: unknown; text?: string };
         try { message = JSON.parse(String(raw)) as typeof message; }
         catch { return; }
         if (message.kind === "rpc" && typeof message.id === "string" && typeof message.channel === "string") {
@@ -518,6 +528,10 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
           } finally {
             flushCoordinatorRestart();
           }
+          return;
+        }
+        if (message.kind === "debug-note" && typeof message.text === "string") {
+          noteLog(debug, "stdout", `client-frame ${message.text.slice(0, 200)}`);
           return;
         }
         if (message.kind === "coordinator") {

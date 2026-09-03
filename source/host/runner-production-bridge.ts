@@ -222,6 +222,7 @@ export interface ProductionTurnToolsetHostInput {
   readonly remoteBoxHasDesktop: boolean;
   readonly getConversationId: () => string;
   readonly getRemoteBoxAvailable: () => boolean;
+  readonly getLocalExecAvailable?: () => boolean;
   readonly cloudAgentsDisabledByTeam: () => boolean;
   readonly spotlightEnabled: () => boolean;
   readonly isDynamicToolsEnabled?: () => boolean;
@@ -258,6 +259,7 @@ export function createProductionTurnToolsetHost(
     remoteBoxHasDesktop: input.remoteBoxHasDesktop,
     getConversationId: input.getConversationId,
     getRemoteBoxAvailable: input.getRemoteBoxAvailable,
+    ...(input.getLocalExecAvailable === undefined ? {} : { getLocalExecAvailable: input.getLocalExecAvailable }),
     cloudAgentsDisabledByTeam: input.cloudAgentsDisabledByTeam,
     spotlightEnabled: input.spotlightEnabled,
     ...(input.isDynamicToolsEnabled === undefined ? {} : { isDynamicToolsEnabled: input.isDynamicToolsEnabled }),

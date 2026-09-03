@@ -21,6 +21,7 @@ const env = {
   GROK_BOT_LISTEN_HOST: "127.0.0.1",
   GROK_BOT_LISTEN_PORT: process.env.FAST_DEBUG_PORT ?? "8124",
   GROK_BOT_DATA_DIR: repoDataDir,
+  GROK_BOT_RENDERER_ROOT: process.env.GROK_BOT_RENDERER_ROOT ?? path.join(out, "renderer"),
   RUNTIME_DEBUG: "1",
   OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY ?? fileEnv.OPENROUTER_API_KEY ?? "",
   SAND_HOST_GATEWAY_URL: process.env.SAND_HOST_GATEWAY_URL ?? "http://127.0.0.1:1340",

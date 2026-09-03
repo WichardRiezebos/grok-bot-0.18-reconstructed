@@ -1,0 +1,1 @@
+import{c as r,ao as c,ap as d,j as m,aq as l}from"./index-Dl1Aho6j.js";function u(o){const s=r.c(4),{entry:a}=o,n=c(),{isReadOnly:i}=d(),t=i?void 0:n??void 0;let e;return s[0]!==a.id||s[1]!==a.message.ask||s[2]!==t?(e=m.jsx(l,{agentId:t,ask:a.message.ask,entryId:a.id}),s[0]=a.id,s[1]=a.message.ask,s[2]=t,s[3]=e):e=s[3],e}export{u as default};

@@ -81,8 +81,12 @@ Verify in this order before treating the UI as healthy:
    fallback banner “Shipped renderer is not in this image.”
 
 The control image stages `deploy/control/shipped-renderer` during `docker
-build`. That directory is the checksum-pinned 0.18 renderer so Linux/Dokploy
-builds serve the real UI instead of the debug shell.
+build`. That directory is the checksum-pinned **0.36.0** renderer of a second
+preserved public release (see `PROVENANCE.md`), so Linux/Dokploy builds serve
+the real UI instead of the debug shell. The reconstructed Router settings and
+composio Gmail routines are applied to the staged renderer at build time via
+`scripts/lib/router-renderer-patch.mjs` (fail-closed); refresh the staged copy
+with `npm run web:bootstrap`.
 
 ## Debug surface
 

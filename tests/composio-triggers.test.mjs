@@ -68,12 +68,27 @@ test("routine editor maps Gmail into the trigger picker shape", async () => {
   }
 });
 
-test("shipped renderer patch adds Gmail to Add trigger", async () => {
-  const { patchOriginalRoutineTriggerPicker } = await import("../scripts/lib/router-renderer-patch.mjs");
-  const source = await readFile(path.join(repoRoot, "deploy/control/shipped-renderer/assets/index-UbX-y3il.js"), "utf8");
-  const patched = patchOriginalRoutineTriggerPicker(source);
-  assert.match(patched, /children:"Gmail message"/);
-  assert.match(patched, /onSelect:\(\)=>F\("composio"\)/);
-  assert.match(patched, /triggerSlug:"GMAIL_NEW_GMAIL_MESSAGE"/);
-  assert.match(patched, /type:"composio"/);
+test("shipped renderer patch adds Gmail to Add trigger on the 0.36 web renderer", async () => {
+  const { cp, mkdtemp, readdir, readFile, rm } = await import("node:fs/promises");
+  const stage = await mkdtemp(path.join(tmpdir(), "grok-composio-triggers-stage-"));
+  try {
+    await cp(path.join(repoRoot, "deploy/control/shipped-renderer"), path.join(stage, "dist/renderer"), { recursive: true });
+    const { applyOriginalRendererRouterPatch } = await import("../scripts/lib/router-renderer-patch.mjs");
+    const record = await applyOriginalRendererRouterPatch({ stageRoot: stage });
+    assert.equal(record.mode, "original-renderer-036-settings-extension");
+    const assets = path.join(stage, "dist/renderer/assets");
+    const files = await readdir(assets);
+    const mainName = files.find((name) => name.startsWith("index-") && name.endsWith(".js"));
+    assert.ok(mainName != null, "main chunk is staged");
+    const main = await readFile(path.join(assets, mainName), "utf8");
+    assert.match(main, /\{id:"router",label:\{id:"Router"\},icon:"git-branch"/);
+    assert.match(main, /case"composio":return\{platform:"composio",triggerSlug:"GMAIL_NEW_GMAIL_MESSAGE"\}/);
+    assert.ok(main.includes('if(t.platform==="composio"){const i=String(t.triggerSlug??"").trim();return i.length===0?null:{type:"composio",triggerSlug:i}}'));
+    const automation = await readFile(path.join(assets, "chunk-automation-detail-panel-DHMOfrhE.js"), "utf8");
+    assert.match(automation, /onSelect:\(\)=>Z\("composio"\)/);
+    assert.match(automation, /children:"New Gmail message"/);
+    assert.match(automation, /case"composio":return t\.jsx\(Ae,\{name:"mail",size:"md"\}\)/);
+  } finally {
+    await rm(stage, { recursive: true, force: true });
+  }
 });

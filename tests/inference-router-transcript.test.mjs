@@ -135,7 +135,7 @@ test("routed turn error settles the in-flight assistant without a second bubble"
     assert.equal(running.some((agent) => agent.isComposingMessage === false && agent.currentActivity?.kind === "tool" && agent.currentActivity?.tool === "Computer"), true);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -215,7 +215,7 @@ test("routed turn settles the first acknowledgment and final text, not tool-step
     );
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -273,7 +273,7 @@ test("screenshot-only Computer loops stop before another desktop call", async ()
     assert.match(JSON.stringify(toolResults.at(-1)), /Stop taking screenshots/);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -362,7 +362,7 @@ test("request_box_help emits a take-over card and blocks later Computer calls", 
     assert.equal(projected.boxInstruction, "Sign in to Plus");
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -423,7 +423,7 @@ test("routed turn retries transient no-progress errors before settling", async (
     assert.equal(loaded.module.isRoutedPromptOverflowError(new Error("This model's maximum prompt length is 500000")), true);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -511,7 +511,7 @@ test("routed turn does not retry after streamed text, and retries overflow once"
     assert.match(overflowSettled.at(-1).message.content, /maximum prompt length/);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -573,7 +573,7 @@ test("settled assistant emit happens only after persistence is visible in the ta
     }
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -628,7 +628,7 @@ test("tail merge includes the in-progress streaming entry and drops it after set
     assert.equal(after[0].message?.content, "partial reply");
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -676,7 +676,7 @@ test("sendPrompt replies with the generated clientNonce immediately", async () =
     assert.equal(finished, true);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -763,7 +763,7 @@ test("sendPrompt to a group room defers to the host member-round runner", async 
     }
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -821,7 +821,7 @@ test("sendPrompt with attachments threads file text into the routed OpenRouter t
     assert.ok(events.some((event) => event.family === "transcript" && event.payload?.entry?.kind === "user-attachment"));
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -872,7 +872,7 @@ test("first-step click narration is discarded when a tool ran in that step", asy
     assert.equal(settled.at(-1).message.content, "The product page is open.");
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -924,7 +924,7 @@ test("computer turns auto-open box Chrome when the user named a site", async () 
     assert.match(row.lastEntry.text, /plus\.nl|Looking at plus\.nl/);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1020,7 +1020,7 @@ test("a turn that ends on a tool step settles the streamed bubble", async () => 
     assert.equal(messages.some((entry) => String(entry.message?.content).includes("I've clicked Submit.")), false);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1067,7 +1067,7 @@ test("a persist failure mid-turn settles an error bubble without crashing", asyn
   } finally {
     process.off("unhandledRejection", onUnhandled);
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1136,7 +1136,7 @@ test("Computer tools attach only on Drive turns", async () => {
     assert.equal(providerCalls.at(-1).toolNames.includes("Computer"), false);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1170,7 +1170,7 @@ test("stopRoutedTurn with no in-flight turn reports stopped false", async () => 
     assert.deepEqual(idle, { handled: true, value: { stopped: false } });
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1234,7 +1234,7 @@ test("stopRoutedTurn aborts an in-flight Drive turn with Stopped.", async () => 
     assert.equal(stillRunning?.isRunning, false);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1303,7 +1303,7 @@ test("stopRoutedTurn stays idle when listAgents resolves after abort", async () 
     assert.equal(last?.isRunning, false);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1378,7 +1378,7 @@ test("a second sendPrompt while Drive is running supersedes instead of overlappi
     assert.equal(stopped.length, 0);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1419,7 +1419,7 @@ test("deleteAgents drops overlay transcripts so the tail cannot resurrect them",
     assert.equal(kept.value.entries.some((entry) => entry.id === "t0u" && entry.content === "other chat"), true);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1467,7 +1467,7 @@ test("Think Gmail prompt with an empty plugin list surfaces a Composio load erro
     assert.equal(providerCalls, 0);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1515,7 +1515,7 @@ test("Think Gmail prompt with a listed Gmail tool executes it", async () => {
     assert.equal(executed.args.providerIdentifier, "composio");
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1569,7 +1569,7 @@ test("SendToAgent is listed on Think turns that have no Computer tools", async (
     assert.equal(providerCalls[0].systemExtra.includes("Atlas (id: agent-a)"), false);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1629,7 +1629,7 @@ test("SendToAgent delivers a 1:1 message and wakes the recipient with an [agent]
     assert.equal(fakeUser.length, 0);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1672,7 +1672,7 @@ test("SendToAgent self-send and unknown id fail closed", async () => {
     assert.equal(wakes.length, 0);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1725,7 +1725,7 @@ test("priority SendToAgent supersedes the recipient's in-flight turn", async () 
     assert.match(wakes[0], /stop that/);
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 
@@ -1775,7 +1775,7 @@ test("recipient can SendToAgent back on the wake turn", async () => {
     assert.equal(reply.payload.entry.content, "hi back");
   } finally {
     await loaded.dispose();
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });
 

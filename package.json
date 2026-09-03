@@ -22,6 +22,7 @@
     "smoke": "node scripts/smoke.mjs",
     "test": "node --test tests/*.test.mjs",
     "web:build": "node scripts/build-web-runtime.mjs",
+    "web:bootstrap": "node scripts/bootstrap-web-renderer.mjs",
     "typecheck": "tsc --project frontend/tsconfig.json",
     "source:typecheck": "tsc --project source/tsconfig.json",
     "verify": "node scripts/verify.mjs",

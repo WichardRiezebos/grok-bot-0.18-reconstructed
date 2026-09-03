@@ -1190,6 +1190,11 @@ export function createCoordinatorInferenceRouter(options: {
     provider(): SandInferenceProvider { return settings.getInferenceProvider(); },
     async dispatch(method: string, args: unknown): Promise<{ handled: boolean; value?: unknown }> {
       const provider = settings.getInferenceProvider();
+      if (method === "resolveAgentCreation") {
+        // The 0.36 renderer resolves a creation route before createAgent; the
+        // reconstruction always creates agents locally on the box.
+        return { handled: true, value: { kind: "box" } };
+      }
       if (method === "reactToMessage") {
         const record = asRecord(args) ?? {};
         const agentId = typeof record.agentId === "string" ? record.agentId : "";

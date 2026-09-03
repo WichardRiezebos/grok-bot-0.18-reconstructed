@@ -137,8 +137,8 @@ await cp(path.join(root, "source/server-main/web-shim.js"), path.join(out, "web-
 await cp(path.join(root, "source/server-main/overlay.js"), path.join(out, "overlay.js"));
 
 const rendererCandidates = [
-  path.join(root, "src/app/dist/renderer"),
   path.join(root, "deploy/control/shipped-renderer"),
+  path.join(root, "src/app/dist/renderer"),
   path.join(root, ".build/fidelity-clean-runtime/dist/renderer"),
   path.join(root, ".build/clean-runtime/dist/renderer"),
 ];

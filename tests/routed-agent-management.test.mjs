@@ -35,6 +35,26 @@ const ROUTER_SETTINGS = {
   inferenceProvider: "openrouter",
 };
 
+test("createAgent edge: resolveAgentCreation answers the 0.36 renderer creation route", async () => {
+  const { module } = await loadRouter();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "routed-agent-mgmt-"));
+  try {
+    await writeFile(path.join(dataDir, "settings.json"), JSON.stringify(ROUTER_SETTINGS));
+    const router = module.createCoordinatorInferenceRouter({
+      dataDir,
+      composingDelayMs: 0,
+      now: () => 1_000,
+      postEvent: () => {},
+      dispatchRemote: async () => ({}),
+      runProviderText: async () => "",
+    });
+    const routed = await router.dispatch("resolveAgentCreation", {});
+    assert.deepEqual(routed, { handled: true, value: { kind: "box" } });
+  } finally {
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
+  }
+});
+
 test("routed agents can create a bot that wakes with its brief, and rename themselves", async () => {
   const { module } = await loadRouter();
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "routed-agent-mgmt-"));
@@ -96,6 +116,6 @@ test("routed agents can create a bot that wakes with its brief, and rename thems
     assert.equal(update.args.id, "agent-1");
     assert.equal(update.args.name, "Hunger");
   } finally {
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
   }
 });

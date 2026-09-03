@@ -46,6 +46,12 @@ The resulting app is a hybrid by design:
 
 The upstream app installed on the machine is never overwritten.
 
+The desktop reconstruction stays pinned to the 0.18.0 release. The
+**web/Dokploy app** ships the pinned 0.36.0 shipped frontend instead
+(`deploy/control/shipped-renderer`, staged via `npm run web:bootstrap` and
+extended by the same deterministic Router/settings transform, re-derived for
+the 0.36.0 chunks).
+
 ### Why retain the shipped renderer?
 
 The distributed application did not include the original frontend source or
@@ -111,7 +117,9 @@ must be running.
 
 The same reconstruction can also run as a **browser web app** on a Compose
 stack (`control` + `box`). You open a URL. Bots keep running after you close
-the tab. OpenRouter is the only provider in that stack.
+the tab. OpenRouter is the only provider in that stack. The web app renders
+the pinned Grok Bot **0.36.0** shipped frontend with the reconstructed Router
+settings (Settings → Router) and composio Gmail routines integrated.
 
 See [docs/REMOTE-RUNTIME.md](docs/REMOTE-RUNTIME.md) for Dokploy steps, the
 local Compose overlay on `http://127.0.0.1:8080`, and the `/health` plus
@@ -211,6 +219,7 @@ npm run package           # build, sign, and verify the macOS app
 npm run verify            # verify an existing packaged app
 npm run smoke             # bounded native smoke check
 npm run web:build         # compile the Docker web-runtime artifacts
+npm run web:bootstrap     # stage the pinned 0.36.0 web renderer
 ```
 
 Generated directories including `.cache`, `.build`, `dist`, `src/app/dist`,

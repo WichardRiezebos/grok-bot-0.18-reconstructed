@@ -64,6 +64,15 @@ test("local VM reports no image update so Update Computer is not nagged", async 
   assert.match(source, /hostBundleAutoUpdate \? backendLifecycleClient : \{ recreateInBox: backendLifecycleClient\.recreateInBox\.bind\(backendLifecycleClient\), fetchImageUpdateAvailable: async \(\) => false \}/);
 });
 
+test("in-box runtime answers a missing computer registry with a live status, not a stuck Absent", async () => {
+  const source = await readFile(path.join(repoRoot, "source/host/extensions/forever-box/forever-box-service.ts"), "utf8");
+  const getStatus = source.match(/async getStatus\(input: \{ id: string \}\): Promise<BoxStatus> \{.*\}/)?.[0] ?? "";
+  assert.ok(getStatus.length > 0, "getStatus body not found");
+  assert.match(getStatus, /state === "absent"/);
+  assert.match(getStatus, /this\.options\.isInBox\(\)/);
+  assert.match(getStatus, /return this\.ensure\(input\)/);
+});
+
 test("live view prefers the agent's fork VNC URL", async () => {
   const hostBox = await readFile(path.join(repoRoot, "source/host/extensions/forever-box/host-box.ts"), "utf8");
   const recovered = await readFile(path.join(repoRoot, "frontend/src/recovered/features/computer/shell/model.ts"), "utf8");

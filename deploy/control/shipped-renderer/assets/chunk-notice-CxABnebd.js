@@ -1,0 +1,1 @@
+import{aw as e}from"./index-Dl1Aho6j.js";import{r as i}from"./chunk-mcp-renderer-copy-DP3pBOFb.js";function t(r){return r instanceof e?i(r.failure):r instanceof Error?r.message:String(r)}async function s(r,n){try{await r()}catch(o){n({kind:"error",text:t(o)})}}export{s as r};

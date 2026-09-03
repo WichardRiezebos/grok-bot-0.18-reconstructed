@@ -283,13 +283,42 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       state.runtimeHealth = value;
       window.dispatchEvent(new CustomEvent("grok-bot-runtime-health", { detail: value }));
       paintRuntimeHealthNotice();
+      syncComputerRebuildSuppression(value);
     }, () => {});
+  }
+
+  // The 0.36 renderer latches its "Updating Grok Bot's Computer" pill from
+  // host-update signals that do not apply to this runtime (the computer is the
+  // fixed compose `box` service; image/host bundle updates are disabled). When
+  // the box is verifiably healthy, hide the rebuild chrome; when it is not,
+  // leave genuine recover/reset flows visible.
+  function syncComputerRebuildSuppression(health) {
+    const boxOk = health?.box?.ok === true;
+    const styleId = "grok-bot-rebuild-suppression";
+    let style = document.getElementById(styleId);
+    if (boxOk) {
+      if (style == null) {
+        style = document.createElement("style");
+        style.id = styleId;
+        style.textContent = ".sand-computer-rebuild-banner,[aria-label*=\"Updating Grok Bot's Computer\"],[aria-label*=\"Resetting Grok Bot's Computer\"],[aria-label*=\"Recovering Grok Bot's Computer\"]{display:none!important}";
+        document.head.appendChild(style);
+      }
+      return;
+    }
+    style?.remove();
   }
 
   function installRuntimeHealthNotice() {
     let notice = null;
     const ensureNotice = () => {
       if (notice != null) return notice;
+      if (document.body == null) {
+        // The shim loads in <head>; the health probe can resolve before <body> exists.
+        document.addEventListener("DOMContentLoaded", () => {
+          if (document.body != null) window.paintRuntimeHealthNotice?.();
+        }, { once: true });
+        return null;
+      }
       notice = document.createElement("div");
       notice.dataset.testid = "grok-bot-runtime-health";
       notice.setAttribute("role", "status");
@@ -314,6 +343,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
         return;
       }
       const node = ensureNotice();
+      if (node == null) return;
       const label = node.querySelector("[data-testid='grok-bot-runtime-health-label']");
       const detail = node.querySelector("[data-testid='grok-bot-runtime-health-detail']");
       const reconnecting = !coordinatorAlive || state.connection === "reconnecting" || state.connection === "connecting";
@@ -388,6 +418,14 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
   let noteRoutedSend = () => {};
   let noteRoutedAgents = () => {};
   let noteRoutedLine = () => {};
+  const debugFrameLog = [];
+  const noteDebugFrame = (method) => { if (!method.startsWith("main:") && !method.startsWith("data:update") && method !== "data:ensureForeverBox" && method !== "data:getForeverBoxStatus") return;
+    debugFrameLog.push(`${Date.now() % 100000} ${method}`);
+    if (debugFrameLog.length > 120) debugFrameLog.shift();
+    if (socket != null && socket.readyState === WebSocket.OPEN) {
+      try { socket.send(JSON.stringify({ kind: "debug-note", text: debugFrameLog.join(" | ").slice(0, 1900) })); } catch {}
+    }
+  };
 
   function sendSocket(payload) {
     try {
@@ -395,6 +433,12 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       if (parsed && parsed.kind === "coordinator" && parsed.frame && parsed.frame.kind === "request" && parsed.frame.method === "sendPrompt") {
         const agentId = parsed.frame.args && parsed.frame.args.agentId;
         if (typeof agentId === "string") noteRoutedSend(agentId);
+      }
+      if (parsed && parsed.kind === "coordinator-main" && parsed.frame && parsed.frame.kind === "request") {
+        noteDebugFrame(parsed.frame.method);
+      }
+      if (parsed && parsed.kind === "coordinator" && parsed.frame && parsed.frame.kind === "request" && typeof parsed.frame.method === "string" && parsed.frame.method !== "sendPrompt") {
+        noteDebugFrame(`data:${parsed.frame.method}`);
       }
     } catch {}
     if (socket != null && socket.readyState === WebSocket.OPEN) {
@@ -674,9 +718,11 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     async deepLinksReady() { await edge.markDeepLinksReady(); },
     getBoxMigrationStatus: () => edge.getBoxMigrationStatus(),
     onBoxMigration: (listener) => edge.subscribe({ "box-migration": listener }),
+    onBoxHostPhase: (listener) => edge.subscribe({ "box-host-phase": listener }),
     onDevBoxRebuild: (listener) => edge.subscribe({ "dev-box-rebuild": listener }),
     onOpenFeedback: (listener) => edge.subscribe({ "open-feedback": () => listener() }),
     onOpenAbout: (listener) => edge.subscribe({ "open-about": () => listener() }),
+    onOpenSettings: (listener) => edge.subscribe({ "open-settings": () => listener() }),
     onWidgetGallery: (listener) => edge.subscribe({ "widget-gallery": listener }),
     onForceOnboarding: (listener) => edge.subscribe({ "force-onboarding": () => listener() }),
     submitFeedback: (payload) => edge.submitFeedback(payload),
@@ -700,6 +746,8 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       getSandAccessFresh: () => edge.getSandAccessFresh(),
       invokeDashboardAction: (request) => edge.invokeCursorDashboardAction(request),
       cancelTrial: () => edge.cancelCursorSandTrial(),
+      getLoginFlight: () => ({ kind: "idle" }),
+      onLoginFlightChanged: (listener) => edge.subscribe({ "cursor-login-flight-changed": listener }),
       onStatusChanged: (listener) => edge.subscribe({ "cursor-auth-changed": listener }),
     },
     experiments: {
@@ -725,6 +773,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       update: (id, force = false) => edge.updateComputer({ id, force }),
       onVncUserPresence: (listener) => edge.subscribe({ "vnc-user-presence": ({ isPresent }) => listener(isPresent) }),
       onDevBoxPullProgress: (listener) => edge.subscribe({ "dev-box-pull-progress": listener }),
+      onUpdateDispatched: (listener) => edge.subscribe({ "update-computer-dispatched": listener }),
       egressTunnel: {
         get initial() { return initial().egressTunnelEnabled; },
         get: async () => await edge.getEgressTunnelEnabled() === true,
@@ -773,6 +822,22 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       get: () => edge.getThemeState(),
       set: (preference) => edge.setThemePreference({ preference }),
       onChanged: (listener) => edge.subscribe({ "theme-changed": listener }),
+    },
+    language: {
+      get initial() { return { preference: "system", resolved: "en" }; },
+      get: () => edge.getLanguageState?.() ?? { preference: "system", resolved: "en" },
+      set: (preference) => edge.setLanguagePreference?.({ preference }) ?? Promise.resolve(),
+      onChanged: (listener) => edge.subscribe({ "language-changed": listener }),
+    },
+    botColorInChat: {
+      get initial() { return false; },
+      get: () => Promise.resolve(edge.getBotColorInChatEnabled?.() ?? false),
+      set: (enabled) => edge.setBotColorInChatEnabled?.({ enabled }) ?? Promise.resolve(),
+    },
+    assistiveTech: {
+      get initial() { return false; },
+      get: () => Promise.resolve(false),
+      onChanged: (listener) => edge.subscribe({ "assistive-tech-changed": (value) => listener(value === true) }),
     },
     secrets: {
       list: () => ipc.invoke("sand:secrets-list"),
@@ -1080,4 +1145,13 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
   installRuntimeHealthNotice();
   installToolSurfaceNotice();
   attachSocket();
+
+  try {
+    const bootDeepLink = new URLSearchParams(location.search).get("deeplink");
+    if (typeof bootDeepLink === "string" && bootDeepLink.length > 0) {
+      window.addEventListener("grok-bot-ws", () => {
+        setTimeout(() => emitEvent("deep-link", bootDeepLink), 150);
+      }, { once: true });
+    }
+  } catch {}
 })();

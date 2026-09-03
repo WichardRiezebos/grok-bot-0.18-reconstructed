@@ -1,1 +1,0 @@
-import{c as r,j as i,S as a}from"./index-UbX-y3il.js";function c(n){const t=r.c(2),{description:e}=n;let s;return t[0]!==e?(s=i.jsx(a,{isTruncating:!0,title:e,children:e}),t[0]=e,t[1]=s):s=t[1],s}export{c as default};
