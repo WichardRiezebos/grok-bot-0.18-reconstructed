@@ -27,6 +27,10 @@ export class ForeverBoxService {
     // ("Waiting to send…") until the migration TTL expires. Never emit one.
     const clean: BoxStatus = { ...status };
     delete (clean as { pull?: { percent: number } }).pull;
+    if (this.options.isInBox()) {
+      // BISECTION: minimal status shape for the 0.36 renderer.
+      return { agentId: clean.agentId, state: clean.state, vncUrl: clean.vncUrl };
+    }
     return this.migrating ? { ...clean, vncUrl: null } : clean;
   } private emit(status: BoxStatus): void { for (const listener of this.listeners) listener(status); }
   private async recreate(agentId: string, options: { preserveData: boolean; force?: boolean }): Promise<BoxStatus> { let result: { started: boolean; reason?: string }; try { result = await this.requestRecreate(options); } catch (error) { throw new SandForeverBoxError(RECREATE_UNAVAILABLE_MESSAGE, { cause: error }); } if (!result.started) throw new SandForeverBoxError(`Couldn't ${options.preserveData ? "update" : "reset"} the computer (${result.reason?.length ? result.reason : "the service declined the recreate"}). It is unchanged.`); this.updateFailureNotified = false; return this.decorateStatus({ agentId, state: "running", vncUrl: null, pull: { percent: 0 } }); }

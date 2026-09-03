@@ -383,6 +383,18 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
         return sendJson(res, 200, failureEnvelope(error));
       }
     }
+    if (req.method === "POST" && pathName === "/debug/actions/coordinator-rpc") {
+      let body: { method?: unknown; args?: unknown } = {};
+      try { body = JSON.parse(await readRequestBody(req)) as typeof body; } catch {}
+      const method = typeof body.method === "string" ? body.method : "";
+      if (method.length === 0) return sendJson(res, 400, { ok: false, error: "missing method" });
+      try {
+        const value = await dispatchRpc(`sand-rpc:main:m:${method}`, body.args ?? {});
+        return sendJson(res, 200, { ok: true, value: redactValue(value) });
+      } catch (error) {
+        return sendJson(res, 200, failureEnvelope(error));
+      }
+    }
 
     if (req.method === "GET" && pathName === "/media") {
       const filePath = url.searchParams.get("path");
@@ -513,6 +525,20 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
       debug: config.debug,
       initialState: initialRendererState(settings),
     }));
+    // The 0.36 renderer's computer-rebuild lock can latch `update` in this
+    // runtime and hold every send ("Waiting to send…"); the reducer only
+    // clears a non-pending update lock on a terminal migration event. Emit a
+    // periodic terminal migration marker so a latched lock always resolves.
+    const clearRebuildLatch = () => {
+      try {
+        if (socket.readyState === socket.OPEN) {
+          socket.send(JSON.stringify({ kind: "event", channel: "box-migration", payload: { phase: "failed", operationId: null, detail: "" } }));
+        }
+      } catch {}
+    };
+    clearRebuildLatch();
+    const rebuildLatchTimer = setInterval(clearRebuildLatch, 30_000);
+    socket.on("close", () => clearInterval(rebuildLatchTimer));
     socket.on("message", (raw?: Buffer | string) => {
       void (async () => {
         let message: { kind?: string; id?: string; channel?: string; payload?: unknown; frame?: unknown; text?: string };
