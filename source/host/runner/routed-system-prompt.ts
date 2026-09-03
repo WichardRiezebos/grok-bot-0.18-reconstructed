@@ -1,5 +1,6 @@
 import { buildSandBaseSystemPrompt } from "./system-prompt.js";
 import { GROK_DRIVE_SYSTEM_PROMPT } from "../extensions/inference/pi-drive-session.js";
+import { spotlightPromptSection } from "../../shared/sand-spotlight.js";
 
 export interface RoutedSystemPromptOptions {
   readonly slot: "think" | "drive";
@@ -7,6 +8,11 @@ export interface RoutedSystemPromptOptions {
   readonly toolNames: readonly string[];
   readonly extra?: string;
   readonly hasComputer?: boolean;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+export function routedUntrustedSectionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.SAND_ROUTE_SPOTLIGHT !== "0";
 }
 
 function hasTool(toolNames: readonly string[], ...candidates: readonly string[]): boolean {
@@ -92,9 +98,12 @@ function routedReconstructionOverlay(options: RoutedSystemPromptOptions): string
 }
 
 export function buildRoutedSystemPrompt(options: RoutedSystemPromptOptions): string {
+  const env = options.env ?? process.env;
+  const untrusted = routedUntrustedSectionEnabled(env) ? spotlightPromptSection({ canSendMessage: false }) : null;
   if (options.slot === "drive") {
     const extra = options.extra?.trim() ?? "";
     const parts = [GROK_DRIVE_SYSTEM_PROMPT, routedReconstructionOverlay({ ...options, hasComputer: true })];
+    if (untrusted != null) parts.push(untrusted);
     if (extra.length > 0) parts.push(extra);
     return parts.join("\n\n");
   }
@@ -109,6 +118,7 @@ export function buildRoutedSystemPrompt(options: RoutedSystemPromptOptions): str
     routedToolTruthSection(options.toolNames),
     routedReconstructionOverlay(options),
   ];
+  if (untrusted != null) parts.push(untrusted);
   const extra = options.extra?.trim() ?? "";
   if (extra.length > 0) parts.push(extra);
   return parts.join("\n\n");

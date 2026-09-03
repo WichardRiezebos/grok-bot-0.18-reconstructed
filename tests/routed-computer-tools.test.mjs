@@ -141,20 +141,27 @@ test("routed computer results expose screenshot images for Codex and OpenRouter"
       text: loaded.module.computerScreenshotLoopMessage(),
       isError: true,
     });
-    assert.deepEqual(loaded.module.openRouterToolResultContent(loop), [
+    const TAG = "cursor_untrusted_data_1337";
+    const fence = (parts, source = "tool result") => [
+      { type: "text", text: `<${TAG} source="${source}">` },
+      ...parts,
+      { type: "text", text: `</${TAG}>` },
+    ];
+    assert.deepEqual(loaded.module.openRouterToolResultContent(loop), fence([
       { type: "text", text: loaded.module.computerScreenshotLoopMessage() },
-    ]);
+    ]));
     const plugin = { result: { case: "success", value: { subject: "Hello" } } };
-    assert.deepEqual(loaded.module.openRouterToolResultContent(plugin), [
+    assert.deepEqual(loaded.module.openRouterToolResultContent(plugin, "Gmail_send"), fence([
       { type: "text", text: JSON.stringify(plugin) },
-    ]);
-    assert.deepEqual(loaded.module.openRouterToolResultContent(result), modelContent);
+    ], "Gmail_send"));
+    assert.deepEqual(loaded.module.openRouterToolResultContent(result), fence(modelContent));
     const codex = loaded.module.codexFunctionCallOutput("call-1", result);
     assert.equal(codex.type, "function_call_output");
     assert.equal(codex.call_id, "call-1");
     assert.equal(Array.isArray(codex.output), true);
-    assert.equal(codex.output[1].type, "input_image");
-    assert.match(codex.output[1].image_url, /^data:image\/webp;base64,abc123$/);
+    assert.equal(codex.output[0].text, `<${TAG} source="tool result">`);
+    assert.equal(codex.output[2].type, "input_image");
+    assert.match(codex.output[2].image_url, /^data:image\/webp;base64,abc123$/);
   } finally {
     await loaded.dispose();
   }

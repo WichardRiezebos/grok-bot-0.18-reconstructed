@@ -174,7 +174,7 @@ export async function* streamCodexDirectResponses(options: CodexDirectOptions): 
       try { args = typeof call.arguments === "string" && call.arguments.length > 0 ? JSON.parse(call.arguments) : {}; }
       catch { results.push({ type: "function_call_output", call_id: call.call_id, output: safeJson({ isError: true, error: "Tool arguments were not valid JSON." }) }); continue; }
       try {
-        results.push(codexFunctionCallOutput(call.call_id, await options.executeTool(selected, args, call.call_id)));
+        results.push(codexFunctionCallOutput(call.call_id, await options.executeTool(selected, args, call.call_id), call.name));
       } catch (error) {
         results.push({ type: "function_call_output", call_id: call.call_id, output: safeJson({ isError: true, error: error instanceof Error ? error.message : String(error) }) });
       }

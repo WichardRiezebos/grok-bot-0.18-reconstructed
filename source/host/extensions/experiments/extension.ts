@@ -7,6 +7,14 @@ import { HostExtensions } from "../extension-ids.generated.js";
 
 interface AuthApi { getAccessToken(options: { backendUrl: string }): Promise<string>; getMachineId(): Promise<string>; peekAccessToken(): string | null; subscribeToRenewal(listener: (event: { outcome: string; isFirstCredential: boolean }) => void): () => void; }
 interface SettingsApi { subscribeToFeatureFlagOverrides(listener: (overrides: Record<string, boolean>) => void): () => void; }
+
+type GateName = "sand_memory_dreaming" | "sand_browser_use_subagent";
+function localGateOrDefault(env: NodeJS.ProcessEnv, envName: string, gate: GateName, service: SandExperimentService, localDefault: boolean): boolean {
+  const raw = env[envName];
+  if (raw != null && raw.length > 0) return raw !== "0" && raw.toLowerCase() !== "false";
+  return service.hasAuthenticatedStatsigBootstrap() ? service.checkFeatureGate(gate) : localDefault;
+}
+
 export const experimentsExtension = defineHostExtension({
   id: HostExtensions.Experiments, dependencies: [HostExtensions.Auth, HostExtensions.Settings],
   start: (context) => {
@@ -20,7 +28,7 @@ export const experimentsExtension = defineHostExtension({
       pinGateOnAuthenticatedBootstrap: (name: Parameters<typeof service.pinGateOnAuthenticatedBootstrap>[0], pin: (value: boolean) => void) => service.pinGateOnAuthenticatedBootstrap(name, pin), hasHydratedStatsigUserId: () => service.hasHydratedStatsigUserId(), waitForHydratedStatsigUserId: (timeoutMs?: number) => service.waitForHydratedStatsigUserId(timeoutMs),
       hasAuthenticatedStatsigBootstrap: () => service.hasAuthenticatedStatsigBootstrap(), getSandModelExperimentState: () => service.getSandModelExperimentState(), logSandModelExperimentExposure: () => service.logSandModelExperimentExposure(), getConfiguredDefaultModel: () => service.getConfiguredDefaultModel(), getConfiguredAutomationsModel: () => service.getConfiguredAutomationsModel(), getComputerUseModelOverride: () => service.getComputerUseModelOverride(), getBrowserUseModelOverride: () => service.getBrowserUseModelOverride(),
       isAgentNetworkEnabled: () => service.checkFeatureGate("sand_agent_network"), isMcpMultiAccountEnabled: () => service.checkFeatureGate("mcp_multi_account"), isSparsePluginClonesEnabled: () => service.checkFeatureGate("enable_sparse_plugin_clones"),
-      isMultitaskEnabled: () => resolveMultitaskEnabled(process.env.SAND_MULTITASK, () => service.checkFeatureGate("sand_multitask")), isSendMessageDeliveryOwedEnabled: () => service.checkFeatureGate("sand_send_message_delivery_owed"), isDynamicToolsEnabled: () => service.checkFeatureGate("grok_bot_dynamic_tools"), isBrowserUseSubagentEnabled: () => service.checkFeatureGate("sand_browser_use_subagent"),
+      isMultitaskEnabled: () => resolveMultitaskEnabled(process.env.SAND_MULTITASK, () => service.checkFeatureGate("sand_multitask")), isSendMessageDeliveryOwedEnabled: () => service.checkFeatureGate("sand_send_message_delivery_owed"), isDynamicToolsEnabled: () => service.checkFeatureGate("grok_bot_dynamic_tools"), isBrowserUseSubagentEnabled: () => localGateOrDefault(process.env, "SAND_BROWSER_USE_SUBAGENT", "sand_browser_use_subagent", service, true), isMemoryDreamingEnabled: () => localGateOrDefault(process.env, "SAND_MEMORY_DREAMING", "sand_memory_dreaming", service, true),
       isSpotlightEnabled: () => resolveSpotlightEnabled(process.env.SAND_SPOTLIGHT, () => service.checkFeatureGate("sand_spotlight")), isUnicodeTypingEnabled: () => service.checkFeatureGate("sand_computer_use_unicode_typing"), isUaTokenKillSwitchEnabled: () => service.checkFeatureGate("sand_browser_ua_token_kill_switch")
     };
   }

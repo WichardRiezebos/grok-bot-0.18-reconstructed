@@ -17,6 +17,7 @@ import { applyOpenRouterCacheControl, applyOpenRouterStreamUsage, openRouterMode
 import {
   ROUTED_PLUGIN_MAX_STEPS,
   openRouterToolResultContent,
+  routedDefinitionsHavePluginTools,
 } from "../../../shared/routed-computer-tools.js";
 import { BOX_SECRETS_FILENAME, getBoxSecretsStorePath } from "../secrets/secrets-service.js";
 import { streamCodexDirectResponses, type CodexDirectTool } from "./codex-direct-responses.js";
@@ -384,7 +385,7 @@ function toToolSet(definitions: readonly Loose[] | undefined, executeTool?: Rout
     const routedTool: any = {
       ...(typeof definition.description === "string" ? { description: definition.description } : {}),
       parameters: jsonSchema(parameters),
-      experimental_toToolResultContent: (result: unknown) => openRouterToolResultContent(result),
+      experimental_toToolResultContent: (result: unknown) => openRouterToolResultContent(result, typeof definition.name === "string" ? definition.name : undefined),
     };
     if (executeTool != null) routedTool.execute = async (args: unknown, options: { toolCallId: string }) => await executeTool(definition, args, options.toolCallId);
     tools[definition.name] = tool(routedTool);
@@ -420,9 +421,10 @@ function openRouterExecutor(messages: readonly ProviderMessage[], invocationId: 
 class ProviderPromptExecutor extends BasePromptExecutor<ProviderMessage> {
   constructor(readonly provider: RoutedProvider, initialMessages?: readonly ProviderMessage[], readonly onUsage?: (usage: UsageRecord) => void, readonly slot: OpenRouterSlot = "think") { super(new BasePromptBuilder(initialMessages)); }
   stream(_ctx: unknown, invocationId = crypto.randomUUID(), definitions?: readonly Loose[]) {
-    if (this.provider === "codex") return codexExecutor(this.getMessages(), invocationId, definitions, undefined, this.onUsage);
+    const pluginTools = routedDefinitionsHavePluginTools(definitions);
+    if (this.provider === "codex") return codexExecutor(this.getMessages(), invocationId, definitions, undefined, this.onUsage, undefined, undefined, this.slot, pluginTools);
     if (this.provider === "claude-code") return claudeExecutor(this.getMessages(), invocationId, this.onUsage);
-    return openRouterExecutor(this.getMessages(), invocationId, definitions, undefined, this.onUsage, undefined, undefined, this.slot);
+    return openRouterExecutor(this.getMessages(), invocationId, definitions, undefined, this.onUsage, undefined, undefined, this.slot, pluginTools);
   }
 }
 

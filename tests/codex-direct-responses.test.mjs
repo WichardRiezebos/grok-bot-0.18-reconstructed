@@ -89,7 +89,8 @@ test("direct Codex Responses transport executes Grok Bot tools and continues wit
   assert.equal(requests.length, 2);
   assert.deepEqual(toolExecution, { tool: { name: "gmail_search", description: "Search Gmail", parameters: { type: "object" }, source }, args: { query: "newer_than:1d" }, toolCallId: "call-123" });
   assert.equal(requests[1].input.at(-2).type, "function_call");
-  assert.deepEqual(requests[1].input.at(-1), { type: "function_call_output", call_id: "call-123", output: JSON.stringify({ result: { case: "success", value: { subject: "Subject" } } }) });
+  const tag = "cursor_untrusted_data_1337";
+  assert.deepEqual(requests[1].input.at(-1), { type: "function_call_output", call_id: "call-123", output: `<${tag} source="gmail_search">\n${JSON.stringify({ result: { case: "success", value: { subject: "Subject" } } })}\n</${tag}>` });
   assert.deepEqual(events.at(-1), { type: "done", text: "Subject", responseId: "resp-final", usage: { inputTokens: 28, outputTokens: 6, cacheReadTokens: 6, cacheWriteTokens: 0 } });
 });
 

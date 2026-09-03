@@ -1,3 +1,5 @@
+import { spotlightClose, spotlightOpen, spotlightToolResultContent, type SpotlightContentPart } from "./sand-spotlight.js";
+
 export const ROUTED_COMPUTER_PROVIDER_IDENTIFIER = "grok-bot-computer";
 export const ROUTED_COMPUTER_TOOL_NAME = "Computer";
 export const ROUTED_BOX_HELP_TOOL_NAME = "request_box_help";
@@ -15,12 +17,44 @@ export const ROUTED_UI_TOOL_NAMES = [
   ROUTED_UI_WAIT_TOOL_NAME,
 ] as const;
 export const ROUTED_COMPUTER_SCREENSHOT_MIME = "image/webp";
+export const ROUTED_TOOL_RESULT_SPOTLIGHT_SOURCE = "tool result";
 
 export const ROUTED_PLUGIN_MAX_STEPS = 8;
 export const ROUTED_COMPUTER_MAX_STEPS = 32;
 export const ROUTED_COMPUTER_SCREENSHOT_LOOP_LIMIT = 4;
 export const ROUTED_INFERENCE_TURN_TIMEOUT_MS = 90_000;
 export const ROUTED_COMPUTER_INFERENCE_TURN_TIMEOUT_MS = 300_000;
+
+export function routedSpotlightWrappingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.SAND_ROUTE_SPOTLIGHT !== "0";
+}
+
+const ROUTED_NATIVE_SAND_TOOL_NAMES = new Set([
+  "sendmessage", "shell", "externalshell", "read", "externalread", "todowrite", "updatetodos",
+  "webfetch", "websearch", "websearchtool", "webfetchtool", "generateimage", "task", "awaitshell",
+  "externalawaitshell", "screenshot", "computer", "cloudagent", "request_box_help", "sendtoagent",
+  "createagent", "updateagent", "copytobox", "copyfrombox", "searchplugins", "getplugin",
+  "installplugin", "addmcpserver", "uninstallmcpserver", "uninstallplugin", "getmcptools",
+  "callmcptool", "authenticatemcpserver", "getmcpserverstatus", "restartmcpservers",
+  "removemcpaccount", "renamemcpaccount", "setmcpinstructions", "reacttomessage", "update_state",
+  "checksubagent", "messagesubagent", "stopsubagent", "box_chrome", "observe_ui", "act_ui",
+  "find_roots", "search_ui", "wait_for", "browser_navigate", "browser_snapshot", "browser_click",
+  "browser_mouse_click_xy", "browser_type", "browser_fill", "browser_select_option",
+  "browser_press_key", "browser_scroll", "browser_drag", "browser_get_bounding_box",
+  "browser_highlight", "browser_cdp", "browser_tabs", "browser_take_screenshot",
+]);
+
+export function routedDefinitionIsPluginTool(definition: Record<string, unknown>): boolean {
+  const name = typeof definition.name === "string" && definition.name.length > 0
+    ? definition.name
+    : typeof definition.toolName === "string" ? definition.toolName : "";
+  return name.length > 0 && !ROUTED_NATIVE_SAND_TOOL_NAMES.has(name.toLowerCase());
+}
+
+export function routedDefinitionsHavePluginTools(definitions: readonly Record<string, unknown>[] | undefined): boolean {
+  if (definitions == null) return false;
+  return definitions.some(definition => routedDefinitionIsPluginTool(definition));
+}
 
 const COMPUTER_ACTION_ENUM = ["screenshot", "click", "move", "drag", "type", "key", "scroll", "wait"] as const;
 
@@ -372,26 +406,33 @@ export function routedToolResultModelContent(value: unknown): Array<Record<strin
   return content;
 }
 
-export function openRouterToolResultContent(value: unknown): Array<Record<string, unknown>> {
+export function openRouterToolResultContent(value: unknown, source?: string): Array<Record<string, unknown>> {
   const parts = routedComputerResultParts(value);
-  if (parts.image != null) return routedToolResultModelContent(value);
-  if (parts.isError) return [{ type: "text", text: parts.text }];
-  return [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value) }];
+  const asText = (text: string): Array<Record<string, unknown>> => [{ type: "text", text }];
+  const content = parts.image != null
+    ? routedToolResultModelContent(value)
+    : parts.isError
+      ? asText(parts.text)
+      : asText(typeof value === "string" ? value : JSON.stringify(value));
+  if (!routedSpotlightWrappingEnabled()) return content;
+  return spotlightToolResultContent(source ?? ROUTED_TOOL_RESULT_SPOTLIGHT_SOURCE, content as SpotlightContentPart[]) as Array<Record<string, unknown>>;
 }
 
-export function codexFunctionCallOutput(callId: string, value: unknown): Record<string, unknown> {
+export function codexFunctionCallOutput(callId: string, value: unknown, source?: string): Record<string, unknown> {
   const parts = routedComputerResultParts(value);
   if (parts.image == null) {
-    return { type: "function_call_output", call_id: callId, output: JSON.stringify(value) };
+    const output = JSON.stringify(value);
+    const fenced = routedSpotlightWrappingEnabled()
+      ? `${spotlightOpen(source ?? ROUTED_TOOL_RESULT_SPOTLIGHT_SOURCE)}\n${output}\n${spotlightClose()}`
+      : output;
+    return { type: "function_call_output", call_id: callId, output: fenced };
   }
-  return {
-    type: "function_call_output",
-    call_id: callId,
-    output: [
-      { type: "input_text", text: parts.text },
-      { type: "input_image", image_url: `data:${parts.image.mimeType};base64,${parts.image.data}` },
-    ],
-  };
+  const content: SpotlightContentPart[] = [
+    { type: "input_text", text: parts.text },
+    { type: "input_image", image_url: `data:${parts.image.mimeType};base64,${parts.image.data}` },
+  ];
+  if (!routedSpotlightWrappingEnabled()) return { type: "function_call_output", call_id: callId, output: content };
+  return { type: "function_call_output", call_id: callId, output: spotlightToolResultContent(source ?? ROUTED_TOOL_RESULT_SPOTLIGHT_SOURCE, content) };
 }
 
 export function mergeRoutedToolLists(

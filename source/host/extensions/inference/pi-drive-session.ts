@@ -3,7 +3,8 @@ import { Type, type TSchema } from "@earendil-works/pi-ai";
 import { builtinModels, getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 
 import { DEFAULT_OPENROUTER_COMPUTER_MODEL, type OpenRouterReasoningEffort } from "../../../shared/openrouter-models.js";
-import { routedComputerResultParts } from "../../../shared/routed-computer-tools.js";
+import { routedComputerResultParts, routedSpotlightWrappingEnabled } from "../../../shared/routed-computer-tools.js";
+import { spotlightClose, spotlightOpen } from "../../../shared/sand-spotlight.js";
 import { routedAbortErrorFromSignal } from "../../../shared/routed-turn-abort.js";
 
 type Loose = Record<string, any>;
@@ -51,9 +52,12 @@ function toPiTools(definitions: readonly Loose[] | undefined, executeTool: Route
         const result = await executeTool(definition, params, toolCallId);
         const parts = routedComputerResultParts(result);
         if (parts.isError) throw new Error(parts.text);
+        const wrappedText = routedSpotlightWrappingEnabled()
+          ? `${spotlightOpen(name)}\n${parts.text}\n${spotlightClose()}`
+          : parts.text;
         return {
           content: [
-            { type: "text" as const, text: parts.text },
+            { type: "text" as const, text: wrappedText },
             ...(parts.image == null ? [] : [{ type: "image" as const, data: parts.image.data, mimeType: parts.image.mimeType }]),
           ],
           details: {},
