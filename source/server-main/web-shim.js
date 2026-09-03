@@ -653,6 +653,15 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
   for (const method of mainMethods) {
     edge[method] = (args) => rpc(methodChannel("main", method), args ?? {});
   }
+  function bytesToBase64(bytes) {
+    if (!(bytes instanceof Uint8Array)) return bytes;
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(index, index + chunkSize));
+    }
+    return btoa(binary);
+  }
   edge.subscribe = (handlers) => {
     const unsubs = [];
     for (const [event, listener] of Object.entries(handlers)) {
@@ -682,8 +691,18 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       await edge.openExternal(typeof url === "string" ? { url } : url ?? {});
     },
     async openCloudAgent(bcId) { await edge.openCloudAgent({ bcId }); },
-    stageAttachmentBytes: (filename, bytes) => edge.stageAttachmentBytes({ filename, bytes }),
-    commitStagedAttachments: (paths, filenames) => edge.commitStagedAttachments({ paths, filenames }),
+    // JSON RPC cannot carry a live Uint8Array (it stringifies into a numeric-key
+    // object the control's byte normalizer rejects), so hand the bytes over as
+    // base64 — the control's attachment handlers accept that shape directly.
+    stageAttachmentBytes: (filename, bytes) => edge.stageAttachmentBytes({ filename, bytes: bytesToBase64(bytes) }),
+    commitStagedAttachments: (paths, filenames) => {
+      // The 0.36 renderer invokes this with a single payload object
+      // ({ agentId, paths, filenames }); keep the positional form working too.
+      const payload = paths != null && typeof paths === "object" && !Array.isArray(paths)
+        ? paths
+        : { paths, filenames };
+      return edge.commitStagedAttachments(payload);
+    },
     async discardStagedAttachment(path) { await edge.discardStagedAttachment({ path }); },
     mcp: {
       list: () => ipc.invoke("sand:mcp-list"),
