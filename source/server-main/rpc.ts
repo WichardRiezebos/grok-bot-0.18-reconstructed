@@ -216,7 +216,10 @@ export function createRpcDispatcher(options: {
     setWebauthnProxyEnabled: () => stub("setWebauthnProxyEnabled"),
     getUpdateStatus: () => ({
       state: { type: "disabled", reason: "disabled-by-env" },
-      currentVersion: "0.18.0-reconstructed.1",
+      // The web/Dokploy runtime pairs the pinned 0.36.0 shipped renderer with
+      // this reconstruction host; keep the displayed version in sync with
+      // webRendererVersion in scripts/lib/config.mjs.
+      currentVersion: `${process.env.SAND_WEB_DISPLAY_VERSION ?? "0.36.0"}-reconstructed.1`,
       currentTrack: "stable",
       trackOverride: null,
       buildDefaultTrack: "stable",
