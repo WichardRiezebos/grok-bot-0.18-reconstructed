@@ -395,6 +395,12 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
         return sendJson(res, 200, failureEnvelope(error));
       }
     }
+    if (req.method === "POST" && pathName === "/debug/actions/open-settings") {
+      // Same path the desktop tray uses: the renderer's onOpenSettings
+      // subscription opens the settings overlay on this edge event.
+      emit("open-settings", {});
+      return sendJson(res, 200, { ok: true });
+    }
 
     if (req.method === "GET" && pathName === "/media") {
       const filePath = url.searchParams.get("path");
@@ -529,10 +535,14 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
     // runtime and hold every send ("Waiting to send…"); the reducer only
     // clears a non-pending update lock on a terminal migration event. Emit a
     // periodic terminal migration marker so a latched lock always resolves.
+    // The detail must classify as "busy" (see the renderer's migration-failure
+    // parsing): an empty detail would raise the "Update failed" recovery
+    // banner even though the computer is fine, while "busy" only surfaces the
+    // benign update-refusal state that the next status poll clears.
     const clearRebuildLatch = () => {
       try {
         if (socket.readyState === socket.OPEN) {
-          socket.send(JSON.stringify({ kind: "event", channel: "box-migration", payload: { phase: "failed", operationId: null, detail: "" } }));
+          socket.send(JSON.stringify({ kind: "event", channel: "box-migration", payload: { phase: "failed", operationId: null, detail: "busy" } }));
         }
       } catch {}
     };

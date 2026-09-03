@@ -57,6 +57,7 @@ export function renderDebugPage(health: RuntimeHealth, debug: DebugState, debugE
   <p>
     <button type="button" data-testid="debug-probe-box" id="probe-box">Probe box /health</button>
     <button type="button" data-testid="debug-ping-rpc" id="ping-rpc">Send ping RPC</button>
+    <button type="button" data-testid="debug-open-settings" id="open-settings">Open settings overlay</button>
   </p>
   <pre data-testid="debug-action-result" id="action-result">idle</pre>
   <h2>RPC</h2>
@@ -75,6 +76,11 @@ export function renderDebugPage(health: RuntimeHealth, debug: DebugState, debugE
     document.getElementById("ping-rpc").onclick = async () => {
       result.textContent = "pinging…";
       const response = await fetch("/debug/actions/ping-rpc", { method: "POST" });
+      result.textContent = await response.text();
+    };
+    document.getElementById("open-settings").onclick = async () => {
+      result.textContent = "broadcasting open-settings…";
+      const response = await fetch("/debug/actions/open-settings", { method: "POST" });
       result.textContent = await response.text();
     };
   </script>
