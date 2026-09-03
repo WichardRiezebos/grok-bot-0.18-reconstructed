@@ -690,7 +690,16 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       }
       await edge.openExternal(typeof url === "string" ? { url } : url ?? {});
     },
-    async openCloudAgent(bcId) { await edge.openCloudAgent({ bcId }); },
+    async openCloudAgent(bcId) { await edge.openCloudAgent({ bcId }) },
+    // The renderer's desktop bridge composes stageAttachmentFile(filename, File)
+    // on top of the raw transport; the Electron preload provides it, so the web
+    // shim has to too — without it every file-picker attach rejects with
+    // "Couldn't attach" before any RPC fires.
+    async stageAttachmentFile(filename, file) {
+      if (typeof file?.arrayBuffer !== "function") return { ok: false, reason: "failed" };
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      return edge.stageAttachmentBytes({ filename, bytes: bytesToBase64(bytes) });
+    },
     // JSON RPC cannot carry a live Uint8Array (it stringifies into a numeric-key
     // object the control's byte normalizer rejects), so hand the bytes over as
     // base64 — the control's attachment handlers accept that shape directly.
