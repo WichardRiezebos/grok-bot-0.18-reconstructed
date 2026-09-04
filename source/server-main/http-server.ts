@@ -572,12 +572,25 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
         }
         if (message.kind === "coordinator") {
           claimOwner(socket);
+          // A renderer's port client emits a lifecycle-shutdown frame when it
+          // breaches its own protocol. With several tabs sharing one
+          // coordinator, forwarding that frame would let one stale tab kill
+          // the shared coordinator and every in-flight turn with it — the
+          // coordinator's lifecycle belongs to the control process here.
+          // The hello handshake must still pass through.
+          const frameKind = (message.frame as { kind?: string; phase?: string; method?: string } | null)?.kind;
+          if (frameKind === "lifecycle") {
+            const phase = (message.frame as { phase?: string } | null)?.phase;
+            if (phase === "shutdown") {
+              noteLog(debug, "control", `dropped client coordinator shutdown frame: ${JSON.stringify(message.frame).slice(0, 200)}`);
+              return;
+            }
+          }
           if (coordinator == null) {
             if (coordinatorFrameBacklog.length < COORDINATOR_FRAME_BACKLOG_LIMIT) coordinatorFrameBacklog.push({ at: Date.now(), frame: message.frame });
             noteLog(debug, "control", `coordinator frame buffered (no session): ${JSON.stringify(message.frame).slice(0, 120)}`);
             return;
           }
-          const frameKind = (message.frame as { kind?: string; method?: string } | null)?.kind;
           if (frameKind === "request") {
             noteLog(debug, "control", `coordinator request ${String((message.frame as { method?: string }).method)}`);
           }
@@ -587,6 +600,11 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
         }
         if (message.kind === "coordinator-main") {
           claimOwner(socket);
+          const mainFrameKind = (message.frame as { kind?: string; phase?: string } | null)?.kind;
+          if (mainFrameKind === "lifecycle" && (message.frame as { phase?: string }).phase === "shutdown") {
+            noteLog(debug, "control", "dropped client coordinator-main shutdown frame");
+            return;
+          }
           try { coordinator?.postMainData(message.frame); }
           catch (error) { noteLog(debug, "control", `coordinator main-data post failed: ${String(error)}`); }
         }

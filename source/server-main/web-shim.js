@@ -440,6 +440,9 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       if (parsed && parsed.kind === "coordinator" && parsed.frame && parsed.frame.kind === "request" && typeof parsed.frame.method === "string" && parsed.frame.method !== "sendPrompt") {
         noteDebugFrame(`data:${parsed.frame.method}`);
       }
+      if (parsed && parsed.kind === "coordinator" && parsed.frame && parsed.frame.kind === "lifecycle") {
+        noteDebugFrame(`client lifecycle ${parsed.frame.phase}/${parsed.frame.reason}: ${parsed.frame.detail ?? ""}`.slice(0, 300));
+      }
     } catch {}
     if (socket != null && socket.readyState === WebSocket.OPEN) {
       socket.send(payload);
