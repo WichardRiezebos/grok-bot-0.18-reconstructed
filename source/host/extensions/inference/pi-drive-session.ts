@@ -3,7 +3,7 @@ import { Type, type TSchema } from "@earendil-works/pi-ai";
 import { builtinModels, getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
 
 import { DEFAULT_OPENROUTER_COMPUTER_MODEL, type OpenRouterReasoningEffort } from "../../../shared/openrouter-models.js";
-import { routedComputerResultParts, routedSpotlightWrappingEnabled } from "../../../shared/routed-computer-tools.js";
+import { routedComputerResultParts, routedSpotlightWrappingEnabled, routedStallTimeoutMs } from "../../../shared/routed-computer-tools.js";
 import { spotlightClose, spotlightOpen } from "../../../shared/sand-spotlight.js";
 import { routedAbortErrorFromSignal } from "../../../shared/routed-turn-abort.js";
 
@@ -136,6 +136,7 @@ export async function runPiDriveSession(options: {
   readonly onProgress?: ((line: string) => void) | undefined;
   readonly onStreamEvent?: ((event: { readonly type: string; readonly toolName?: string; readonly elapsedMs: number }) => void) | undefined;
   readonly systemExtra?: string | undefined;
+  readonly stallTimeoutMs?: number | undefined;
 }): Promise<string> {
   const abortSignal = options.abortSignal;
   if (abortSignal?.aborted) {
@@ -169,7 +170,19 @@ export async function runPiDriveSession(options: {
     },
   });
   let visible = "";
+  const stallTimeoutMs = options.stallTimeoutMs ?? routedStallTimeoutMs(true);
+  let lastEventAt = Date.now();
+  let stallFailure: Error | null = null;
+  const touch = () => { lastEventAt = Date.now(); };
+  const stallTimer = setInterval(() => {
+    const silentFor = Date.now() - lastEventAt;
+    if (silentFor > stallTimeoutMs) {
+      stallFailure = new Error(`The drive session stalled for ${Math.round(silentFor / 100) / 10}s and was aborted.`);
+      try { agent.abort(); } catch { /* already idle */ }
+    }
+  }, 250);
   agent.subscribe((event) => {
+    touch();
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
       visible += event.assistantMessageEvent.delta;
       options.onTextDelta?.(event.assistantMessageEvent.delta, visible);
@@ -189,9 +202,11 @@ export async function runPiDriveSession(options: {
   try {
     await agent.prompt(promptText);
   } catch (error) {
+    if (stallFailure != null) throw stallFailure;
     if (abortSignal?.aborted) throw routedAbortErrorFromSignal(abortSignal, () => new Error("The routed request timed out."));
     throw error;
   } finally {
+    clearInterval(stallTimer);
     abortSignal?.removeEventListener("abort", onAbort);
   }
   if (abortSignal?.aborted) {

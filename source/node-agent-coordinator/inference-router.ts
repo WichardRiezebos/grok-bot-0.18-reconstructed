@@ -765,6 +765,7 @@ export function createCoordinatorInferenceRouter(options: {
     turnActivities.set(agentId, turnActivity);
     if (userAbort.signal.aborted) turnActivity.stop();
     let turnAbort: AbortSignal | undefined = userAbort.signal;
+    let turnDeadlineMs: number | undefined = undefined;
     const log = (message: string) => routedLogLine(options.dataDir, provider, agentId, message, options.postEvent);
     try {
       // Short composing window: lets the composing state render and rapid
@@ -1174,6 +1175,7 @@ export function createCoordinatorInferenceRouter(options: {
     const runProviderText = options.runProviderText ?? runRoutedProviderText;
     const slot = drive ? "drive" as const : "think" as const;
     turnSlotByAgent.set(agentId, slot);
+    queuedAtByAgent.delete(agentId);
     const promptChars = messages.reduce((sum, message) => sum + (typeof message.content === "string" ? message.content.length : 0), 0);
     log(`turn-start ${slot} ${messages.length} msgs ${promptChars} chars`);
     try {
@@ -1228,6 +1230,7 @@ export function createCoordinatorInferenceRouter(options: {
         }
       }
       const timeoutMs = options.turnTimeoutMs ?? routedTurnTimeoutMs(drive);
+      turnDeadlineMs = timeoutMs;
       log(`turn-deadline ${Math.round(timeoutMs / 100) / 10}s`);
       const maxSteps = drive ? ROUTED_COMPUTER_MAX_STEPS : ROUTED_PLUGIN_MAX_STEPS;
       const abortSignal = AbortSignal.any([userAbort.signal, AbortSignal.timeout(timeoutMs)]);
@@ -1257,7 +1260,8 @@ export function createCoordinatorInferenceRouter(options: {
           slot,
           pluginTools,
           systemExtra,
-        } : { mcpServerUrl: session.bridge.url, onTextDelta, onProgress, abortSignal, maxSteps, slot, pluginTools, systemExtra });
+          turnTimeoutMs: timeoutMs,
+        } : { mcpServerUrl: session.bridge.url, onTextDelta, onProgress, abortSignal, maxSteps, slot, pluginTools, systemExtra, turnTimeoutMs: timeoutMs });
         let retries = 0;
         for (;;) {
           attemptHadProgress = false;
@@ -1306,7 +1310,7 @@ export function createCoordinatorInferenceRouter(options: {
         if (assistantStreamStarted) emitAssistant("", false);
         clearStreaming();
       } else if (deadlineFired && !isRoutedTurnAbortError(error)) {
-        const content = routedSettledAssistantContent(visibleText, error);
+        const content = routedSettledAssistantContent(visibleText, new Error(`Turn timed out after ${Math.round((turnDeadlineMs ?? 0) / 1000)}s — the provider stream stalled or the session ran longer than the deadline.`));
         log(`turn-timeout content ${content}`);
         try {
           await persistThenEmit(assistantId, content, assistantTimestampMs);

@@ -23,7 +23,7 @@ export const ROUTED_PLUGIN_MAX_STEPS = 8;
 export const ROUTED_COMPUTER_MAX_STEPS = 32;
 export const ROUTED_COMPUTER_SCREENSHOT_LOOP_LIMIT = 4;
 export const ROUTED_INFERENCE_TURN_TIMEOUT_MS = 90_000;
-export const ROUTED_COMPUTER_INFERENCE_TURN_TIMEOUT_MS = 300_000;
+export const ROUTED_COMPUTER_INFERENCE_TURN_TIMEOUT_MS = 600_000;
 
 function envTimeoutOverrideMs(env: string | undefined, fallbackMs: number): number {
   const parsed = Number.parseInt(env ?? "", 10);
@@ -35,6 +35,19 @@ export function routedTurnTimeoutMs(drive: boolean, env: NodeJS.ProcessEnv = pro
   return drive
     ? envTimeoutOverrideMs(env.SAND_ROUTED_COMPUTER_TURN_TIMEOUT_MS, ROUTED_COMPUTER_INFERENCE_TURN_TIMEOUT_MS)
     : envTimeoutOverrideMs(env.SAND_ROUTED_TURN_TIMEOUT_MS, ROUTED_INFERENCE_TURN_TIMEOUT_MS);
+}
+
+export const ROUTED_STREAM_STALL_TIMEOUT_MS = 120_000;
+
+/**
+ * Fail fast when a provider stream goes silent (stalled upstream request)
+ * instead of burning the whole turn deadline waiting for it.
+ */
+export function routedStallTimeoutMs(drive: boolean, turnTimeoutMs?: number, env: NodeJS.ProcessEnv = process.env): number {
+  const override = envTimeoutOverrideMs(env.SAND_ROUTED_STALL_TIMEOUT_MS, 0);
+  if (override > 0) return override;
+  if (turnTimeoutMs == null || turnTimeoutMs <= 0) return ROUTED_STREAM_STALL_TIMEOUT_MS;
+  return Math.min(ROUTED_STREAM_STALL_TIMEOUT_MS, Math.floor(turnTimeoutMs / 2));
 }
 
 export function routedSpotlightWrappingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {

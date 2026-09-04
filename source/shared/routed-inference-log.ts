@@ -123,7 +123,7 @@ export function isRoutedTransientProviderError(error: unknown): boolean {
   }
   const text = routedErrorCorpus(error);
   if (/\b(429|502|503|504)\b/.test(text)) return true;
-  return /\b(econnreset|etimedout|enotfound|eai_again|socket|network|overloaded|rate.?limit|fetch failed|terminated)\b/.test(text);
+  return /\b(econnreset|etimedout|enotfound|eai_again|socket|network|overloaded|rate.?limit|fetch failed|terminated|stalled?)\b/.test(text);
 }
 
 export function isRoutedPromptOverflowError(error: unknown): boolean {

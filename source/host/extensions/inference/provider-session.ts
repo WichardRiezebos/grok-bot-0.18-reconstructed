@@ -18,6 +18,7 @@ import {
   ROUTED_PLUGIN_MAX_STEPS,
   openRouterToolResultContent,
   routedDefinitionsHavePluginTools,
+  routedStallTimeoutMs,
 } from "../../../shared/routed-computer-tools.js";
 import { BOX_SECRETS_FILENAME, getBoxSecretsStorePath } from "../secrets/secrets-service.js";
 import { streamCodexDirectResponses, type CodexDirectTool } from "./codex-direct-responses.js";
@@ -469,17 +470,31 @@ function routedTurnTimeoutError(signal?: AbortSignal): Error {
   return signal?.reason instanceof Error ? signal.reason : new Error("The routed request timed out after 90 seconds.");
 }
 
-async function collectRoutedText(
+export async function collectRoutedText(
   fullStream: AsyncIterable<{ type: string; textDelta?: string; toolName?: unknown; toolCall?: unknown }>,
   onTextDelta?: (delta: string, accumulated: string) => void,
   abortSignal?: AbortSignal,
   onStreamEvent?: (event: { readonly type: string; readonly toolName?: string; readonly elapsedMs: number }) => void,
   onProgress?: (line: string) => void,
+  stallTimeoutMs?: number,
 ): Promise<string> {
   let text = "";
   const started = Date.now();
+  let lastEventAt = started;
+  let stallTimer: ReturnType<typeof setInterval> | null = null;
+  const stalled = stallTimeoutMs != null && stallTimeoutMs > 0
+    ? new Promise<never>((_, reject) => {
+        stallTimer = setInterval(() => {
+          const silentFor = Date.now() - lastEventAt;
+          if (silentFor > stallTimeoutMs) {
+            reject(new Error(`The routed provider stream stalled for ${Math.round(silentFor / 100) / 10}s and was aborted.`));
+          }
+        }, 250);
+      })
+    : null;
   const iterate = (async () => {
     for await (const event of fullStream) {
+      lastEventAt = Date.now();
       if (abortSignal?.aborted) throw routedTurnTimeoutError(abortSignal);
       const toolName = routedStreamEventToolName(event);
       onStreamEvent?.({
@@ -500,12 +515,28 @@ async function collectRoutedText(
       if (progress != null) onProgress?.(progress);
     }
   })();
-  if (abortSignal == null) {
-    await iterate;
-    return text;
+  void iterate.catch(() => undefined);
+  try {
+    if (stalled == null) {
+      if (abortSignal == null) {
+        await iterate;
+        return text;
+      }
+      await awaitAbortRace(iterate, abortSignal, () => routedTurnTimeoutError(abortSignal));
+      return text;
+    }
+    const awaitStream = async (): Promise<string> => {
+      if (abortSignal == null) {
+        await iterate;
+        return text;
+      }
+      await awaitAbortRace(iterate, abortSignal, () => routedTurnTimeoutError(abortSignal));
+      return text;
+    };
+    return await Promise.race([stalled, awaitStream()]);
+  } finally {
+    if (stallTimer != null) clearInterval(stallTimer);
   }
-  await awaitAbortRace(iterate, abortSignal, () => routedTurnTimeoutError(abortSignal));
-  return text;
 }
 
 export async function runRoutedProviderText(provider: RoutedProvider, messages: readonly ProviderMessage[], options?: {
@@ -520,6 +551,7 @@ export async function runRoutedProviderText(provider: RoutedProvider, messages: 
   readonly slot?: OpenRouterSlot;
   readonly pluginTools?: boolean;
   readonly systemExtra?: string;
+  readonly turnTimeoutMs?: number;
 }): Promise<string> {
   const invocationId = crypto.randomUUID();
   const onUsage = (usage: UsageRecord) => recordRoutedUsage(provider, usage);
@@ -527,6 +559,7 @@ export async function runRoutedProviderText(provider: RoutedProvider, messages: 
   const slot = options?.slot ?? "think";
   const pluginTools = options?.pluginTools === true;
   const systemExtra = options?.systemExtra;
+  const stallTimeoutMs = routedStallTimeoutMs(slot === "drive", options?.turnTimeoutMs);
   if (provider === "openrouter" && slot === "drive") {
     const { runPiDriveSession } = await import("./pi-drive-session.js");
     return runPiDriveSession({
@@ -542,6 +575,7 @@ export async function runRoutedProviderText(provider: RoutedProvider, messages: 
       onProgress: options?.onProgress,
       onStreamEvent: options?.onStreamEvent,
       systemExtra,
+      stallTimeoutMs,
     });
   }
   const toolNames = routedToolNames(options?.tools);
@@ -551,7 +585,7 @@ export async function runRoutedProviderText(provider: RoutedProvider, messages: 
       ? claudeExecutor(messages, invocationId, onUsage, options?.mcpServerUrl, options?.maxSteps, systemExtra, toolNames)
       : openRouterExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage, abortSignal, options?.maxSteps, slot, pluginTools, systemExtra);
   try {
-    const text = await collectRoutedText(result.fullStream, options?.onTextDelta, abortSignal, options?.onStreamEvent, options?.onProgress);
+    const text = await collectRoutedText(result.fullStream, options?.onTextDelta, abortSignal, options?.onStreamEvent, options?.onProgress, stallTimeoutMs);
     if (abortSignal?.aborted) throw routedTurnTimeoutError(abortSignal);
     await result.response;
     return text;
