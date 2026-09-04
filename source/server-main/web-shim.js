@@ -793,6 +793,8 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     transcribeAudio: (audio, mimeType, language) => edge.transcribeAudio({ audio, mimeType, language }),
     cursorAccount: {
       getStatus: () => edge.getCursorAuthStatus(),
+      // The 0.39 usage page lists accounts; the web runtime has exactly one.
+      listAccounts: async () => ({ accounts: [await edge.getCursorAuthStatus()] }),
       login: () => edge.loginCursor(),
       cancelLogin: () => edge.cancelCursorLogin(),
       logout: () => edge.logoutCursor(),
@@ -946,7 +948,25 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
         async write(key, value) { await ipc.invoke("sand:client-persistence-write", { key, value }); },
         async remove(key) { await ipc.invoke("sand:client-persistence-remove", { key }); },
         listKeys: (prefix) => ipc.invoke("sand:client-persistence-list-keys", { prefix }),
+        // 0.39 restore stages a snapshot of the persisted slices up front.
+        // include/exclude are key prefixes; the longest match wins.
+        async readMany(filter) {
+          const include = Array.isArray(filter?.include) ? filter.include : [];
+          const exclude = Array.isArray(filter?.exclude) ? filter.exclude : [];
+          const depth = (key, patterns) => Math.max(-1, ...patterns.filter((pattern) => key.startsWith(pattern)).map((pattern) => pattern.length));
+          const keys = await ipc.invoke("sand:client-persistence-list-keys", { prefix: "" });
+          const result = {};
+          for (const key of keys) {
+            const kept = depth(key, include);
+            if (kept < 0 || depth(key, exclude) > kept) continue;
+            result[key] = await ipc.invoke("sand:client-persistence-read", { key });
+          }
+          return result;
+        },
         migrateFromLocalStorage: (entries) => ipc.invoke("sand:client-persistence-migrate", { entries }),
+        // The 0.39 renderer leases a restore stage before replaying persisted
+        // slices; the web runtime has no competing host to fence against.
+        async stage() { return { release() {} }; },
       },
     },
     update: {
