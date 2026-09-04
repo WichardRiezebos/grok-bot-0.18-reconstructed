@@ -91,6 +91,14 @@ type StoredEntry = {
 };
 type Store = { readonly schemaVersion: 2; readonly agents: Readonly<Record<string, readonly StoredEntry[]>> };
 
+type AutomationRunRecord = {
+  readonly id: string;
+  readonly status: "running" | "ok" | "error";
+  readonly trigger: "manual" | "schedule";
+  readonly startedAt: number;
+  readonly finishedAt?: number;
+};
+
 const EMPTY_STORE: Store = { schemaVersion: 2, agents: {} };
 
 export function coalesceRoutedProviderMessages(entries: readonly { readonly role: string; readonly content: string; readonly fromAgent?: unknown }[]): Array<{ role: "user" | "assistant"; content: string }> {
@@ -459,6 +467,27 @@ export function createCoordinatorInferenceRouter(options: {
       if (isRunning) return { ...row, isRunning: true, isRunningTurn: true };
       return { ...row, isRunning: false, isRunningTurn: false, isComposingMessage: false, currentActivity: undefined };
     });
+  };
+  // Coordinator-executed automation runs: the box's automation runtime needs its
+  // own inference credential (never provisioned in this runtime), so routine
+  // runs are executed here on the routed path and their history is overlaid
+  // onto the gateway's automation records.
+  const automationRunsPath = join(options.dataDir, "automation-runs.json");
+  const loadAutomationRuns = async (): Promise<Record<string, AutomationRunRecord[]>> => {
+    try {
+      const parsed = JSON.parse(await readFile(automationRunsPath, "utf8")) as { automations?: Record<string, AutomationRunRecord[]> };
+      return parsed.automations ?? {};
+    } catch { return {}; }
+  };
+  const upsertAutomationRun = async (automationId: string, run: AutomationRunRecord): Promise<void> => {
+    try {
+      const runs = await loadAutomationRuns();
+      const existing = runs[automationId] ?? [];
+      const next = existing.filter(entry => entry.id !== run.id);
+      next.push(run);
+      await mkdir(dirname(automationRunsPath), { recursive: true });
+      await writeFile(automationRunsPath, `${JSON.stringify({ schemaVersion: 1, automations: { ...runs, [automationId]: next.slice(-25) } }, null, 2)}\n`, { mode: 0o600 });
+    } catch {}
   };
   const overlayAgents = (payload: unknown): unknown => overlayCoordinatorRosterEvent(payload, snapshot, stampLiveTurnState);
   const append = async (agentId: string, entries: readonly StoredEntry[]): Promise<Store> => withStore(async () => {
@@ -1249,6 +1278,62 @@ export function createCoordinatorInferenceRouter(options: {
         });
         deduped.sort((left, right) => Number(asRecord(right)?.timestampMs ?? 0) - Number(asRecord(left)?.timestampMs ?? 0));
         return { handled: true, value: deduped.slice(0, limit) };
+      }
+      if (provider !== "cursor" && method === "runAgentAutomationNow") {
+        // The box automation runtime gates fires on its own inference
+        // credential (canExecute), which this runtime never provisions — every
+        // Test run / manual fire would dead-end there. Resolve the routine's
+        // prompt and execute it on the routed path instead, recording the run
+        // so the routine's history reflects it.
+        const record = asRecord(args) ?? {};
+        // The 0.36 renderer addresses the agent as `id` in this call.
+        const agentId = typeof record.id === "string" ? record.id : typeof record.agentId === "string" ? record.agentId : "";
+        const automationId = typeof record.automationId === "string" ? record.automationId : "";
+        routedLogLine(options.dataDir, provider, agentId || "(none)", `automation-run request automation=${automationId || "(none)"}`, options.postEvent);
+        if (agentId.length === 0 || automationId.length === 0) return { handled: true, value: null };
+        const automations = await dispatchRemote("getAgentAutomations", { id: agentId });
+        routedLogLine(options.dataDir, provider, agentId, `automation-run lookup rows=${Array.isArray(automations) ? automations.length : "non-array"}`, options.postEvent);
+        const automation = Array.isArray(automations)
+          ? automations.find(row => asRecord(row)?.id === automationId)
+          : null;
+        const automationRecord = asRecord(automation);
+        const prompt = typeof automationRecord?.prompt === "string" ? automationRecord.prompt : "";
+        routedLogLine(options.dataDir, provider, agentId, `automation-run resolved prompt=${prompt.length} chars`, options.postEvent);
+        if (automationRecord == null || prompt.length === 0) return { handled: true, value: null };
+        const runId = `run-${randomUUID()}`;
+        const startedAt = now();
+        await upsertAutomationRun(automationId, { id: runId, status: "running", trigger: "manual", startedAt });
+        const queued = enqueueTurn(agentId, provider, { agentId, prompt, clientNonce: randomUUID() });
+        void queued
+          .then(outcome => upsertAutomationRun(automationId, { id: runId, status: outcome != null && typeof outcome === "object" && (outcome as Record<string, unknown>).accepted === true ? "ok" : "error", trigger: "manual", startedAt, finishedAt: now() }))
+          .catch(() => upsertAutomationRun(automationId, { id: runId, status: "error", trigger: "manual", startedAt, finishedAt: now() }));
+        return { handled: true, value: undefined };
+      }
+      if (provider !== "cursor" && method === "getAgentAutomations") {
+        // Overlay coordinator-recorded run history onto the gateway's records
+        // (the box only records runs it fired itself).
+        const remote = await dispatchRemote(method, args);
+        if (!Array.isArray(remote)) return { handled: true, value: remote };
+        const runs = await loadAutomationRuns();
+        const merged = remote.map(row => {
+          const record = asRecord(row);
+          if (record == null) return row;
+          const id = typeof record.id === "string" ? record.id : "";
+          const localRuns = runs[id];
+          if (localRuns == null || localRuns.length === 0) return row;
+          const gatewayRuns = Array.isArray(record.runs) ? record.runs : [];
+          const byId = new Set(gatewayRuns.map(run => asRecord(run)?.id).filter(value => typeof value === "string"));
+          const combined = [...gatewayRuns, ...localRuns.filter(run => !byId.has(run.id))]
+            .sort((left, right) => Number(asRecord(right)?.startedAt ?? 0) - Number(asRecord(left)?.startedAt ?? 0))
+            .slice(0, 25);
+          const newest = combined[0];
+          return {
+            ...record,
+            runs: combined,
+            lastRunAt: Math.max(Number(record.lastRunAt ?? 0), Number(asRecord(newest)?.startedAt ?? 0)),
+          };
+        });
+        return { handled: true, value: merged };
       }
       if (provider !== "cursor" && ["getAgentTranscriptTail", "openAgentTail", "getAgentTranscriptWindow"].includes(method)) {
         const record = asRecord(args) ?? {};
