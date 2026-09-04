@@ -229,6 +229,10 @@ export async function composeCoordinator(dependencies: ComposeCoordinatorDepende
   const gatewayDispatch = createGatewayRequestDispatch(gatewayClient);
   const inferenceRouter = createCoordinatorInferenceRouter({
     dataDir: bootstrap.processConfig.dataDir,
+    // Tunable turn-start window (ms); kept small so turns feel immediate.
+    ...(Number.parseInt(process.env.SAND_ROUTED_COMPOSING_DELAY_MS ?? "", 10) > 0
+      ? { composingDelayMs: Number.parseInt(process.env.SAND_ROUTED_COMPOSING_DELAY_MS ?? "", 10) }
+      : {}),
     postEvent: (family, payload) => {
       const rosterPayload = family === "agents" || family === "agent-upserted" ? overlayAgentsEvent(payload) : payload;
       server.postEvent(family, rosterPayload);

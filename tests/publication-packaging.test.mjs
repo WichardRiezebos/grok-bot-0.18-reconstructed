@@ -308,7 +308,7 @@ test("Router settings use the trusted backend and display recorded inference usa
   assert.match(coordinator, /\.map\(projectInferenceRouterTranscriptEntry\)/);
   assert.match(coordinator, /readonly richText\?: string/);
   assert.match(coordinator, /richText: entry\.richText/);
-  assert.match(coordinator, /awaitRoutedRetryBackoff\(options\.composingDelayMs \?\? 1_200, turnAbort\)/);
+  assert.match(coordinator, /awaitRoutedRetryBackoff\(options\.composingDelayMs \?\? 150, turnAbort\)/);
   assert.match(coordinator, /method === "stopRoutedTurn"/);
   assert.match(coordinator, /method === "deleteAgent" \|\| method === "deleteAgents"/);
   assert.match(coordinator, /await dropAgents\(ids\)/);

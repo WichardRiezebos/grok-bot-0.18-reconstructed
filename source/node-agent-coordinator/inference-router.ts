@@ -743,7 +743,9 @@ export function createCoordinatorInferenceRouter(options: {
     let turnAbort: AbortSignal | undefined = userAbort.signal;
     const log = (message: string) => routedLogLine(options.dataDir, provider, agentId, message, options.postEvent);
     try {
-      await awaitRoutedRetryBackoff(options.composingDelayMs ?? 1_200, turnAbort);
+      // Short composing window: lets the composing state render and rapid
+      // follow-up sends supersede, without adding a perceptible lag.
+      await awaitRoutedRetryBackoff(options.composingDelayMs ?? 150, turnAbort);
     } catch (error) {
       if (turnControllers.get(agentId) === userAbort) turnControllers.delete(agentId);
       if (turnActivities.get(agentId) === turnActivity) turnActivities.delete(agentId);
