@@ -687,6 +687,9 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
   const desktop = {
     platform: "linux",
     isDev: false,
+    // The 0.39 renderer pings the desktop bridge once at boot; a no-op keeps
+    // the heartbeat satisfied in the web runtime.
+    noteRendererAlive: () => null,
     getZoomFactor: () => 1,
     resolveAttachmentMedia: (url) => edge.resolveAttachmentMedia({ source: url }),
     readAttachmentText: (path) => edge.readAttachmentText({ path }),
