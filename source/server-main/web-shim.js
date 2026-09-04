@@ -694,6 +694,28 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       await edge.openExternal(typeof url === "string" ? { url } : url ?? {});
     },
     async openCloudAgent(bcId) { await edge.openCloudAgent({ bcId }) },
+    // The avatar editor expects { dataUrl, fileName } from the desktop file
+    // picker; run a standard browser file input and read the image as a data
+    // URL (the editor's drag-drop path does the same for dropped files).
+    pickAvatarFile: () => new Promise(resolve => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*";
+      let settled = false;
+      const finish = value => { if (!settled) { settled = true; resolve(value); } };
+      input.addEventListener("change", () => {
+        const file = input.files?.item(0);
+        if (file == null) return finish(null);
+        const reader = new FileReader();
+        reader.onload = () => finish({ dataUrl: String(reader.result), fileName: file.name });
+        reader.onerror = () => finish(null);
+        reader.readAsDataURL(file);
+      });
+      input.addEventListener("cancel", () => finish(null));
+      document.body?.appendChild(input);
+      input.click();
+      setTimeout(() => { input.remove(); finish(null); }, 300_000);
+    }),
     // The renderer's desktop bridge composes stageAttachmentFile(filename, File)
     // on top of the raw transport; the Electron preload provides it, so the web
     // shim has to too — without it every file-picker attach rejects with
