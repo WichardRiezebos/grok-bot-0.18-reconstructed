@@ -86,6 +86,9 @@ export function PluginsDesktopSurface({ bridge, githubAuth, activeAgentId = null
     return await controller.retry();
   }, [controller]);
 
+  const loadLogo = useCallback((url: string) => bridge.mcp.pluginLogo(url), [bridge]);
+  const openHomepage = useCallback((url: string) => { void bridge.openExternal(url); }, [bridge]);
+
   const load = useCallback(async () => {
     try {
       await refresh();
@@ -322,6 +325,8 @@ export function PluginsDesktopSurface({ bridge, githubAuth, activeAgentId = null
       }, true)}
       onEditSetup={(pluginId, values) => run(`plugin:${pluginId}`, "plugins-edit-setup", () => updateMarketplacePluginSetup(bridge, pluginId, values), true)}
       onRemove={(item: PluginBrowserItem) => void run(`${item.kind}:${item.id}`, "plugins-remove", () => removeBrowserItem(item))}
+      onLoadLogo={loadLogo}
+      onOpenHomepage={openHomepage}
       onLoadServerTools={(serverId) => listPluginServerTools(bridge, serverId)}
       onToggleServerTool={(serverId, toolName) => togglePluginServerTool(bridge, serverId, toolName)}
     />

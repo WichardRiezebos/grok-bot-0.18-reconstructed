@@ -358,23 +358,40 @@ export interface PluginsDesktopSnapshot {
   serverState: McpServerState;
 }
 
+function connectorSummaries(connectors: readonly unknown[]): { name: string; description: string }[] {
+  return connectors.flatMap((connector) => {
+    if (typeof connector !== "object" || connector == null || Array.isArray(connector)) return [];
+    const record = connector as Record<string, unknown>;
+    if (typeof record.name !== "string" || record.name.length === 0) return [];
+    return [{ name: record.name, description: typeof record.description === "string" ? record.description : "" }];
+  });
+}
+
 export function pluginBrowserItemsFromDesktop(
   catalog: readonly McpCatalogEntry[],
   effectivePlugins: readonly EffectivePlugin[],
   serverState: McpServerState
 ): PluginBrowserItem[] {
   const effectiveById = new Map(effectivePlugins.map((plugin) => [plugin.pluginId, plugin]));
-  const plugins: PluginBrowserItem[] = catalog.map((entry) => ({
-    kind: "plugin",
-    id: entry.id,
-    displayName: entry.displayName,
-    description: entry.description,
-    ...(entry.publisher == null ? {} : { publisher: entry.publisher.displayName }),
-    ...entry.fields != null && entry.fields.length > 0 ? { fields: entry.fields } : {},
-    installed: effectiveById.has(entry.id),
-    ...pluginInstallMode(effectiveById.get(entry.id)) !== "user" ? { installMode: pluginInstallMode(effectiveById.get(entry.id)) } : {},
-    ...effectiveById.get(entry.id)?.hasTeamConfiguredVariables === true ? { hasTeamConfiguredVariables: true } : {}
-  }));
+  const plugins: PluginBrowserItem[] = catalog.map((entry) => {
+    const connectors = connectorSummaries(entry.connectors);
+    return {
+      kind: "plugin",
+      id: entry.id,
+      displayName: entry.displayName,
+      description: entry.description,
+      ...(entry.publisher == null ? {} : { publisher: entry.publisher.displayName }),
+      ...entry.fields != null && entry.fields.length > 0 ? { fields: entry.fields } : {},
+      installed: effectiveById.has(entry.id),
+      ...pluginInstallMode(effectiveById.get(entry.id)) !== "user" ? { installMode: pluginInstallMode(effectiveById.get(entry.id)) } : {},
+      ...effectiveById.get(entry.id)?.hasTeamConfiguredVariables === true ? { hasTeamConfiguredVariables: true } : {},
+      ...(entry.category != null && entry.category.trim().length > 0 ? { category: entry.category } : {}),
+      ...(entry.iconUrl == null ? {} : { iconUrl: entry.iconUrl }),
+      ...(entry.homepage == null ? {} : { homepage: entry.homepage }),
+      ...(connectors.length > 0 ? { connectors } : {}),
+      ...(entry.skills.length > 0 ? { skills: entry.skills } : {})
+    };
+  });
   const servers: PluginBrowserItem[] = [...groupPluginServerAccounts(serverState.servers).values()].map((accounts) => {
     const server = accounts[0];
     const policy: PluginInstallMode = pluginInstallMode(server);

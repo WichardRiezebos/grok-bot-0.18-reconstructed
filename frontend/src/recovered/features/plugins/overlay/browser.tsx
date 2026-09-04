@@ -3,6 +3,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { McpServerSummary, McpToolSummary, PluginVariableField } from "../../../contracts/desktop-bridge";
 import { createPluginServerToolsController, type PluginServerToolsController } from "./server-tools";
 import { createPluginPrivateSkillCopyController, pluginPrivateSkillMarketplaceUrl } from "./desktop";
+import { groupPluginItemsForDisplay } from "./groups";
 import { PluginGitHubAuthBanner, type PluginGitHubAuthBannerProps } from "./github-auth-banner";
 import { canRenamePluginAccount, canUpdatePrivateSkill, missingRequiredPluginFields, normalizePluginSetupValues, pluginAccountAction, pluginAccountLabel, pluginPrivateSkillSourceLabel, pluginPrivateSkillSubtitle, pluginTeamPolicyActions, pluginTeamPolicyLabel, togglePluginTool, type PluginInstallMode, type PluginPrivateSkill, type PluginSkillPublishTargets } from "./model";
 import "./browser.css";
@@ -31,6 +32,11 @@ export type PluginBrowserItem =
       installMode?: PluginInstallMode;
       hasTeamConfiguredVariables?: boolean;
       busy?: boolean;
+      category?: string;
+      iconUrl?: string;
+      homepage?: string;
+      connectors?: readonly { name: string; description: string }[];
+      skills?: readonly { name: string; description: string; sourceUrl?: string }[];
     }
   | {
       kind: "server";
@@ -106,6 +112,8 @@ export interface PluginsBrowserProps {
   onToggleWorkflow?(workflowId: string, enabled: boolean): void;
   onLoadServerTools?(serverId: string): Promise<McpToolSummary[]>;
   onToggleServerTool?(serverId: string, toolName: string): Promise<McpToolSummary[]>;
+  onLoadLogo?(url: string): Promise<string | null>;
+  onOpenHomepage?(url: string): void;
 }
 
 export function filterPluginItems(
@@ -140,6 +148,8 @@ export function PluginsBrowser({
   onToggleWorkflow,
   onLoadServerTools,
   onToggleServerTool,
+  onLoadLogo,
+  onOpenHomepage,
   privateSkills = [],
   privateSkillsAgentId = null,
   privateSkillsLoading = false,
@@ -161,19 +171,31 @@ export function PluginsBrowser({
   const [selectedPrivateSkillId, setSelectedPrivateSkillId] = useState<string | null>(null);
   const activeFilter = tab === "marketplace" ? marketplaceFilter : yoursFilter;
   const setActiveFilter = tab === "marketplace" ? setMarketplaceFilter : setYoursFilter;
+  const catalogById = useMemo(() => new Map(catalog.map((entry) => [entry.id, entry])), [catalog]);
   const visible = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
     return items.filter((item) => {
       const belongsToTab = tab === "marketplace" ? item.kind === "plugin" : item.kind !== "plugin" || item.installed;
       if (!belongsToTab) return false;
-      const facts = item.kind === "plugin" ? catalog.find((entry) => entry.id === item.id) : null;
+      const facts = item.kind === "plugin" ? catalogById.get(item.id) : null;
       if (item.kind === "plugin" && activeFilter.type === "connectors" && (facts?.connectors.length ?? 0) === 0) return false;
       if (item.kind === "plugin" && activeFilter.type === "skills" && (facts?.skills.length ?? 0) === 0) return false;
       if (item.kind === "plugin" && activeFilter.ownership === "team" && facts?.marketplace?.ownership !== "team") return false;
       if (item.kind === "plugin" && activeFilter.ownership === "public" && facts?.marketplace?.ownership === "team") return false;
       return needle.length === 0 || `${item.displayName} ${item.description}`.toLocaleLowerCase().includes(needle);
     });
-  }, [activeFilter, catalog, items, query, tab]);
+  }, [activeFilter, catalogById, items, query, tab]);
+  const sections = useMemo(() => groupPluginItemsForDisplay(visible), [visible]);
+  const searchOrFilterActive = query.trim().length > 0 || activeFilter.type !== "all" || activeFilter.ownership !== "all";
+  const [expandedOverride, setExpandedOverride] = useState<ReadonlySet<string> | null>(null);
+  const defaultExpanded = useMemo(() => new Set(sections.length > 0 ? [sections[0].id] : []), [sections]);
+  const expandedSections = expandedOverride ?? defaultExpanded;
+  const toggleSection = (sectionId: string) => {
+    const next = new Set(expandedOverride ?? defaultExpanded);
+    if (next.has(sectionId)) next.delete(sectionId);
+    else next.add(sectionId);
+    setExpandedOverride(next);
+  };
   const selected = selectedId == null ? null : items.find((item) => `${item.kind}:${item.id}` === selectedId) ?? null;
   const visiblePrivateSkills = useMemo(() => filterPluginPrivateSkills(privateSkills, activeFilter, query), [activeFilter, privateSkills, query]);
   const privateFilterActive = activeFilter.type !== "all" || activeFilter.ownership !== "all";
@@ -194,6 +216,8 @@ export function PluginsBrowser({
         onToggleWorkflow={onToggleWorkflow}
         onLoadServerTools={onLoadServerTools}
         onToggleServerTool={onToggleServerTool}
+        onLoadLogo={onLoadLogo}
+        onOpenHomepage={onOpenHomepage}
       />
     );
   }
@@ -222,23 +246,25 @@ export function PluginsBrowser({
       {githubAuth == null ? null : <PluginGitHubAuthBanner {...githubAuth} />}
 
       <div className="sand-plugins__grid">
-        {visible.length === 0 ? <p>{emptyPluginsMessage(tab, query, activeFilter.type !== "all" || activeFilter.ownership !== "all")}</p> : visible.map((item) => (
-          <button className="sand-plugins-row sand-plugins-row__open" key={`${item.kind}:${item.id}`} onClick={() => setSelectedId(`${item.kind}:${item.id}`)} type="button">
-            <span aria-hidden="true">{item.kind === "plugin" ? "◇" : item.kind === "server" ? "⌁" : "⚡"}</span>
-            <span className="sand-plugins-row__main">
-              <strong className="sand-plugins-row__name">{item.displayName}</strong>
-              <span className="sand-plugins-row__subtitle">{item.description}</span>
-              <small>{pluginItemStatus(item)}</small>
-            </span>
-            <span aria-hidden="true">›</span>
-          </button>
-        ))}
+        {visible.length === 0 ? <p>{emptyPluginsMessage(tab, query, activeFilter.type !== "all" || activeFilter.ownership !== "all")}</p> : sections.map((section) => {
+          const expanded = searchOrFilterActive || expandedSections.has(section.id);
+          return (
+            <section className="sand-plugins__section" key={section.id}>
+              <button aria-expanded={expanded} className="sand-plugins__section-toggle" onClick={() => toggleSection(section.id)} type="button">
+                <span className="sand-plugins__section-label">{section.label}</span>
+                <small>{section.items.length}</small>
+                <span aria-hidden="true" className="sand-plugins__section-chevron">{expanded ? "⌄" : "›"}</span>
+              </button>
+              {expanded ? section.items.map((item) => <PluginBrowserRow item={item} key={`${item.kind}:${item.id}`} onLoadLogo={onLoadLogo} onOpen={setSelectedId} />) : null}
+            </section>
+          );
+        })}
       </div>
       {tab === "yours" && (!privateFilterActive || privateSkillsAgentId == null || visiblePrivateSkills.length > 0) ? <section aria-label="Private">
         <h3>Private</h3>
         {privateSkillsError != null ? <p role="alert">{privateSkillsError}</p> : privateSkillsAgentId == null ? <p>Open an agent to see its private skills</p> : privateSkillsLoading ? <p role="status" /> : visiblePrivateSkills.length === 0 ? <p>{query.trim().length > 0 ? `No private skills match "${query.trim()}"` : "No private skills yet. Ask your Bot to create one for you."}</p> : <div>
           {visiblePrivateSkills.map((skill) => <div className="sand-plugins-row" key={`private:${skill.id}`}>
-            <span aria-hidden="true">▤</span>
+            <PluginIconTile glyph="▤" />
             <button className="sand-plugins-row__open" onClick={() => setSelectedPrivateSkillId(skill.id)} type="button">
               <span className="sand-plugins-row__main"><strong className="sand-plugins-row__name">{skill.name}</strong><span className="sand-plugins-row__subtitle">{pluginPrivateSkillSubtitle(skill)}</span></span>
               <span aria-hidden="true">›</span>
@@ -256,6 +282,59 @@ export function PluginsBrowser({
       </section> : null}
     </div>
   );
+}
+
+// @evidence src/app/dist/renderer/assets/view-B5Ug8wEm.js#L1374
+// @evidence src/app/dist/renderer/assets/view-B5Ug8wEm.js#L1463
+// @evidence src/app/dist/renderer/assets/view-B5Ug8wEm.js#L1389
+// @evidence src/app/dist/renderer/assets/view-B5Ug8wEm.js#L1248
+// @evidence src/app/dist/renderer/assets/view-B5Ug8wEm.js#L1317
+const pluginLogoCache = new Map<string, Promise<string | null>>();
+
+function cachedPluginLogo(url: string, onLoadLogo: (url: string) => Promise<string | null>): Promise<string | null> {
+  let pending = pluginLogoCache.get(url);
+  if (pending == null) {
+    pending = onLoadLogo(url).catch(() => null);
+    pluginLogoCache.set(url, pending);
+  }
+  return pending;
+}
+
+function usePluginLogo(url: string | undefined, onLoadLogo?: (url: string) => Promise<string | null>): string | null {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (url == null || onLoadLogo == null) {
+      setDataUrl(null);
+      return;
+    }
+    let active = true;
+    void cachedPluginLogo(url, onLoadLogo).then((value) => {
+      if (active) setDataUrl(value);
+    });
+    return () => { active = false; };
+  }, [url, onLoadLogo]);
+  return dataUrl;
+}
+
+function pluginItemGlyph(item: PluginBrowserItem): string {
+  return item.kind === "plugin" ? "◇" : item.kind === "server" ? "⌁" : "⚡";
+}
+
+function PluginIconTile({ glyph, large = false, onLoadLogo, url }: { glyph: string; large?: boolean; onLoadLogo?: (url: string) => Promise<string | null>; url?: string }) {
+  const dataUrl = usePluginLogo(url, onLoadLogo);
+  return <span aria-hidden="true" className={large ? "sand-plugins-icon sand-plugins-icon__lg" : "sand-plugins-icon"}>{dataUrl == null ? glyph : <img alt="" src={dataUrl} />}</span>;
+}
+
+function PluginBrowserRow({ item, onLoadLogo, onOpen }: { item: PluginBrowserItem; onLoadLogo?: (url: string) => Promise<string | null>; onOpen(id: string): void }) {
+  return <button className="sand-plugins-row sand-plugins-row__open" onClick={() => onOpen(`${item.kind}:${item.id}`)} type="button">
+    <PluginIconTile glyph={pluginItemGlyph(item)} onLoadLogo={item.kind === "plugin" ? onLoadLogo : undefined} url={item.kind === "plugin" ? item.iconUrl : undefined} />
+    <span className="sand-plugins-row__main">
+      <strong className="sand-plugins-row__name">{item.displayName}</strong>
+      <span className="sand-plugins-row__subtitle">{item.description}</span>
+      <small>{pluginItemStatus(item)}</small>
+    </span>
+    <span aria-hidden="true">›</span>
+  </button>;
 }
 
 // @evidence src/app/dist/renderer/assets/view-B5Ug8wEm.js#L1374
@@ -491,7 +570,9 @@ function PluginDetail({
   onRemove,
   onToggleWorkflow,
   onLoadServerTools,
-  onToggleServerTool
+  onToggleServerTool,
+  onLoadLogo,
+  onOpenHomepage
 }: {
   item: PluginBrowserItem;
   onBack(): void;
@@ -505,9 +586,17 @@ function PluginDetail({
   onToggleWorkflow?: PluginsBrowserProps["onToggleWorkflow"];
   onLoadServerTools?: PluginsBrowserProps["onLoadServerTools"];
   onToggleServerTool?: PluginsBrowserProps["onToggleServerTool"];
+  onLoadLogo?: PluginsBrowserProps["onLoadLogo"];
+  onOpenHomepage?: PluginsBrowserProps["onOpenHomepage"];
 }) {
   const [setupOpen, setSetupOpen] = useState(false);
   const fields = item.kind === "plugin" ? item.fields ?? [] : [];
+  const category = item.kind === "plugin" ? item.category?.trim() ?? "" : "";
+  const publisher = item.kind === "plugin" ? item.publisher : undefined;
+  const homepageUrl = item.kind === "plugin" ? item.homepage : undefined;
+  const connectors = item.kind === "plugin" ? item.connectors ?? [] : [];
+  const skills = item.kind === "plugin" ? item.skills ?? [] : [];
+  const meta = [category, publisher].filter((value) => value != null && value.length > 0).join(" · ");
   if (setupOpen && item.kind === "plugin") {
     return <PluginSetupForm
       fields={fields}
@@ -526,19 +615,34 @@ function PluginDetail({
     <article className="sand-plugins-detail">
       <header>
         <button aria-label="Back" onClick={onBack} type="button">←</button>
+        <PluginIconTile glyph={pluginItemGlyph(item)} large onLoadLogo={item.kind === "plugin" ? onLoadLogo : undefined} url={item.kind === "plugin" ? item.iconUrl : undefined} />
         <div><h2>{item.displayName}</h2><small>{pluginItemStatus(item)}</small></div>
       </header>
       <p>{item.description}</p>
+      {meta.length > 0 ? <p className="sand-plugins-detail__meta">{meta}</p> : null}
       <div>
         {item.kind === "plugin" && !item.installed ? <button disabled={item.busy} onClick={() => fields.length > 0 && item.hasTeamConfiguredVariables !== true ? setSetupOpen(true) : onInstall?.(item.id, undefined, item.hasTeamConfiguredVariables)} type="button">Add</button> : null}
         {item.kind === "server" && item.status === "authentication-required" ? <button disabled={item.busy} onClick={() => onAuthenticate?.(item.id, item.accountSlots?.[0]?.accountKey ?? item.accountLabel)} type="button">Authenticate</button> : null}
         {item.kind === "workflow" && onToggleWorkflow != null ? <button disabled={item.busy} onClick={() => onToggleWorkflow(item.id, !item.enabled)} type="button">{item.enabled ? "Disable" : "Enable"}</button> : null}
         {item.kind === "plugin" && item.installed && pluginTeamPolicyActions(item.installMode ?? "user").length > 0 ? <button disabled={item.busy} onClick={() => onRemove?.(item)} type="button">{item.installMode === "team-default" ? "Remove" : "Uninstall"}</button> : null}
         {item.kind === "server" && item.status !== "disabled-by-team-admin-policy" && pluginTeamPolicyActions(item.policy ?? "user").length > 0 ? <button disabled={item.busy} onClick={() => onRemove?.(item)} type="button">Remove</button> : null}
+        {homepageUrl != null && onOpenHomepage != null ? <button onClick={() => { if (homepageUrl != null) onOpenHomepage?.(homepageUrl); }} type="button">Website</button> : null}
       </div>
       {item.kind === "plugin" && item.installed && fields.length > 0 ? <button disabled={item.busy} onClick={() => setSetupOpen(true)} type="button">Edit Values</button> : null}
       {item.kind === "server" ? <AccountManager item={item} disabled={item.busy === true} onAuthenticate={onAuthenticate} onAddAccount={onAddAccount} onRenameAccount={onRenameAccount} onRemoveAccount={onRemoveAccount} /> : null}
       {item.kind === "server" && onLoadServerTools != null && onToggleServerTool != null ? <PluginServerTools key={item.id} serverId={item.id} onLoad={onLoadServerTools} onToggle={onToggleServerTool} /> : null}
+      {connectors.length > 0 ? <section aria-label="Connectors">
+        <h3>Connectors</h3>
+        <div className="sand-plugins-detail__list">
+          {connectors.map((connector) => <div key={connector.name}><strong>{connector.name}</strong>{connector.description.length > 0 ? <p>{connector.description}</p> : null}</div>)}
+        </div>
+      </section> : null}
+      {skills.length > 0 ? <section aria-label="Skills">
+        <h3>Skills</h3>
+        <div className="sand-plugins-detail__list">
+          {skills.map((skill) => <div key={skill.name}><strong>{skill.name}</strong>{skill.description.length > 0 ? <p>{skill.description}</p> : null}</div>)}
+        </div>
+      </section> : null}
     </article>
   );
 }
