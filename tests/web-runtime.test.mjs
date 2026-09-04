@@ -623,6 +623,94 @@ test("ungated /health, /debug, and websocket RPC", async () => {
   }
 });
 
+test("/debug/bots reports live bot state from the coordinator", async () => {
+  const loaded = await loadModule("source/server-main/http-server.ts");
+  const configLoaded = await loadModule("source/server-main/config.ts");
+  const dataDir = await mkdtemp(path.join(tmpdir(), "grok-bot-web-bots-"));
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.includes("/health") && url.includes("box")) {
+      return new Response(JSON.stringify({ ok: true, isBusy: false }), { status: 200 });
+    }
+    return previousFetch(input, init);
+  };
+  let dataListener = null;
+  const replyingFork = (_config, debug) => {
+    debug.coordinatorAlive = true;
+    debug.coordinatorPid = 4242;
+    return {
+      child: { pid: 4242 },
+      postData(frame) {
+        const record = frame ?? {};
+        if (record.kind === "request" && record.method === "debug-rpc:getRoutedDebug") {
+          const reply = {
+            kind: "reply",
+            requestId: record.requestId,
+            outcome: {
+              status: "ok",
+              value: {
+                generatedAt: "2026-01-01T00:00:00.000Z",
+                inference: { provider: "openrouter", models: { think: "z-ai/glm-5.3-flash", drive: "qwen/qwen-3.8-flash", summarize: "qwen/qwen-3.8-flash" } },
+                bots: [
+                  { id: "a1", name: "Scout", state: "running", slot: "think", queuedAt: null, streamingPreview: "Working on it…", lastActivityAt: "2026-01-01T00:00:01.000Z", pendingApprovals: 1, recentLog: [{ at: "2026-01-01T00:00:01.000Z", provider: "openrouter", text: "turn-start think 3 msgs" }] },
+                  { id: "a2", name: "Stuck", state: "queued", slot: null, queuedAt: "2026-01-01T00:00:00.500Z", streamingPreview: null, lastActivityAt: null, pendingApprovals: 0, recentLog: [] },
+                ],
+                unassignedLog: [],
+              },
+            },
+          };
+          setTimeout(() => dataListener?.(reply), 5);
+        }
+      },
+      postMainData() {},
+      dispose() {},
+      onData(listener) {
+        dataListener = listener;
+        return () => { dataListener = null; };
+      },
+      onMainData() {
+        return () => {};
+      },
+    };
+  };
+  const { resolveRuntimeConfig } = configLoaded.module;
+  const { startRuntimeServer } = loaded.module;
+  const server = startRuntimeServer(resolveRuntimeConfig({
+    RUNTIME_ACCESS_TOKEN: "secret-token",
+    GROK_BOT_LISTEN_HOST: "127.0.0.1",
+    GROK_BOT_LISTEN_PORT: "0",
+    GROK_BOT_DATA_DIR: dataDir,
+    GROK_BOT_STATIC_ROOT: path.join(repoRoot, "source", "server-main"),
+    SAND_HOST_GATEWAY_URL: "http://box:1340",
+    OPENROUTER_API_KEY: "sk-or-v1-not-leaked",
+  }), { fork: replyingFork });
+  try {
+    await server.ready;
+    const bots = await fetch(`${server.url}/debug/bots`);
+    assert.equal(bots.status, 200);
+    const body = await bots.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.inference.provider, "openrouter");
+    assert.equal(body.inference.models.think, "z-ai/glm-5.3-flash");
+    assert.equal(body.bots.length, 2);
+    assert.equal(body.bots[0].state, "running");
+    assert.equal(body.bots[0].slot, "think");
+    assert.equal(body.bots[0].pendingApprovals, 1);
+    assert.equal(body.bots[1].state, "queued");
+    const page = await fetch(`${server.url}/debug`);
+    const html = await page.text();
+    assert.match(html, /data-testid="debug-bots"/);
+    assert.match(html, /data-testid="debug-refresh-bots"/);
+  } finally {
+    globalThis.fetch = previousFetch;
+    await server.close();
+    await loaded.dispose();
+    await configLoaded.dispose();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("loopback noVNC URLs rewrite onto the same-origin VNC proxy", async () => {
   const loaded = await loadModule("source/server-main/vnc-proxy.ts");
   try {

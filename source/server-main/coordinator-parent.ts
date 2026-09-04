@@ -1,4 +1,5 @@
 import { fork, type ChildProcess, type Serializable } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 
 import { createCoordinatorControlServer } from "../electron-main/coordinator/coordinator-control-server.js";
@@ -28,6 +29,36 @@ export interface CoordinatorSession {
   dispose(): void;
   onData(listener: (frame: unknown) => void): () => void;
   onMainData(listener: (frame: unknown) => void): () => void;
+}
+
+/** One request/reply round-trip to the coordinator child over the data port. */
+export function coordinatorRpc(session: CoordinatorSession, method: string, args: unknown, timeoutMs = 5_000): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const requestId = `debug-${randomUUID()}`;
+    let settled = false;
+    const finish = (error: Error | undefined, value?: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      off();
+      if (error != null) reject(error);
+      else resolve(value);
+    };
+    const timer = setTimeout(() => finish(new Error(`coordinator rpc ${method} timed out after ${timeoutMs}ms`)), timeoutMs);
+    timer.unref?.();
+    const off = session.onData((frame) => {
+      const record = frame as { kind?: unknown; requestId?: unknown; outcome?: { status?: unknown; value?: unknown; failure?: { message?: unknown } | null } | null } | null;
+      if (record == null || record.kind !== "reply" || record.requestId !== requestId) return;
+      const outcome = record.outcome;
+      if (outcome != null && typeof outcome === "object" && outcome.status === "ok") {
+        finish(undefined, outcome.value);
+        return;
+      }
+      const failureMessage = outcome != null && typeof outcome === "object" && typeof outcome.failure?.message === "string" ? outcome.failure.message : null;
+      finish(new Error(failureMessage ?? `coordinator rpc ${method} failed`));
+    });
+    session.postData({ kind: "request", requestId, method, args });
+  });
 }
 
 export function forkCoordinator(config: RuntimeConfig, debug: DebugState): CoordinatorSession {

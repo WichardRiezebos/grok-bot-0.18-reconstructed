@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { runRoutedProviderText } from "../host/extensions/inference/provider-session.js";
+import { runRoutedProviderText, routedInferenceSummary } from "../host/extensions/inference/provider-session.js";
 import { buildGroupMemberSystemPrompt, buildGroupTurnPrompt, GROUP_MAX_MEMBER_TURNS, GROUP_MAX_ROUNDS, isPassContent, messagesSinceMemberLastSpoke, orderRoundSpeakers, resolveResponders, type GroupMessage } from "../host/groups/group-chat.js";
 import { appendRoutedInferenceLog, isRoutedPromptOverflowError, isRoutedTransientProviderError, routedRouterErrorText, routedSettledAssistantContent } from "../shared/routed-inference-log.js";
 import { ROUTED_TURN_STOPPED_MESSAGE, RoutedTurnAbortError, isRoutedTurnAbortError } from "../shared/routed-turn-abort.js";
@@ -12,6 +12,7 @@ import {
   ROUTED_COMPUTER_SCREENSHOT_LOOP_LIMIT,
   ROUTED_INFERENCE_TURN_TIMEOUT_MS,
   ROUTED_PLUGIN_MAX_STEPS,
+  routedTurnTimeoutMs,
   computerScreenshotLoopMessage,
   ROUTED_BOX_CHROME_TOOL_NAME,
   extractRoutedBrowserUrl,
@@ -384,10 +385,31 @@ export function projectInferenceRouterTranscriptEntry(entry: StoredEntry): Recor
       };
 }
 
+const ROUTED_DEBUG_LOG_LIMIT = 8;
+const ROUTED_DEBUG_LOG_AGENTS = 256;
+const routedDebugLog = new Map<string, { at: number; provider: string; text: string }[]>();
+
+function noteRoutedDebugLog(agentId: string, provider: string, message: string): void {
+  if (agentId.length === 0) return;
+  const ring = routedDebugLog.get(agentId) ?? [];
+  ring.push({ at: Date.now(), provider, text: message.slice(0, 240) });
+  if (ring.length > ROUTED_DEBUG_LOG_LIMIT) ring.splice(0, ring.length - ROUTED_DEBUG_LOG_LIMIT);
+  routedDebugLog.set(agentId, ring);
+  if (routedDebugLog.size > ROUTED_DEBUG_LOG_AGENTS) {
+    const oldest = routedDebugLog.keys().next().value;
+    if (oldest != null) routedDebugLog.delete(oldest);
+  }
+}
+
+function routedDebugLogFor(agentId: string): { at: number; provider: string; text: string }[] {
+  return routedDebugLog.get(agentId) ?? [];
+}
+
 function routedLogLine(dataDir: string, provider: string, agentId: string, message: string, postEvent: (family: string, payload: unknown) => void): void {
   const line = `${provider} ${agentId} ${message}`;
   appendRoutedInferenceLog(dataDir, line);
   postEvent("routed-log", { line, agentId, provider });
+  noteRoutedDebugLog(agentId, provider, message);
 }
 
 function routedPromptTraceEnabled(): boolean {
@@ -439,6 +461,8 @@ export function createCoordinatorInferenceRouter(options: {
   const turnControllers = new Map<string, AbortController>();
   const turnActivities = new Map<string, { stop(): void }>();
   const queuedTurnGenerations = new Map<string, number>();
+  const turnSlotByAgent = new Map<string, string>();
+  const queuedAtByAgent = new Map<string, number>();
 
   const abortAgentTurn = (agentId: string, kind: "stop" | "supersede"): boolean => {
     const controller = turnControllers.get(agentId);
@@ -1149,6 +1173,7 @@ export function createCoordinatorInferenceRouter(options: {
     };
     const runProviderText = options.runProviderText ?? runRoutedProviderText;
     const slot = drive ? "drive" as const : "think" as const;
+    turnSlotByAgent.set(agentId, slot);
     const promptChars = messages.reduce((sum, message) => sum + (typeof message.content === "string" ? message.content.length : 0), 0);
     log(`turn-start ${slot} ${messages.length} msgs ${promptChars} chars`);
     try {
@@ -1202,8 +1227,7 @@ export function createCoordinatorInferenceRouter(options: {
           }
         }
       }
-      const timeoutMs = options.turnTimeoutMs
-        ?? (drive ? ROUTED_COMPUTER_INFERENCE_TURN_TIMEOUT_MS : ROUTED_INFERENCE_TURN_TIMEOUT_MS);
+      const timeoutMs = options.turnTimeoutMs ?? routedTurnTimeoutMs(drive);
       log(`turn-deadline ${Math.round(timeoutMs / 100) / 10}s`);
       const maxSteps = drive ? ROUTED_COMPUTER_MAX_STEPS : ROUTED_PLUGIN_MAX_STEPS;
       const abortSignal = AbortSignal.any([userAbort.signal, AbortSignal.timeout(timeoutMs)]);
@@ -1304,6 +1328,7 @@ export function createCoordinatorInferenceRouter(options: {
     finally {
       if (turnControllers.get(agentId) === userAbort) turnControllers.delete(agentId);
       if (turnActivities.get(agentId) === turnActivity) turnActivities.delete(agentId);
+      if (turnSlotByAgent.get(agentId) === slot) turnSlotByAgent.delete(agentId);
       if (!turnActivities.has(agentId)) turnActivity.stop();
     }
     // Group orchestration needs the member's reply text; every settle path
@@ -1331,7 +1356,11 @@ export function createCoordinatorInferenceRouter(options: {
         emitTranscript(agentId, "appended", { kind: "send-message", id, message: { type: "text", content }, timestampMs });
       }
     });
-    const queued = next.finally(() => { if (queues.get(agentId) === queued) queues.delete(agentId); });
+    const queued = next.finally(() => {
+      if (queues.get(agentId) === queued) queues.delete(agentId);
+      if (queuedAtByAgent.get(agentId) != null && !queues.has(agentId)) queuedAtByAgent.delete(agentId);
+    });
+    queuedAtByAgent.set(agentId, now());
     queues.set(agentId, queued);
     void queued.catch(() => undefined);
     return queued;
@@ -1453,10 +1482,56 @@ export function createCoordinatorInferenceRouter(options: {
     routedLogLine(options.dataDir, provider, groupAgentId, `group-turn finished ${totalMessages} replies`, options.postEvent);
     return { handled: true, value: { accepted: true, clientNonce, provider } };
   };
+  const debugSnapshot = (): Record<string, unknown> => {
+    const current = snapshot;
+    const ids = new Set<string>([
+      ...Object.keys(current.agents),
+      ...turnControllers.keys(),
+      ...queues.keys(),
+      ...streamingByAgent.keys(),
+      ...routedDebugLog.keys(),
+    ]);
+    ids.delete("(none)");
+    const bots: Record<string, unknown>[] = [];
+    for (const id of ids) {
+      const controller = turnControllers.get(id);
+      const running = controller != null && !controller.signal.aborted;
+      const entries = current.agents[id] ?? [];
+      let name: string | undefined;
+      for (let index = entries.length - 1; index >= 0 && name == null; index -= 1) {
+        const entry = entries[index]!;
+        const ref = entry.toAgent?.id === id ? entry.toAgent : entry.fromAgent?.id === id ? entry.fromAgent : entry.author?.id === id ? entry.author : undefined;
+        if (ref != null && ref.name.length > 0) name = ref.name;
+      }
+      const logRing = routedDebugLogFor(id);
+      const lastActivity = logRing.at(-1)?.at ?? null;
+      const streaming = streamingByAgent.get(id)?.content.trim() ?? "";
+      bots.push({
+        id,
+        name: name ?? id,
+        state: running ? "running" : queues.has(id) ? "queued" : "idle",
+        slot: turnSlotByAgent.get(id) ?? null,
+        queuedAt: queuedAtByAgent.get(id) == null ? null : new Date(queuedAtByAgent.get(id)!).toISOString(),
+        streamingPreview: streaming.length > 0 ? streaming.slice(-240) : null,
+        lastActivityAt: lastActivity == null ? null : new Date(lastActivity).toISOString(),
+        pendingApprovals: [...pendingToolApprovals.values()].filter(pending => pending.agentId === id).length,
+        recentLog: logRing.slice(-5).map(line => ({ at: new Date(line.at).toISOString(), provider: line.provider, text: line.text })),
+      });
+    }
+    const summaryProvider = settings.getInferenceProvider();
+    return {
+      generatedAt: new Date().toISOString(),
+      inference: routedInferenceSummary(summaryProvider === "cursor" ? "openrouter" : summaryProvider),
+      bots,
+      unassignedLog: routedDebugLogFor("(none)").map(line => ({ at: new Date(line.at).toISOString(), provider: line.provider, text: line.text })),
+    };
+  };
   return {
     provider(): SandInferenceProvider { return settings.getInferenceProvider(); },
+    debugSnapshot,
     async dispatch(method: string, args: unknown): Promise<{ handled: boolean; value?: unknown }> {
       const provider = settings.getInferenceProvider();
+      if (method === "getRoutedDebug") return { handled: true, value: debugSnapshot() };
       if (method === "resolveAutoReviewApproval") {
         // Routed-turn approval cards are settled here (the box runner is
         // bypassed on this path).

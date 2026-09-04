@@ -137,6 +137,31 @@ function configuredOpenRouterReasoningEffort(slot: OpenRouterSlot): OpenRouterRe
   } catch { return resolveOpenRouterReasoningEffort(undefined, fallback, env); }
 }
 
+export function routedInferenceSummary(provider: RoutedProvider): Record<string, unknown> {
+  if (provider === "codex") {
+    let model = "gpt-5.4";
+    try { model = configuredCodexModel(); } catch {}
+    return { provider, models: { think: model, drive: model, summarize: model } };
+  }
+  if (provider === "claude-code") {
+    const model = process.env.SAND_CLAUDE_MODEL?.trim() || "claude-code";
+    return { provider, models: { think: model, drive: model, summarize: model } };
+  }
+  return {
+    provider,
+    models: {
+      think: configuredOpenRouterModel(),
+      drive: configuredOpenRouterComputerModel(),
+      summarize: configuredOpenRouterSummarizeModel(),
+    },
+    reasoningEffort: {
+      think: configuredOpenRouterReasoningEffort("think"),
+      drive: configuredOpenRouterReasoningEffort("drive"),
+      summarize: configuredOpenRouterReasoningEffort("summarize"),
+    },
+  };
+}
+
 function openRouterFetch(effort: OpenRouterReasoningEffort, modelId: string, usage: OpenRouterTurnUsage): typeof fetch {
   return async (input, init) => {
     const nextInit = init == null ? init : (() => {

@@ -16,7 +16,7 @@ import {
 } from "../shared/node/composio-mcp.js";
 import type { RuntimeConfig } from "./config.js";
 import { persistencePathFor, secretsPathFor, settingsPathFor } from "./config.js";
-import { forkCoordinator, type CoordinatorSession } from "./coordinator-parent.js";
+import { coordinatorRpc, forkCoordinator, type CoordinatorSession } from "./coordinator-parent.js";
 import type { DebugState } from "./debug-log.js";
 import { createDebugState, noteLog } from "./debug-log.js";
 import { renderDebugPage, renderFallbackApp } from "./debug-page.js";
@@ -371,6 +371,17 @@ export function startRuntimeServer(config: RuntimeConfig, options: { readonly fo
 
     if (req.method === "GET" && pathName === "/debug") {
       return sendHtml(res, 200, renderDebugPage(await buildRuntimeHealth(config, debug), debug, config.debug), sessionCookieHeaders(req));
+    }
+    if (req.method === "GET" && pathName === "/debug/bots") {
+      if (!authorize(req, true)) return send(res, 401, "unauthorized");
+      if (coordinator == null) return sendJson(res, 200, { ok: false, reason: "coordinator-unavailable" });
+      try {
+        const value = await coordinatorRpc(coordinator, "debug-rpc:getRoutedDebug", {});
+        const record = redactValue(value);
+        return sendJson(res, 200, { ok: true, ...(record != null && typeof record === "object" && !Array.isArray(record) ? record as Record<string, unknown> : { value: record }) });
+      } catch (error) {
+        return sendJson(res, 200, { ok: false, reason: error instanceof Error ? error.message : String(error) });
+      }
     }
     if (req.method === "POST" && pathName === "/debug/actions/probe-box") {
       return sendJson(res, 200, await probeBoxHealth(config));

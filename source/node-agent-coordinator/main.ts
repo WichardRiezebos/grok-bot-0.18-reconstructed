@@ -2,7 +2,7 @@ import { hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
 import { createRealExpiryPolicy, createRealPollingPolicy, createRealRetryPolicy, realClock } from "../internal/scheduling.js";
-import { COORDINATOR_TRANSPORT_STATE_FAMILY } from "../shared/rpc/coordinator-port.js";
+import { COORDINATOR_TRANSPORT_STATE_FAMILY, COORDINATOR_UNKNOWN_METHOD, type CoordinatorReplyOutcome } from "../shared/rpc/coordinator-port.js";
 import { isCoordinatorMainMethod } from "../shared/rpc/coordinator-main.js";
 import { SAND_WEBAUTHN_HEARTBEAT_INTERVAL_MS, type WebAuthnCeremony } from "../shared/webauthn-gateway.js";
 import { adoptCarrier, type CarrierIntake } from "./carrier.js";
@@ -308,18 +308,45 @@ export async function composeCoordinator(dependencies: ComposeCoordinatorDepende
     if (settlement.outcome === "protocol-breach") { process.stderr.write(`node-agent-coordinator: control protocol breach: ${label}\n`); settleProcess(1, label); }
     else settleProcess(0, label);
   });
-  const settleOnCrash = (kind: "uncaughtException" | "unhandledRejection", value: unknown) => {
-    const error = value instanceof Error ? value : new Error(String(value));
+  const reportCrash = (kind: "uncaughtException" | "unhandledRejection", error: Error): void => {
     process.stderr.write(`node-agent-coordinator: ${kind}: ${error.stack ?? String(error)}\n`);
     void command(commands, "reportProcessCrash", { kind, errorName: error.name, errorMessage: error.message, errorStack: error.stack ?? null })
       .catch((reportError) => process.stderr.write(`node-agent-coordinator: crash report undelivered: ${String(reportError)}\n`));
-    settleProcess(1, kind);
   };
-  process.on("uncaughtException", (value) => settleOnCrash("uncaughtException", value));
-  process.on("unhandledRejection", (value) => settleOnCrash("unhandledRejection", value));
+  process.on("uncaughtException", (value) => {
+    reportCrash("uncaughtException", value instanceof Error ? value : new Error(String(value)));
+    settleProcess(1, "uncaughtException");
+  });
+  // A leaked rejection (e.g. a turn aborted at its deadline while a tool call
+  // was still settling) must not take down the coordinator and every bot's
+  // in-flight turn with it — log it and keep serving.
+  process.on("unhandledRejection", (value) => {
+    reportCrash("unhandledRejection", value instanceof Error ? value : new Error(String(value)));
+  });
   carrier.bind({
     onControlFrame: (frame) => controlClient.handleMessage(frame),
-    onDataFrame: (value) => server.handleMessage(value),
+    // Debug probes bypass the renderer-port protocol entirely: a bare request
+    // frame served by the port server before its hello handshake would breach
+    // the protocol and take the coordinator down.
+    onDataFrame: (value) => {
+      const record = value as { kind?: unknown; requestId?: unknown; method?: unknown; args?: unknown } | null;
+      if (record != null && record.kind === "request" && typeof record.requestId === "string"
+        && typeof record.method === "string" && record.method.startsWith("debug-rpc:")) {
+        const method = record.method.slice("debug-rpc:".length);
+        void Promise.resolve()
+          .then(() => {
+            if (method !== "getRoutedDebug") throw new Error(`no debug method named ${method}`);
+            return inferenceRouter.debugSnapshot();
+          })
+          .then(
+            (snapshot): CoordinatorReplyOutcome => ({ status: "ok", value: snapshot }),
+            (error: unknown): CoordinatorReplyOutcome => ({ status: "failed", failure: { code: COORDINATOR_UNKNOWN_METHOD, message: error instanceof Error ? error.message : String(error) } }),
+          )
+          .then((outcome) => carrier.data.post({ kind: "reply", requestId: record.requestId, outcome }));
+        return;
+      }
+      server.handleMessage(value);
+    },
     onMainDataFrame: (value) => mainServer.handleMessage(value),
     onClosed: () => { controlClient.handlePortClosed(); server.handlePortClosed(); mainServer.handlePortClosed(); }
   });

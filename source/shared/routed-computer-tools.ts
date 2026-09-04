@@ -25,6 +25,18 @@ export const ROUTED_COMPUTER_SCREENSHOT_LOOP_LIMIT = 4;
 export const ROUTED_INFERENCE_TURN_TIMEOUT_MS = 90_000;
 export const ROUTED_COMPUTER_INFERENCE_TURN_TIMEOUT_MS = 300_000;
 
+function envTimeoutOverrideMs(env: string | undefined, fallbackMs: number): number {
+  const parsed = Number.parseInt(env ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
+}
+
+/** Per-turn inference deadline; raise for long computer-use sessions. */
+export function routedTurnTimeoutMs(drive: boolean, env: NodeJS.ProcessEnv = process.env): number {
+  return drive
+    ? envTimeoutOverrideMs(env.SAND_ROUTED_COMPUTER_TURN_TIMEOUT_MS, ROUTED_COMPUTER_INFERENCE_TURN_TIMEOUT_MS)
+    : envTimeoutOverrideMs(env.SAND_ROUTED_TURN_TIMEOUT_MS, ROUTED_INFERENCE_TURN_TIMEOUT_MS);
+}
+
 export function routedSpotlightWrappingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.SAND_ROUTE_SPOTLIGHT !== "0";
 }

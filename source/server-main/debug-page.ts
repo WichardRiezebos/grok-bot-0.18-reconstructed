@@ -60,6 +60,9 @@ export function renderDebugPage(health: RuntimeHealth, debug: DebugState, debugE
     <button type="button" data-testid="debug-open-settings" id="open-settings">Open settings overlay</button>
   </p>
   <pre data-testid="debug-action-result" id="action-result">idle</pre>
+  <h2>Bots</h2>
+  <p><button type="button" data-testid="debug-refresh-bots" id="refresh-bots">Refresh bots</button></p>
+  <pre data-testid="debug-bots" id="bots">loading…</pre>
   <h2>RPC</h2>
   <pre data-testid="debug-rpc">${htmlEscape(rpc.length > 0 ? rpc : "(empty)")}</pre>
   <h2>Stubs</h2>
@@ -83,6 +86,43 @@ export function renderDebugPage(health: RuntimeHealth, debug: DebugState, debugE
       const response = await fetch("/debug/actions/open-settings", { method: "POST" });
       result.textContent = await response.text();
     };
+    const bots = document.getElementById("bots");
+    const renderBots = (payload) => {
+      if (payload == null || payload.ok !== true) {
+        bots.textContent = JSON.stringify(payload ?? { ok: false, reason: "no data" });
+        return;
+      }
+      const inference = payload.inference ?? {};
+      const models = inference.models ?? {};
+      const lines = [
+        "provider " + (inference.provider ?? "?")
+          + " think=" + (models.think ?? "?")
+          + " drive=" + (models.drive ?? "?")
+          + " summarize=" + (models.summarize ?? "?"),
+      ];
+      const list = Array.isArray(payload.bots) ? payload.bots : [];
+      if (list.length === 0) lines.push("(no bot activity yet)");
+      for (const bot of list) {
+        lines.push(String(bot.name) + " [" + String(bot.id) + "] " + String(bot.state)
+          + (bot.slot == null ? "" : " slot=" + bot.slot)
+          + " approvals=" + (bot.pendingApprovals ?? 0)
+          + " last=" + (bot.lastActivityAt ?? "never"));
+        if (bot.streamingPreview) lines.push("  streaming: " + bot.streamingPreview);
+        for (const line of bot.recentLog ?? []) lines.push("  " + line.at + " " + line.text);
+      }
+      for (const line of payload.unassignedLog ?? []) lines.push("(unassigned) " + line.at + " " + line.text);
+      bots.textContent = lines.join("\\n");
+    };
+    const loadBots = async () => {
+      try {
+        const response = await fetch("/debug/bots");
+        renderBots(await response.json());
+      } catch (error) {
+        bots.textContent = "error " + error;
+      }
+    };
+    document.getElementById("refresh-bots").onclick = loadBots;
+    void loadBots();
   </script>
 </body>
 </html>`;
