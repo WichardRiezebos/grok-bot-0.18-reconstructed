@@ -680,7 +680,7 @@ test("sendPrompt replies with the generated clientNonce immediately", async () =
   }
 });
 
-test("sendPrompt to a group room defers to the host member-round runner", async () => {
+test("sendPrompt to a group room runs the routed member-round orchestrator", async () => {
   const loaded = await loadModule();
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-group-"));
   try {
@@ -696,7 +696,6 @@ test("sendPrompt to a group room defers to the host member-round runner", async 
       settingsMigrations: [],
       inferenceProvider: "openrouter",
     }));
-    let providerCalled = false;
     const hostCalls = [];
     const events = [];
     const router = loaded.module.createCoordinatorInferenceRouter({
@@ -711,45 +710,39 @@ test("sendPrompt to a group room defers to the host member-round runner", async 
           return [
             { id: "agent-1", name: "Solo" },
             { id: "group-1", name: "Room", isGroup: true, memberIds: ["agent-1", "agent-2"] },
+            { id: "agent-2", name: "Duo", description: "the second member" },
           ];
         }
         if (method === "listRoutedComputerTools" || method === "listRoutedMcpTools") return [];
-        if (method === "sendPrompt") return { accepted: true, clientNonce: args?.clientNonce ?? "host-nonce" };
         return {};
       },
-      runProviderText: async () => {
-        providerCalled = true;
-        return "done";
+      runProviderText: async (_provider, messages, options) => {
+        const prompt = [...messages].reverse().find(m => m.role === "user")?.content ?? "";
+        const who = /It\u0027s your turn, ([A-Za-z]+)\./.exec(prompt)?.[1] ?? "Solo";
+        const reply = who === "Duo" ? "(pass)" : `Hello from ${who}.`;
+        if (options?.onTextDelta != null) options.onTextDelta(reply, reply);
+        return reply;
       },
     });
-    async function coordinatorDispatch(method, args) {
-      const routed = await router.dispatch(method, args);
-      if (routed.handled) return routed.value;
-      return router.dispatchRemote?.(method, args) ?? {};
-    }
     const result = await router.dispatch("sendPrompt", {
       agentId: "group-1",
       prompt: "hi everyone",
       clientNonce: "group-n1",
     });
-    assert.equal(result.handled, false);
-    assert.equal(providerCalled, false);
-    hostCalls.length = 0;
-    const hostSend = await (async () => {
-      const routed = await router.dispatch("sendPrompt", {
-        agentId: "group-1",
-        prompt: "hi everyone",
-        clientNonce: "group-n1",
-      });
-      assert.equal(routed.handled, false);
-      hostCalls.push({ method: "sendPrompt", args: { agentId: "group-1", prompt: "hi everyone", clientNonce: "group-n1" } });
-      return { accepted: true, clientNonce: "group-n1" };
-    })();
-    assert.equal(hostSend.accepted, true);
-    assert.equal(hostSend.clientNonce, "group-n1");
-    assert.equal(hostCalls.at(-1)?.method, "sendPrompt");
-    assert.equal(hostCalls.at(-1)?.args?.agentId, "group-1");
-    const solo = await router.dispatch("sendPrompt", {
+    assert.equal(result.handled, true);
+    assert.equal(result.value.accepted, true);
+    // The box must not receive the group sendPrompt; the orchestrator owns it.
+    assert.ok(!hostCalls.some(call => call.method === "sendPrompt"), hostCalls.map(c => c.method).join(","));
+    // The room transcript holds the user message plus attributed member replies.
+    const tail = await router.dispatch("getAgentTranscriptTail", { id: "group-1" });
+    const entries = tail.value?.entries ?? [];
+    const userEntry = entries.find(entry => entry.role === "user");
+    assert.ok(userEntry != null, "room user entry missing");
+    assert.equal(userEntry.fromUser?.name, "You");
+    const replies = entries.filter(entry => entry.author != null);
+    assert.ok(replies.some(reply => reply.author.id === "agent-1"), "agent-1 reply missing");
+    assert.ok(!replies.some(reply => reply.author.id === "agent-2"), "passing member posted a reply");
+  const solo = await router.dispatch("sendPrompt", {
       agentId: "agent-1",
       prompt: "hello",
       clientNonce: "solo-n1",

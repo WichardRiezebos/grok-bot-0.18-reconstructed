@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { runRoutedProviderText } from "../host/extensions/inference/provider-session.js";
+import { buildGroupMemberSystemPrompt, buildGroupTurnPrompt, GROUP_MAX_MEMBER_TURNS, GROUP_MAX_ROUNDS, isPassContent, messagesSinceMemberLastSpoke, orderRoundSpeakers, resolveResponders, type GroupMessage } from "../host/groups/group-chat.js";
 import { appendRoutedInferenceLog, isRoutedPromptOverflowError, isRoutedTransientProviderError, routedRouterErrorText, routedSettledAssistantContent } from "../shared/routed-inference-log.js";
 import { ROUTED_TURN_STOPPED_MESSAGE, RoutedTurnAbortError, isRoutedTurnAbortError } from "../shared/routed-turn-abort.js";
 import {
@@ -87,6 +88,8 @@ type StoredEntry = {
   readonly boxInstruction?: string;
   readonly fromAgent?: AgentRef;
   readonly toAgent?: AgentRef;
+  readonly author?: AgentRef;
+  readonly fromUser?: { readonly name?: string };
   readonly images?: readonly RoutedAgentImage[];
 };
 type Store = { readonly schemaVersion: 2; readonly agents: Readonly<Record<string, readonly StoredEntry[]>> };
@@ -355,6 +358,7 @@ export function projectInferenceRouterTranscriptEntry(entry: StoredEntry): Recor
         ...(entry.clientNonce === undefined ? {} : { clientNonce: entry.clientNonce }),
         ...(entry.reactions === undefined ? {} : { reactions: entry.reactions }),
         ...(entry.fromAgent == null ? {} : { fromAgent: entry.fromAgent }),
+        ...(entry.fromUser == null ? {} : { fromUser: entry.fromUser }),
         ...(entry.images == null ? {} : { images: entry.images }),
       }
     : {
@@ -365,6 +369,7 @@ export function projectInferenceRouterTranscriptEntry(entry: StoredEntry): Recor
         ...(entry.reactions === undefined ? {} : { reactions: entry.reactions }),
         ...(entry.boxRequestId == null ? {} : { boxRequestId: entry.boxRequestId, boxInstruction: entry.boxInstruction ?? entry.content }),
         ...(entry.toAgent == null ? {} : { toAgent: entry.toAgent }),
+        ...(entry.author == null ? {} : { author: entry.author }),
         ...(entry.images == null ? {} : { images: entry.images }),
       };
 }
@@ -1057,9 +1062,14 @@ export function createCoordinatorInferenceRouter(options: {
         typeof selfProfile?.name === "string" && selfProfile.name.trim().length > 0 ? selfProfile.name.trim() : undefined,
         typeof selfProfile?.description === "string" ? selfProfile.description : undefined,
       );
-      const systemExtra = brandNewAgent && introductionClause != null
+      const systemExtraComputed = brandNewAgent && introductionClause != null
         ? `${systemExtraBase}${systemExtraBase.trim().length > 0 ? "\n\n" : ""}${introductionClause}`
         : systemExtraBase;
+      // Group member turns replace the persona/directory extra with the room's
+      // system prompt (matches the box runner's createGroupMemberRunner).
+      const systemExtra = typeof args.systemExtraOverride === "string" && args.systemExtraOverride.trim().length > 0
+        ? args.systemExtraOverride
+        : systemExtraComputed;
       if (drive) {
         const url = extractRoutedBrowserUrl(effectivePrompt);
         if (url != null && shouldSkipRoutedBoxChromeReload(url, chromeOpenByAgent.has(agentId))) {
@@ -1185,7 +1195,9 @@ export function createCoordinatorInferenceRouter(options: {
       if (turnActivities.get(agentId) === turnActivity) turnActivities.delete(agentId);
       if (!turnActivities.has(agentId)) turnActivity.stop();
     }
-    return { accepted: true, clientNonce, provider };
+    // Group orchestration needs the member's reply text; every settle path
+    // (success, stop, timeout, error) funnels through persistThenEmit.
+    return { accepted: true, clientNonce, provider, text: lastSettled?.content ?? "" };
   };
 
   const enqueueTurn = (
@@ -1215,6 +1227,121 @@ export function createCoordinatorInferenceRouter(options: {
   };
 
   void load();
+  // Multi-bot group turns on the routed path: the box's group orchestrator
+  // needs its own inference credential (never provisioned here), so the router
+  // drives the round-robin itself with the shared pure helpers and posts each
+  // member reply to the group transcript with author attribution.
+  const runRoutedGroupTurn = async (
+    provider: Exclude<SandInferenceProvider, "cursor">,
+    record: Record<string, unknown>,
+    groupAgent: Record<string, unknown>,
+  ): Promise<{ handled: true; value: unknown }> => {
+    const groupAgentId = typeof record.agentId === "string" ? record.agentId : "";
+    const prompt = typeof record.prompt === "string" ? record.prompt : "";
+    const clientNonce = typeof record.clientNonce === "string" ? record.clientNonce : randomUUID();
+    const noop = { handled: true as const, value: { accepted: true, clientNonce, provider } };
+    if (groupAgentId.length === 0 || prompt.trim().length === 0) return noop;
+    const roster = await dispatchRemote("listAgents", {});
+    const rosterById = new Map<string, Record<string, unknown>>();
+    for (const row of Array.isArray(roster) ? roster : []) {
+      const entry = asRecord(row);
+      if (entry != null && typeof entry.id === "string") rosterById.set(entry.id, entry);
+    }
+    const rawMemberIds = Array.isArray(groupAgent.memberIds) ? groupAgent.memberIds : [];
+    const members = rawMemberIds
+      .filter((id): id is string => typeof id === "string" && rosterById.has(id))
+      .map(id => {
+        const profile = rosterById.get(id)!;
+        return {
+          id,
+          name: typeof profile.name === "string" && profile.name.trim().length > 0 ? profile.name.trim() : "Bot",
+          description: typeof profile.description === "string" ? profile.description : "",
+        };
+      });
+    if (members.length === 0) return noop;
+    const group = {
+      name: typeof groupAgent.name === "string" ? groupAgent.name : "",
+      description: typeof groupAgent.description === "string" ? groupAgent.description : "",
+    };
+    const history: GroupMessage[] = [{ speaker: { kind: "user" }, content: prompt.trim() }];
+    const timestampMs = now();
+    const userEntryId = `g${timestampMs}u`;
+    const userEntry = {
+      kind: "message",
+      id: userEntryId,
+      role: "user",
+      content: prompt,
+      fromUser: { name: "You" },
+      isStreaming: false,
+      timestampMs,
+      clientNonce,
+    };
+    await append(groupAgentId, [{
+      provider,
+      role: "user",
+      content: prompt,
+      id: userEntryId,
+      fromUser: userEntry.fromUser,
+      clientNonce,
+      timestampMs,
+    }]);
+    emitTranscript(groupAgentId, "appended", userEntry);
+    routedLogLine(options.dataDir, provider, groupAgentId, `group-turn members=${members.length}`, options.postEvent);
+
+    let totalMessages = 0;
+    for (let round = 0; round < GROUP_MAX_ROUNDS; round += 1) {
+      const responderIds = resolveResponders(members, history).map(member => member.id);
+      let messagesThisRound = 0;
+      for (const memberId of orderRoundSpeakers(responderIds, round)) {
+        if (totalMessages >= GROUP_MAX_MEMBER_TURNS) break;
+        const member = members.find(candidate => candidate.id === memberId);
+        if (member == null) continue;
+        const peers = members.filter(candidate => candidate.id !== member.id);
+        const systemExtraOverride = buildGroupMemberSystemPrompt(member, group, peers);
+        const memberPrompt = buildGroupTurnPrompt({
+          member,
+          group,
+          peers,
+          newMessages: messagesSinceMemberLastSpoke(history, member.id),
+        });
+        const outcome = await enqueueTurn(member.id, provider, {
+          agentId: member.id,
+          prompt: memberPrompt,
+          hidden: true,
+          clientNonce: randomUUID(),
+          systemExtraOverride,
+        });
+        const outcomeRecord = outcome != null && typeof outcome === "object" ? outcome as Record<string, unknown> : undefined;
+        const outcomeText = typeof outcomeRecord?.text === "string" ? outcomeRecord.text : "";
+        const text = outcomeText.trim();
+        if (text.length === 0 || isPassContent(text)) continue;
+        const replyTimestampMs = now();
+        const replyId = `g${replyTimestampMs}s${totalMessages}`;
+        const author = { id: member.id, name: member.name };
+        await append(groupAgentId, [{
+          provider,
+          role: "assistant",
+          content: text,
+          id: replyId,
+          author,
+          timestampMs: replyTimestampMs,
+        }]);
+        emitTranscript(groupAgentId, "appended", {
+          kind: "send-message",
+          id: replyId,
+          message: { type: "text", content: text },
+          author,
+          timestampMs: replyTimestampMs,
+        });
+        history.push({ speaker: { kind: "member", id: member.id, name: member.name }, content: text });
+        totalMessages += 1;
+        messagesThisRound += 1;
+      }
+      if (messagesThisRound === 0) break;
+    }
+    routedLogLine(options.dataDir, provider, groupAgentId, `group-turn finished ${totalMessages} replies`, options.postEvent);
+    return { handled: true, value: { accepted: true, clientNonce, provider } };
+  };
   return {
     provider(): SandInferenceProvider { return settings.getInferenceProvider(); },
     async dispatch(method: string, args: unknown): Promise<{ handled: boolean; value?: unknown }> {
@@ -1346,7 +1473,17 @@ export function createCoordinatorInferenceRouter(options: {
               const entry = asRecord(row);
               return entry != null && entry.id === agentId;
             });
-            if (asRecord(target)?.isGroup === true) return { handled: true, value: remote };
+            if (asRecord(target)?.isGroup === true) {
+              // Group transcripts merge routed local entries (orchestrated
+              // member replies, room user messages) with the box's own history.
+              const localGroup = await load();
+              const groupResult = asRecord(remote);
+              const persistedGroup = (localGroup.agents[agentId] ?? []).map(projectInferenceRouterTranscriptEntry);
+              const groupEntries = Array.isArray(groupResult?.entries) ? groupResult.entries : [];
+              const combinedGroup = [...groupEntries, ...persistedGroup];
+              const limitGroup = typeof record.limit === "number" && Number.isInteger(record.limit) && record.limit > 0 ? record.limit : 500;
+              return { handled: true, value: { ...(groupResult ?? {}), entries: combinedGroup.slice(-limitGroup) } };
+            }
           }
         }
         const local = await load();
@@ -1399,7 +1536,7 @@ export function createCoordinatorInferenceRouter(options: {
             const entry = asRecord(row);
             return entry != null && entry.id === agentId;
           });
-          if (asRecord(target)?.isGroup === true) return { handled: false };
+          if (asRecord(target)?.isGroup === true) return await runRoutedGroupTurn(provider, record, asRecord(target)!);
         }
       }
       const clientNonce = typeof record.clientNonce === "string" ? record.clientNonce : randomUUID();
