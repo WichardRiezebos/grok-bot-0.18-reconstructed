@@ -1,4 +1,4 @@
-import { mkdir, cp, access, writeFile } from "node:fs/promises";
+import { mkdir, cp, access, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -18,6 +18,10 @@ async function exists(target) {
 }
 
 await mkdir(out, { recursive: true });
+// Renderer chunks are content-addressed per release; a stale renderer from a
+// previous version would survive the copy and break patch-anchor matching.
+await rm(path.join(out, "dist"), { recursive: true, force: true });
+await rm(path.join(out, "renderer"), { recursive: true, force: true });
 await mkdir(path.join(out, "static"), { recursive: true });
 await mkdir(path.join(out, "renderer"), { recursive: true });
 await writeFile(path.join(out, "renderer", ".keep"), "");

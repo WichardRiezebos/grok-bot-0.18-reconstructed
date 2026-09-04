@@ -83,19 +83,19 @@ test("web runtime host bundle inlines jsonc-parser instead of UMD relative requi
   }
 });
 
-test("control image ships the checksum-pinned 0.36 renderer", async () => {
+test("control image ships the checksum-pinned 0.39 renderer", async () => {
   const html = await readFile(path.join(repoRoot, "deploy/control/shipped-renderer/index.html"), "utf8");
-  assert.match(html, /index-Dl1Aho6j\.js/);
-  assert.match(html, /index-FcTs3Vos\.css/);
-  const entry = await readFile(path.join(repoRoot, "deploy/control/shipped-renderer/assets/index-Dl1Aho6j.js"), "utf8");
+  assert.match(html, /index-BhgGiPaq\.js/);
+  assert.match(html, /index-9_2GMuRe\.css/);
+  const entry = await readFile(path.join(repoRoot, "deploy/control/shipped-renderer/assets/index-BhgGiPaq.js"), "utf8");
   assert.match(entry, /sand-/);
   const provenance = JSON.parse(await readFile(path.join(repoRoot, "deploy/control/shipped-renderer-provenance.json"), "utf8"));
-  assert.equal(provenance.version, "0.36.0");
-  assert.equal(provenance.upstreamAsarSha256, "2ae381b92f9f19dd33b2404b512cedaa3d2e1b4a08640be088dc6a06b1cf98d3");
-  assert.equal(provenance.dmgSha256, "5aacc48244fea0a99d56d5d0a0748a71de5514cf2e0e11b4934f56aae53b48a6");
+  assert.equal(provenance.version, "0.39.0");
+  assert.equal(provenance.upstreamAsarSha256, "c5fe6e202ca58d5f890e90cbde6163b6cf3733b49a425a32d148bb58ffccbc3c");
+  assert.equal(provenance.dmgSha256, "345561547cceb3b83355cc578b38fdbce74f731500382a57385616d124d8cc12");
   assert.equal(provenance.patchMode, "unpatched-stock-renderer");
-  assert.equal(provenance.entryAssets.entryChunk, "assets/index-Dl1Aho6j.js");
-  assert.equal(provenance.entryAssets.entryCss, "assets/index-FcTs3Vos.css");
+  assert.equal(provenance.entryAssets.entryChunk, "assets/index-BhgGiPaq.js");
+  assert.equal(provenance.entryAssets.entryCss, "assets/index-9_2GMuRe.css");
   const { stat } = await import("node:fs/promises");
   const stats = await stat(path.join(repoRoot, "deploy/control/shipped-renderer"));
   assert.ok(stats.isDirectory());

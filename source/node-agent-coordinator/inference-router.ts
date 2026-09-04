@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { runRoutedProviderText, routedInferenceSummary } from "../host/extensions/inference/provider-session.js";
 import { buildGroupMemberSystemPrompt, buildGroupTurnPrompt, GROUP_MAX_MEMBER_TURNS, GROUP_MAX_ROUNDS, isPassContent, messagesSinceMemberLastSpoke, orderRoundSpeakers, resolveResponders, type GroupMessage } from "../host/groups/group-chat.js";
 import { appendRoutedInferenceLog, isRoutedPromptOverflowError, isRoutedTransientProviderError, routedRouterErrorText, routedSettledAssistantContent } from "../shared/routed-inference-log.js";
-import { ROUTED_TURN_STOPPED_MESSAGE, RoutedTurnAbortError, isRoutedTurnAbortError } from "../shared/routed-turn-abort.js";
+import { ROUTED_TURN_STOPPED_MESSAGE, RoutedTurnAbortError, isRoutedStopCommand, isRoutedTurnAbortError } from "../shared/routed-turn-abort.js";
 import {
   ROUTED_COMPUTER_INFERENCE_TURN_TIMEOUT_MS,
   ROUTED_COMPUTER_MAX_STEPS,
@@ -15,18 +15,13 @@ import {
   routedTurnTimeoutMs,
   computerScreenshotLoopMessage,
   ROUTED_BOX_CHROME_TOOL_NAME,
-  extractRoutedBrowserUrl,
   isRoutedComputerTool,
   mergeRoutedToolLists,
   nextComputerScreenshotStreak,
-  routedBoxChromeAlreadyOpenMessage,
-  routedBoxChromeUrl,
   routedBoxHelpHandoff,
   routedComputerActionName,
   routedComputerBlockedByHandoffMessage,
   routedComputerMcpResult,
-  shouldSkipRoutedBoxChromeReload,
-  turnNeedsRoutedComputer,
 } from "../shared/routed-computer-tools.js";
 import {
   buildRoutedAgentIntroductionWakePrompt,
@@ -55,10 +50,10 @@ import {
   type RoutedAgentImage,
 } from "../shared/routed-agent-tools.js";
 import { buildAgentInboundWakePrompt, renderAgentDirectorySystemPrompt } from "../host/agents/agent-messaging.js";
+import { HOST_ACCOUNT_SLOT } from "../shared/send-acceptance.js";
 import type { SandInferenceProvider } from "../shared/inference-router.js";
 import { SandSettingsStore } from "../shared/node/settings/sand-settings-store.js";
 import { createRoutedMcpBridge } from "./routed-mcp-bridge.js";
-import { COMPOSIO_TOOLS_MISSING_MESSAGE, promptLooksLikeComposioPluginUse } from "../shared/node/composio-mcp.js";
 
 export {
   ROUTED_COMPUTER_INFERENCE_TURN_TIMEOUT_MS,
@@ -74,6 +69,16 @@ export {
 export const ROUTED_TURN_RETRY_BACKOFF_MS = [2_000, 8_000] as const;
 export const ROUTED_TURN_MAX_RETRIES = 2;
 export const ROUTED_STREAM_EMIT_THROTTLE_MS = 250;
+
+// Control flow, not an error: the think-slot model reached for a screen tool,
+// so the turn continues on the drive model (native Grok Bot's model decides
+// via its Task/computer subagent; here the tool call itself is the decision).
+export class RoutedSlotPromotionError extends Error {
+  constructor() {
+    super("think slot requested a computer tool; handing the turn to the drive model");
+    this.name = "RoutedSlotPromotionError";
+  }
+}
 
 type AgentRef = { readonly id: string; readonly name: string; readonly kind?: string };
 type StoredEntry = {
@@ -457,12 +462,39 @@ export function createCoordinatorInferenceRouter(options: {
   const now = options.now ?? Date.now;
   const queues = new Map<string, Promise<unknown>>();
   const streamingByAgent = new Map<string, { readonly id: string; readonly content: string; readonly timestampMs: number }>();
-  const chromeOpenByAgent = new Set<string>();
   const turnControllers = new Map<string, AbortController>();
   const turnActivities = new Map<string, { stop(): void }>();
   const queuedTurnGenerations = new Map<string, number>();
   const turnSlotByAgent = new Map<string, string>();
   const queuedAtByAgent = new Map<string, number>();
+  // Routed sends never reach the box's send-acceptance ledger, so the shipped
+  // renderer's promptAcceptanceStatus polls would report not-found forever and
+  // the composer would keep its "Waiting to send…" notice. Remember every
+  // nonce this router accepted and answer the lookup for them, mirroring the
+  // box's AcceptanceRecord shape.
+  const acceptedSendNonces = new Map<string, {
+    readonly agentId: string;
+    readonly acceptedAtMs: number;
+    echoEntryId: string | null;
+  }>();
+  const ACCEPTED_NONCE_TTL_MS = 60 * 60_000;
+  const ACCEPTED_NONCE_LIMIT = 500;
+  const rememberAcceptedSendNonce = (clientNonce: string, agentId: string, echoEntryId: string | null = null) => {
+    const at = now();
+    for (const [nonce, entry] of acceptedSendNonces) {
+      if (at - entry.acceptedAtMs > ACCEPTED_NONCE_TTL_MS) acceptedSendNonces.delete(nonce);
+      else break;
+    }
+    while (acceptedSendNonces.size >= ACCEPTED_NONCE_LIMIT) {
+      acceptedSendNonces.delete(acceptedSendNonces.keys().next().value as string);
+    }
+    const existing = acceptedSendNonces.get(clientNonce);
+    acceptedSendNonces.set(clientNonce, {
+      agentId,
+      acceptedAtMs: existing?.acceptedAtMs ?? at,
+      echoEntryId: echoEntryId ?? existing?.echoEntryId ?? null,
+    });
+  };
 
   const abortAgentTurn = (agentId: string, kind: "stop" | "supersede"): boolean => {
     const controller = turnControllers.get(agentId);
@@ -589,7 +621,6 @@ export function createCoordinatorInferenceRouter(options: {
     for (const id of ids) {
       abortAgentTurn(id, "stop");
       streamingByAgent.delete(id);
-      chromeOpenByAgent.delete(id);
       turnActivities.delete(id);
       queues.delete(id);
       queuedTurnGenerations.set(id, (queuedTurnGenerations.get(id) ?? 0) + 1);
@@ -721,7 +752,6 @@ export function createCoordinatorInferenceRouter(options: {
       return match == null ? highest : Math.max(highest, Number(match[1]));
     }, -1);
     const turn = Math.max(remoteTurn, localTurn) + 1;
-    const chromeAlreadyOpen = chromeOpenByAgent.has(agentId);
     let withUser = beforeUser;
     if (!hidden) {
       for (let attachmentIndex = 0; attachmentIndex < attachmentPaths.length; attachmentIndex += 1) {
@@ -757,6 +787,7 @@ export function createCoordinatorInferenceRouter(options: {
         timestampMs,
       }]);
       emitTranscript(agentId, "appended", userEntry);
+      if (clientNonce.length > 0) rememberAcceptedSendNonce(clientNonce, agentId, userEntry.id);
     }
     const userAbort = new AbortController();
     turnControllers.set(agentId, userAbort);
@@ -813,12 +844,11 @@ export function createCoordinatorInferenceRouter(options: {
       assistantTimestampMs = now();
       assistantStreamStarted = false;
     };
-    const drive = turnNeedsRoutedComputer(effectivePrompt, chromeAlreadyOpen);
+    let slotName: "think" | "drive" = "think";
     const listRoutedTools = async (): Promise<unknown[]> => {
       const native = [...listRoutedSendToAgentToolDefinitions(), ...listRoutedAgentManagementToolDefinitions()];
       const plugins = await dispatchRemote("listRoutedMcpTools", {});
       const pluginList = Array.isArray(plugins) ? plugins : [];
-      if (!drive) return mergeRoutedToolLists(native, pluginList);
       const computer = await dispatchRemote("listRoutedComputerTools", {});
       return mergeRoutedToolLists(native, mergeRoutedToolLists(Array.isArray(computer) ? computer : [], pluginList));
     };
@@ -994,6 +1024,10 @@ export function createCoordinatorInferenceRouter(options: {
       stepUsedTool = true;
       const started = Date.now();
       const name = typeof definition.name === "string" ? definition.name : "(unnamed)";
+      if (slotName === "think" && isRoutedComputerTool(definition)) {
+        log(`slot-promotion ${name}`);
+        throw new RoutedSlotPromotionError();
+      }
       const action = routedComputerActionName(toolArgs);
       turnActivity.reveal({
         composing: false,
@@ -1060,10 +1094,6 @@ export function createCoordinatorInferenceRouter(options: {
         log(`tool-finish ${name} ${Date.now() - started}ms`);
         const displayName = typeof targetName.name === "string" && targetName.name.trim().length > 0 ? targetName.name.trim() : targetId;
         return routedComputerMcpResult({ text: update.self ? routedUpdateAgentSelfAck(update.name) : routedUpdateAgentAck(displayName) });
-      }
-      if (name === ROUTED_BOX_CHROME_TOOL_NAME && shouldSkipRoutedBoxChromeReload(routedBoxChromeUrl(toolArgs), chromeOpenByAgent.has(agentId))) {
-        log("box-chrome-skip already-open");
-        return routedComputerMcpResult({ text: routedBoxChromeAlreadyOpenMessage() });
       }
       if (isRoutedComputerTool(definition) && boxHandedOff) {
         log("tool-stop box-handoff");
@@ -1164,7 +1194,6 @@ export function createCoordinatorInferenceRouter(options: {
           emitTranscript(agentId, "appended", handoffEntry);
           log(`box-handoff ${handoff.requestId}`);
         }
-        if (name === ROUTED_BOX_CHROME_TOOL_NAME) chromeOpenByAgent.add(agentId);
         log(`tool-finish ${name} ${Date.now() - started}ms`);
         return result;
       } catch (error) {
@@ -1173,22 +1202,16 @@ export function createCoordinatorInferenceRouter(options: {
       }
     };
     const runProviderText = options.runProviderText ?? runRoutedProviderText;
-    const slot = drive ? "drive" as const : "think" as const;
-    turnSlotByAgent.set(agentId, slot);
+    turnSlotByAgent.set(agentId, slotName);
     queuedAtByAgent.delete(agentId);
     const promptChars = messages.reduce((sum, message) => sum + (typeof message.content === "string" ? message.content.length : 0), 0);
-    log(`turn-start ${slot} ${messages.length} msgs ${promptChars} chars`);
+    log(`turn-start ${slotName} ${messages.length} msgs ${promptChars} chars`);
     try {
       const listedTools = await listRoutedTools();
       const pluginTools = listedTools.some((tool) => {
         const row = asRecord(tool) ?? {};
         return !isRoutedComputerTool(row) && !isRoutedSendToAgentTool(row) && !isRoutedAgentManagementTool(row);
       });
-      if (!hidden && !pluginTools && !drive && promptLooksLikeComposioPluginUse(effectivePrompt)) {
-        await persistThenEmit(assistantId, COMPOSIO_TOOLS_MISSING_MESSAGE, assistantTimestampMs);
-        log("turn-finish composio-tools-missing");
-        return { accepted: true, clientNonce, provider };
-      }
       const roster = await loadRoster();
       const systemExtraBase = await loadRoutedSystemExtra(
         dispatchRemote,
@@ -1208,32 +1231,12 @@ export function createCoordinatorInferenceRouter(options: {
       const systemExtra = typeof args.systemExtraOverride === "string" && args.systemExtraOverride.trim().length > 0
         ? args.systemExtraOverride
         : systemExtraComputed;
-      if (drive) {
-        const url = extractRoutedBrowserUrl(effectivePrompt);
-        if (url != null && shouldSkipRoutedBoxChromeReload(url, chromeOpenByAgent.has(agentId))) {
-          log("box-chrome-auto-skip already-open");
-        } else if (url != null) {
-          log(`box-chrome-auto ${url}`);
-          turnActivity.reveal({ composing: false, activity: { kind: "tool", tool: ROUTED_BOX_CHROME_TOOL_NAME, callId: `box-chrome-auto-t${turn}` } });
-          try {
-            await dispatchRemote("executeRoutedComputerTool", {
-              name: ROUTED_BOX_CHROME_TOOL_NAME,
-              toolName: ROUTED_BOX_CHROME_TOOL_NAME,
-              args: { url },
-              toolCallId: `box-chrome-auto-t${turn}`,
-              agentId,
-            });
-            chromeOpenByAgent.add(agentId);
-          } catch (error) {
-            log(`box-chrome-auto-error ${error instanceof Error ? error.message : String(error)}`);
-          }
-        }
-      }
-      const timeoutMs = options.turnTimeoutMs ?? routedTurnTimeoutMs(drive);
+      const initialTimeoutMs = options.turnTimeoutMs ?? routedTurnTimeoutMs(false);
+      let timeoutMs = initialTimeoutMs;
       turnDeadlineMs = timeoutMs;
       log(`turn-deadline ${Math.round(timeoutMs / 100) / 10}s`);
-      const maxSteps = drive ? ROUTED_COMPUTER_MAX_STEPS : ROUTED_PLUGIN_MAX_STEPS;
-      const abortSignal = AbortSignal.any([userAbort.signal, AbortSignal.timeout(timeoutMs)]);
+      let maxSteps = ROUTED_PLUGIN_MAX_STEPS;
+      let abortSignal = AbortSignal.any([userAbort.signal, AbortSignal.timeout(timeoutMs)]);
       turnAbort = abortSignal;
       const session: { bridge: { readonly url: string; close(): Promise<void> } | null } = { bridge: null };
       let content = "";
@@ -1257,11 +1260,11 @@ export function createCoordinatorInferenceRouter(options: {
           },
           abortSignal,
           maxSteps,
-          slot,
+          slot: slotName,
           pluginTools,
           systemExtra,
           turnTimeoutMs: timeoutMs,
-        } : { mcpServerUrl: session.bridge.url, onTextDelta, onProgress, abortSignal, maxSteps, slot, pluginTools, systemExtra, turnTimeoutMs: timeoutMs });
+        } : { mcpServerUrl: session.bridge.url, onTextDelta, onProgress, abortSignal, maxSteps, slot: slotName, pluginTools, systemExtra, turnTimeoutMs: timeoutMs });
         let retries = 0;
         for (;;) {
           attemptHadProgress = false;
@@ -1276,6 +1279,18 @@ export function createCoordinatorInferenceRouter(options: {
             content = await runOnce();
             break;
           } catch (error) {
+            if (error instanceof RoutedSlotPromotionError) {
+              slotName = "drive";
+              turnSlotByAgent.set(agentId, slotName);
+              timeoutMs = options.turnTimeoutMs ?? routedTurnTimeoutMs(true);
+              turnDeadlineMs = timeoutMs;
+              log(`turn-deadline ${Math.round(timeoutMs / 100) / 10}s (drive)`);
+              maxSteps = ROUTED_COMPUTER_MAX_STEPS;
+              abortSignal = AbortSignal.any([userAbort.signal, AbortSignal.timeout(timeoutMs)]);
+              turnAbort = abortSignal;
+              retries = 0;
+              continue;
+            }
             const overflowOnce = retries === 0 && isRoutedPromptOverflowError(error);
             const retryable = !attemptHadProgress && retries < ROUTED_TURN_MAX_RETRIES && !isRoutedTurnAbortError(error) && (isRoutedTransientProviderError(error) || overflowOnce);
             if (!retryable) throw error;
@@ -1332,7 +1347,7 @@ export function createCoordinatorInferenceRouter(options: {
     finally {
       if (turnControllers.get(agentId) === userAbort) turnControllers.delete(agentId);
       if (turnActivities.get(agentId) === turnActivity) turnActivities.delete(agentId);
-      if (turnSlotByAgent.get(agentId) === slot) turnSlotByAgent.delete(agentId);
+      if (turnSlotByAgent.get(agentId) === slotName) turnSlotByAgent.delete(agentId);
       if (!turnActivities.has(agentId)) turnActivity.stop();
     }
     // Group orchestration needs the member's reply text; every settle path
@@ -1709,6 +1724,28 @@ export function createCoordinatorInferenceRouter(options: {
         const limit = typeof record.limit === "number" && Number.isInteger(record.limit) && record.limit > 0 ? record.limit : 500;
         return { handled: true, value: { ...result, entries: combined.slice(-limit) } };
       }
+      if (method === "promptAcceptanceStatus") {
+        const record = asRecord(args) ?? {};
+        const clientNonce = typeof record.clientNonce === "string" ? record.clientNonce : "";
+        const hit = clientNonce.length > 0 ? acceptedSendNonces.get(clientNonce) : undefined;
+        if (hit == null) return { handled: false };
+        return {
+          handled: true,
+          value: {
+            outcome: "found",
+            record: {
+              accountSlot: HOST_ACCOUNT_SLOT,
+              clientNonce,
+              inputDigest: "",
+              status: "accepted",
+              acceptedAtMs: hit.acceptedAtMs,
+              agentId: hit.agentId,
+              echoEntryId: hit.echoEntryId,
+              rejectionCode: null,
+            },
+          },
+        };
+      }
       if (method === "stopRoutedTurn") {
         const record = asRecord(args) ?? {};
         const agentId = typeof record.agentId === "string" ? record.agentId : "";
@@ -1734,6 +1771,16 @@ export function createCoordinatorInferenceRouter(options: {
       if (method !== "sendPrompt" || provider === "cursor") return { handled: false };
       const record = asRecord(args) ?? {};
       const agentId = typeof record.agentId === "string" ? record.agentId : "";
+      const providedNonce = typeof record.clientNonce === "string" && record.clientNonce.length > 0 ? record.clientNonce : null;
+      if (providedNonce != null) rememberAcceptedSendNonce(providedNonce, agentId);
+      if (agentId.length > 0 && turnControllers.has(agentId) && isRoutedStopCommand(typeof record.prompt === "string" ? record.prompt : "")) {
+        // A bare stop command while a turn runs is the hidden stop button:
+        // abort without burning an LLM call; the abort path persists
+        // ROUTED_TURN_STOPPED_MESSAGE.
+        abortAgentTurn(agentId, "stop");
+        routedLogLine(options.dataDir, provider, agentId, "dispatch stop-command", options.postEvent);
+        return { handled: true, value: { accepted: true, clientNonce: providedNonce ?? randomUUID(), provider } };
+      }
       if (agentId.length > 0) {
         const remote = await dispatchRemote("listAgents", {});
         if (Array.isArray(remote)) {
@@ -1744,7 +1791,7 @@ export function createCoordinatorInferenceRouter(options: {
           if (asRecord(target)?.isGroup === true) return await runRoutedGroupTurn(provider, record, asRecord(target)!);
         }
       }
-      const clientNonce = typeof record.clientNonce === "string" ? record.clientNonce : randomUUID();
+      const clientNonce = providedNonce ?? randomUUID();
       routedLogLine(options.dataDir, provider, agentId || "(none)", "dispatch sendPrompt queued", options.postEvent);
       if (agentId.length > 0) abortAgentTurn(agentId, "supersede");
       const queuedValue = enqueueTurn(agentId, provider, { ...record, clientNonce });

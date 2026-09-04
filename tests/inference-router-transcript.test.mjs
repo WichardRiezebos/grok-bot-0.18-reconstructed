@@ -173,13 +173,22 @@ test("routed turn settles the first acknowledgment and final text, not tool-step
         return {};
       },
       runProviderText: async (_provider, _messages, options) => {
-        options.onTextDelta?.("I'll check plus.nl.", "I'll check plus.nl.");
-        options.onStreamEvent?.({ type: "step-finish", elapsedMs: 12 });
-        options.onTextDelta?.("Clicking lunch.", "Clicking lunch.");
+        if (options.slot !== "drive") {
+          options.onTextDelta?.("I'll check plus.nl.", "I'll check plus.nl.");
+          options.onStreamEvent?.({ type: "step-finish", elapsedMs: 12 });
+          await options.executeTool(
+            { name: "Computer", providerIdentifier: "grok-bot-computer", toolName: "Computer" },
+            { action: "click", x: 1, y: 2 },
+            "call-think",
+          );
+          return "unreachable";
+        }
+        options.onTextDelta?.("Opening plus.nl.", "Opening plus.nl.");
+        options.onStreamEvent?.({ type: "step-finish", elapsedMs: 20 });
         await options.executeTool(
           { name: "Computer", providerIdentifier: "grok-bot-computer", toolName: "Computer" },
           { action: "click", x: 1, y: 2 },
-          "call-1",
+          "call-drive",
         );
         options.onStreamEvent?.({ type: "step-finish", elapsedMs: 34 });
         options.onTextDelta?.("Found the lunch deal.", "Found the lunch deal.");
@@ -193,12 +202,13 @@ test("routed turn settles the first acknowledgment and final text, not tool-step
       settled = events
         .filter((event) => event.family === "transcript" && event.payload?.entry?.kind === "send-message" && event.payload?.entry?.streaming === false)
         .map((event) => event.payload.entry);
-      if (settled.length >= 2) break;
+      if (settled.length >= 3) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    assert.deepEqual([...new Set(settled.map((entry) => entry.id))].sort(), ["t0s0", "t0s2"]);
+    assert.deepEqual([...new Set(settled.map((entry) => entry.id))].sort(), ["t0s0", "t0s2", "t0s3"]);
     assert.equal(settled[0].message.content, "I'll check plus.nl.");
-    assert.equal(settled[1].message.content, "Found the lunch deal.");
+    assert.equal(settled[1].message.content, "Opening plus.nl.");
+    assert.equal(settled[2].message.content, "Found the lunch deal.");
     assert.equal(settled.some((entry) => String(entry.message?.content).includes("Clicking lunch")), false);
     assert.equal(settled.some((entry) => entry.id === "t0s1"), false);
     const streamed = events
@@ -869,13 +879,14 @@ test("first-step click narration is discarded when a tool ran in that step", asy
   }
 });
 
-test("computer turns auto-open box Chrome when the user named a site", async () => {
+test("the model opens box Chrome itself; the router never auto-opens from prompt URLs", async () => {
   const loaded = await loadModule();
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-box-chrome-auto-"));
   try {
     await writeFile(path.join(dataDir, "settings.json"), routerSettings());
     const remoteCalls = [];
     const events = [];
+    let chromeState = "turn1-think";
     const router = loaded.module.createCoordinatorInferenceRouter({
       dataDir,
       composingDelayMs: 0,
@@ -892,7 +903,31 @@ test("computer turns auto-open box Chrome when the user named a site", async () 
         if (method === "executeRoutedComputerTool") return { ok: true };
         return {};
       },
-      runProviderText: async () => "Looking at plus.nl.",
+      runProviderText: async (_provider, _messages, options) => {
+        if (chromeState === "turn1-think" && options.slot === "think") {
+          chromeState = "turn1-drive";
+          await options.executeTool(
+            { name: "box_chrome", providerIdentifier: "grok-bot-computer", toolName: "box_chrome" },
+            { url: "https://plus.nl/" },
+            "chrome-think",
+          );
+          return "unreachable";
+        }
+        if (chromeState === "turn1-drive" && options.slot === "drive") {
+          chromeState = "done";
+          await options.executeTool(
+            { name: "box_chrome", providerIdentifier: "grok-bot-computer", toolName: "box_chrome" },
+            { url: "https://plus.nl/" },
+            "chrome-drive",
+          );
+          options.onTextDelta?.("Looking at plus.nl.", "Looking at plus.nl.");
+          options.onStreamEvent?.({ type: "step-finish", elapsedMs: 20 });
+          return "Looking at plus.nl.";
+        }
+        options.onTextDelta?.("Still looking at plus.nl.", "Still looking at plus.nl.");
+        options.onStreamEvent?.({ type: "step-finish", elapsedMs: 20 });
+        return "Still looking at plus.nl.";
+      },
     });
     await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "order cheese from plus.nl in basket", clientNonce: "n1" });
     for (let i = 0; i < 80; i++) {
@@ -900,8 +935,8 @@ test("computer turns auto-open box Chrome when the user named a site", async () 
       if (done) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    const auto = remoteCalls.find((call) => call.method === "executeRoutedComputerTool" && call.args?.name === "box_chrome");
-    assert.equal(auto?.args?.args?.url, "https://plus.nl/");
+    const chromeCalls = remoteCalls.filter((call) => call.method === "executeRoutedComputerTool" && call.args?.name === "box_chrome");
+    assert.deepEqual(chromeCalls.map((call) => call.args?.args?.url), ["https://plus.nl/"], "exactly one box_chrome call, from the model's own tool args");
     remoteCalls.length = 0;
     await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "keep going on plus.nl", clientNonce: "n2" });
     for (let i = 0; i < 80; i++) {
@@ -909,8 +944,8 @@ test("computer turns auto-open box Chrome when the user named a site", async () 
       if (done) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    const secondAuto = remoteCalls.find((call) => call.method === "executeRoutedComputerTool" && call.args?.name === "box_chrome");
-    assert.equal(secondAuto, undefined);
+    const secondChrome = remoteCalls.filter((call) => call.method === "executeRoutedComputerTool" && call.args?.name === "box_chrome");
+    assert.equal(secondChrome.length, 0, "no auto-open without the model asking");
     const roster = await router.dispatch("listAgents", {});
     const row = roster.value.find((agent) => agent.id === "agent-1");
     assert.equal(row.lastEntry.kind, "text");
@@ -1064,7 +1099,7 @@ test("a persist failure mid-turn settles an error bubble without crashing", asyn
   }
 });
 
-test("Computer tools attach only on Drive turns", async () => {
+test("every turn starts in think with screen tools attached; a screen tool call promotes to drive", async () => {
   const loaded = await loadModule();
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-slot-gate-"));
   try {
@@ -1092,6 +1127,13 @@ test("Computer tools attach only on Drive turns", async () => {
           slot: options.slot,
           toolNames: (options.tools ?? []).map((tool) => tool.name),
         });
+        if (options.slot === "think" && providerCalls.length >= 2) {
+          await options.executeTool(
+            { name: "Computer", providerIdentifier: "grok-bot-computer", toolName: "Computer" },
+            { action: "screenshot" },
+            "promote-1",
+          );
+        }
         return "ok";
       },
     });
@@ -1104,29 +1146,18 @@ test("Computer tools attach only on Drive turns", async () => {
     };
     await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "hello", clientNonce: "n1" });
     await waitForCall(1);
-    assert.equal(providerCalls.at(-1).slot, "think");
-    assert.equal(providerCalls.at(-1).toolNames.includes("Computer"), false);
-    assert.equal(providerCalls.at(-1).toolNames.includes("Gmail_send"), true);
-    assert.equal(remoteCalls.includes("listRoutedComputerTools"), false);
+    assert.equal(providerCalls.at(0).slot, "think");
+    assert.equal(providerCalls.at(0).toolNames.includes("Computer"), true, "screen tools ride along on every turn");
+    assert.equal(providerCalls.at(0).toolNames.includes("Gmail_send"), true);
+    assert.equal(remoteCalls.includes("listRoutedComputerTools"), true, "screen tools are listed up front");
+    assert.equal(remoteCalls.filter((call) => call === "listRoutedComputerTools").length, 1, "listed once per turn, not per slot");
 
     remoteCalls.length = 0;
     await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "order cheese from plus.nl", clientNonce: "n2" });
-    await waitForCall(2);
-    assert.equal(providerCalls.at(-1).slot, "drive");
-    assert.equal(providerCalls.at(-1).toolNames.includes("Computer"), true);
-    assert.equal(remoteCalls.includes("listRoutedComputerTools"), true);
-
-    remoteCalls.length = 0;
-    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "click the cookie banner", clientNonce: "n3" });
     await waitForCall(3);
-    assert.equal(providerCalls.at(-1).slot, "drive");
+    assert.equal(providerCalls[1].slot, "think");
+    assert.equal(providerCalls[2].slot, "drive", "the model's screen-tool call promoted the turn to the drive model");
     assert.equal(providerCalls.at(-1).toolNames.includes("Computer"), true);
-
-    remoteCalls.length = 0;
-    await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "hello again", clientNonce: "n4" });
-    await waitForCall(4);
-    assert.equal(providerCalls.at(-1).slot, "think");
-    assert.equal(providerCalls.at(-1).toolNames.includes("Computer"), false);
   } finally {
     await loaded.dispose();
     await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });
@@ -1431,7 +1462,7 @@ async function waitForSettledAssistant(events, predicate) {
   throw new Error("timed out waiting for settled assistant");
 }
 
-test("Think Gmail prompt with an empty plugin list surfaces a Composio load error", async () => {
+test("Think Gmail prompt with an empty plugin list still reaches the model (no canned reply)", async () => {
   const loaded = await loadModule();
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "grok-router-composio-empty-"));
   try {
@@ -1451,13 +1482,13 @@ test("Think Gmail prompt with an empty plugin list surfaces a Composio load erro
       },
       runProviderText: async () => {
         providerCalls += 1;
-        return "I'll search Gmail now.";
+        return "Gmail is not connected right now, so I cannot search your inbox. Connect Composio in Settings → Router and try again.";
       },
     });
     await router.dispatch("sendPrompt", { agentId: "agent-1", prompt: "search my gmail inbox", clientNonce: "n1" });
-    const assistant = await waitForSettledAssistant(events, (entry) => entry.message.content === COMPOSIO_TOOLS_MISSING_MESSAGE);
-    assert.equal(assistant.message.content, COMPOSIO_TOOLS_MISSING_MESSAGE);
-    assert.equal(providerCalls, 0);
+    const assistant = await waitForSettledAssistant(events, (entry) => String(entry.message.content).includes("Gmail is not connected"));
+    assert.ok(String(assistant.message.content).includes("Gmail is not connected"));
+    assert.equal(providerCalls, 1, "the model answers plugin gaps itself; the router never shortcuts it");
   } finally {
     await loaded.dispose();
     await rm(dataDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 100 });

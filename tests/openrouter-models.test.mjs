@@ -38,9 +38,9 @@ test("OpenRouter catalog pins recommended models first and keeps the current sel
       ],
     }, "Mu");
     assert.deepEqual(models.map((model) => model.id), [
+      "google/gemini-2.5-flash",
       "x-ai/grok-4.6",
       "anthropic/claude-sonnet-4.6",
-      "google/gemini-2.5-flash",
       "a-vendor/alpha",
       "Mu",
       "z-vendor/zeta",
@@ -48,13 +48,13 @@ test("OpenRouter catalog pins recommended models first and keeps the current sel
     assert.equal(models[0].recommended, true);
     assert.equal(models.find((model) => model.id === "a-vendor/alpha").recommended, false);
     assert.equal(models.some((model) => model.id === "acme/image-only"), false);
-    assert.equal(loaded.module.openRouterModelLabel(models[1]), "Recommended · Claude Sonnet 4.6");
-    assert.equal(loaded.module.DEFAULT_OPENROUTER_MODEL, "x-ai/grok-4.6");
-    assert.equal(loaded.module.DEFAULT_OPENROUTER_COMPUTER_MODEL, "anthropic/claude-sonnet-4.6");
+    assert.equal(loaded.module.openRouterModelLabel(models[1]), "Recommended · Grok 4.6");
+    assert.equal(loaded.module.DEFAULT_OPENROUTER_MODEL, "google/gemini-3.7-flash");
+    assert.equal(loaded.module.DEFAULT_OPENROUTER_COMPUTER_MODEL, "anthropic/claude-haiku-4.5");
     assert.equal(loaded.module.DEFAULT_OPENROUTER_SUMMARIZE_MODEL, "google/gemini-2.5-flash");
-    assert.equal(loaded.module.resolveOpenRouterModel(undefined, ""), "x-ai/grok-4.6");
+    assert.equal(loaded.module.resolveOpenRouterModel(undefined, ""), "google/gemini-3.7-flash");
     assert.equal(loaded.module.resolveOpenRouterModel("stored/model", " env/model "), "env/model");
-    assert.equal(loaded.module.resolveOpenRouterComputerModel(undefined, "chat/model"), "anthropic/claude-sonnet-4.6");
+    assert.equal(loaded.module.resolveOpenRouterComputerModel(undefined, "chat/model"), "anthropic/claude-haiku-4.5");
     assert.equal(loaded.module.resolveOpenRouterComputerModel("computer/model", "chat/model"), "computer/model");
     assert.equal(loaded.module.resolveOpenRouterComputerModel("stored/computer", "chat/model", " env/computer "), "env/computer");
     assert.equal(loaded.module.resolveOpenRouterSummarizeModel(undefined, "x-ai/grok-4.6"), "x-ai/grok-4.6");
@@ -64,14 +64,14 @@ test("OpenRouter catalog pins recommended models first and keeps the current sel
     assert.equal(loaded.module.openRouterSlotFromSession({ isSummarizationSession: true }), "summarize");
     assert.equal(loaded.module.resolveOpenRouterSlotModel("drive", { think: "think/id", drive: "drive/id", summarize: "sum/id" }), "drive/id");
     assert.deepEqual(loaded.module.RECOMMENDED_OPENROUTER_MODEL_IDS, [
+      "google/gemini-3.7-flash",
+      "anthropic/claude-haiku-4.5",
+      "google/gemini-2.5-flash",
       "x-ai/grok-4.6",
       "anthropic/claude-sonnet-4.6",
-      "google/gemini-2.5-flash",
       "anthropic/claude-opus-4.6",
-      "anthropic/claude-haiku-4.5",
-      "google/gemini-3.7-flash",
     ]);
-    assert.equal(loaded.module.DEFAULT_OPENROUTER_REASONING_EFFORT, "medium");
+    assert.equal(loaded.module.DEFAULT_OPENROUTER_REASONING_EFFORT, "low");
     assert.equal(loaded.module.DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT, "low");
     assert.equal(loaded.module.isOpenRouterReasoningEffort("xhigh"), true);
     assert.equal(loaded.module.isOpenRouterReasoningEffort("max"), false);

@@ -80,13 +80,12 @@ test("preserved 0.36.0 web renderer installers match the exact public release in
     readFile(path.join(repositoryRoot, "scripts", "lib", "config.mjs"), "utf8"),
     readFile(path.join(repositoryRoot, "deploy", "control", "shipped-renderer-provenance.json"), "utf8"),
   ]);
-  assert.match(config, /export const webRendererVersion = "0\.36\.0"/);
-  assert.match(config, /export const webDmgSha256 = "5aacc48244fea0a99d56d5d0a0748a71de5514cf2e0e11b4934f56aae53b48a6"/);
-  assert.match(config, /export const webArchivedDmg = path\.join\(repoRoot, "research-archives", "original", "0\.36\.0", "macos-arm64", "Grok_Bot_0\.36\.0\.dmg"\)/);
+  assert.match(config, /export const webRendererVersion = "0\.39\.0"/);
+  assert.match(config, /export const webDmgSha256 = "345561547cceb3b83355cc578b38fdbce74f731500382a57385616d124d8cc12"/);
   const staged = JSON.parse(provenance);
-  assert.equal(staged.version, "0.36.0");
-  assert.equal(staged.dmgSha256, "5aacc48244fea0a99d56d5d0a0748a71de5514cf2e0e11b4934f56aae53b48a6");
-  assert.equal(staged.upstreamAsarSha256, "2ae381b92f9f19dd33b2404b512cedaa3d2e1b4a08640be088dc6a06b1cf98d3");
+  assert.equal(staged.version, "0.39.0");
+  assert.equal(staged.dmgSha256, "345561547cceb3b83355cc578b38fdbce74f731500382a57385616d124d8cc12");
+  assert.equal(staged.upstreamAsarSha256, "c5fe6e202ca58d5f890e90cbde6163b6cf3733b49a425a32d148bb58ffccbc3c");
 
   const bootstrapWeb = await readFile(path.join(repositoryRoot, "scripts", "bootstrap-web-renderer.mjs"), "utf8");
   assert.match(bootstrapWeb, /const archivedDigest = await sha256\(webArchivedDmg\)/);

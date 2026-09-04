@@ -1,19 +1,19 @@
-export const DEFAULT_OPENROUTER_MODEL = "x-ai/grok-4.6";
-export const DEFAULT_OPENROUTER_COMPUTER_MODEL = "anthropic/claude-sonnet-4.6";
+export const DEFAULT_OPENROUTER_MODEL = "google/gemini-3.7-flash";
+export const DEFAULT_OPENROUTER_COMPUTER_MODEL = "anthropic/claude-haiku-4.5";
 export const DEFAULT_OPENROUTER_SUMMARIZE_MODEL = "google/gemini-2.5-flash";
-export const DEFAULT_OPENROUTER_REASONING_EFFORT = "medium";
+export const DEFAULT_OPENROUTER_REASONING_EFFORT = "low";
 export const DEFAULT_OPENROUTER_COMPUTER_REASONING_EFFORT = "low";
 export const OPENROUTER_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
 export type OpenRouterReasoningEffort = (typeof OPENROUTER_REASONING_EFFORTS)[number];
 export const OPENROUTER_SLOTS = ["think", "drive", "summarize"] as const;
 export type OpenRouterSlot = (typeof OPENROUTER_SLOTS)[number];
 export const RECOMMENDED_OPENROUTER_MODEL_IDS = [
+  "google/gemini-3.7-flash",
+  "anthropic/claude-haiku-4.5",
+  "google/gemini-2.5-flash",
   "x-ai/grok-4.6",
   "anthropic/claude-sonnet-4.6",
-  "google/gemini-2.5-flash",
   "anthropic/claude-opus-4.6",
-  "anthropic/claude-haiku-4.5",
-  "google/gemini-3.7-flash",
 ] as const;
 export const OPENROUTER_SLOT_PRESETS = {
   high: {
@@ -25,7 +25,7 @@ export const OPENROUTER_SLOT_PRESETS = {
   },
   med: {
     model: "x-ai/grok-4.6",
-    computerModel: "anthropic/claude-sonnet-4.6",
+    computerModel: "anthropic/claude-haiku-4.5",
     summarizeModel: "google/gemini-2.5-flash",
     reasoningEffort: "medium",
     computerReasoningEffort: "low",
@@ -33,7 +33,7 @@ export const OPENROUTER_SLOT_PRESETS = {
   low: {
     model: "google/gemini-3.7-flash",
     computerModel: "anthropic/claude-haiku-4.5",
-    summarizeModel: "qwen/qwen3.8-flash",
+    summarizeModel: "google/gemini-2.5-flash",
     reasoningEffort: "low",
     computerReasoningEffort: "low",
   },

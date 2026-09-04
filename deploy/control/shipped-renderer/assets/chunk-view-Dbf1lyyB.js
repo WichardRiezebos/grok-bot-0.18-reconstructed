@@ -1,1 +1,0 @@
-import{c as n,a8 as p,j as l,r as c}from"./index-Dl1Aho6j.js";function i(o){const e=n.c(6),{params:t}=o,{renderImport:a}=p(),m=t.shareId;let r;e[0]!==t.shareId||e[1]!==a?(r=a(t.shareId),e[0]=t.shareId,e[1]=a,e[2]=r):r=e[2];let s;return e[3]!==t.shareId||e[4]!==r?(s=l.jsx(c.Fragment,{children:r},m),e[3]=t.shareId,e[4]=r,e[5]=s):s=e[5],s}export{i as default};

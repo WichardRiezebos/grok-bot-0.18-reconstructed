@@ -48,11 +48,11 @@ export const dmgSha256 = "a253ccd8aab01e083f9812a0264354c5034d8ba7f0610bbb557e82
 export const upstreamAsarSha256 = "6665408168466f9cacc6087e917890c17f59d2e2e9c2404a5c4a59ad79c1de58";
 
 // Web/Dokploy renderer provenance (independent of the desktop 0.18.0 pins).
-export const webRendererVersion = "0.36.0";
-export const webDmgUrl = "https://downloads.cursor.com/grokbot/stable/darwin-arm64/0.36.0/Grok_Bot_0.36.0.dmg";
-export const webDmgSha256 = "5aacc48244fea0a99d56d5d0a0748a71de5514cf2e0e11b4934f56aae53b48a6";
-export const webUpstreamAsarSha256 = "2ae381b92f9f19dd33b2404b512cedaa3d2e1b4a08640be088dc6a06b1cf98d3";
-export const webCachedDmg = path.join(cacheDir, "downloads", "Grok_Bot_0.36.0.dmg");
-export const webArchivedDmg = path.join(repoRoot, "research-archives", "original", "0.36.0", "macos-arm64", "Grok_Bot_0.36.0.dmg");
+export const webRendererVersion = "0.39.0";
+export const webDmgUrl = "https://downloads.cursor.com/grokbot/stable/darwin-arm64/0.39.0/Grok_Bot_0.39.0.dmg";
+export const webDmgSha256 = "345561547cceb3b83355cc578b38fdbce74f731500382a57385616d124d8cc12";
+export const webUpstreamAsarSha256 = "c5fe6e202ca58d5f890e90cbde6163b6cf3733b49a425a32d148bb58ffccbc3c";
+export const webCachedDmg = path.join(cacheDir, "downloads", "Grok_Bot_0.39.0.dmg");
+export const webArchivedDmg = path.join(repoRoot, "research-archives", "original", "0.39.0", "macos-arm64", "Grok_Bot_0.39.0.dmg");
 export const webShippedRendererDir = path.join(repoRoot, "deploy", "control", "shipped-renderer");
 export const webShippedRendererProvenance = path.join(repoRoot, "deploy", "control", "shipped-renderer-provenance.json");

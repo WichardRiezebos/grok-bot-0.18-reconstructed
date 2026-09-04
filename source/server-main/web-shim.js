@@ -36,6 +36,7 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
 .sand-virtual-transcript__inset:empty,
 .sand-message-prose:empty,
 .sand-message:empty { display: none !important; }
+[data-testid="sand-prompt-session-strip"] button[type="button"] { display: none !important; }
 `;
   const chrome = document.createElement("style");
   chrome.dataset.testid = "grok-bot-chrome";
@@ -135,18 +136,23 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
       if (rfb != null) {
         try {
           if (typeof rfb.scaleViewport === "boolean") rfb.scaleViewport = rfb.scaleViewport;
-          rfb.focus?.();
         } catch {}
         return;
       }
     } catch {}
+    if (iframeLooksConnected(iframe)) return;
     const src = iframe.getAttribute("src") || "";
     if (src.length === 0 || iframe.dataset.grokBotVncRefreshing === "1") return;
     iframe.dataset.grokBotVncRefreshing = "1";
+    const active = document.activeElement;
+    const restore = active != null && typeof active.focus === "function" ? active : null;
     const stripped = src.replace(/([?&])grokBotFb=\d+/g, "$1").replace(/[?&]$/, "");
     const join = stripped.includes("?") ? "&" : "?";
     iframe.setAttribute("src", `${stripped}${join}grokBotFb=${Date.now()}`);
-    iframe.addEventListener("load", () => { delete iframe.dataset.grokBotVncRefreshing; }, { once: true });
+    iframe.addEventListener("load", () => {
+      delete iframe.dataset.grokBotVncRefreshing;
+      restore?.focus({ preventScroll: true });
+    }, { once: true });
   }
 
   function attachVncVisibility(el, iframe) {
@@ -635,7 +641,8 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     "setLocalToolPermission", "recordLocalToolApproval", "clearLocalToolApprovals", "getSidebarCollapsed", "setSidebarCollapsed",
     "pickAvatarSource", "pickAvatarFile", "generateAgentAvatarImage", "resolveAttachmentMedia", "readAttachmentText",
     "readAttachmentBytes", "stageAttachmentBytes", "downloadAttachment", "commitStagedAttachments", "discardStagedAttachment",
-    "forceRecreateComputer", "updateComputer", "forceReconnectGateway", "getExperimentsSnapshot", "applyFeatureFlagOverride",
+    "forceRecreateComputer", "updateComputer", "getComputerUpgradeSchedule", "scheduleComputerUpgrade",
+    "rescheduleComputerUpgrade", "cancelComputerUpgrade", "forceReconnectGateway", "getExperimentsSnapshot", "applyFeatureFlagOverride",
     "refreshFeatureFlags", "startRpcTraceWindow", "getAgentDefaultModel", "setAgentDefaultModel", "getComputerUseModel",
     "setComputerUseModel", "getHostPinnedAgents", "setHostPinnedAgents", "getHostSidebarSections", "setHostSidebarSections",
     "getAvailableModels", "getInferenceRouter", "setInferenceRouter", "listOpenRouterModels", "getBoxRuntime", "setBoxRuntime",
@@ -825,6 +832,13 @@ webview { display: block !important; width: 100% !important; height: 100% !impor
     foreverBox: {
       forceRecreate: () => edge.forceRecreateComputer(),
       update: (id, force = false) => edge.updateComputer({ id, force }),
+      subscribeComputerActions: (listener) => edge.subscribe({ "computer-actions": listener }),
+      upgradeSchedule: {
+        get: () => edge.getComputerUpgradeSchedule(),
+        schedule: (args) => edge.scheduleComputerUpgrade(args),
+        reschedule: (args) => edge.rescheduleComputerUpgrade(args),
+        cancel: (args) => edge.cancelComputerUpgrade(args),
+      },
       onVncUserPresence: (listener) => edge.subscribe({ "vnc-user-presence": ({ isPresent }) => listener(isPresent) }),
       onDevBoxPullProgress: (listener) => edge.subscribe({ "dev-box-pull-progress": listener }),
       onUpdateDispatched: (listener) => edge.subscribe({ "update-computer-dispatched": listener }),

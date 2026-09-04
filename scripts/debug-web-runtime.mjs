@@ -66,7 +66,6 @@ if (!existsSync(settingsPath)) {
     settingsMigrations: [],
     inferenceProvider: "openrouter",
     openRouterModel: FAST_DEBUG_MODEL,
-    openRouterComputerModel: FAST_DEBUG_MODEL,
     boxAutoSuspendIdleMs: 1800000,
   }, null, 2));
   process.stdout.write(`[fast-debug] seeded settings.json (model ${FAST_DEBUG_MODEL})\n`);

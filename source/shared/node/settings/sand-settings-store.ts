@@ -20,8 +20,9 @@ export const SETTINGS_VERSION = 1;
 export const SAND_DOWNGRADE_MAX_FAST_MIGRATION_ID = "downgrade-persisted-max-fast";
 export const SAND_DROP_QWEN_COMPUTER_MODEL_MIGRATION_ID = "drop-qwen-computer-model";
 export const SAND_LOCAL_OPENROUTER_MIGRATION_ID = "local-openrouter-only";
+export const SAND_FAST_RELIABLE_TRIO_MIGRATION_ID = "fast-reliable-router-trio";
 export const LEGACY_OPENROUTER_COMPUTER_MODEL = "qwen/qwen3.7-flash";
-export const SAND_SETTINGS_MIGRATION_IDS = [SAND_DOWNGRADE_MAX_FAST_MIGRATION_ID, SAND_DROP_QWEN_COMPUTER_MODEL_MIGRATION_ID, SAND_LOCAL_OPENROUTER_MIGRATION_ID] as const;
+export const SAND_SETTINGS_MIGRATION_IDS = [SAND_DOWNGRADE_MAX_FAST_MIGRATION_ID, SAND_DROP_QWEN_COMPUTER_MODEL_MIGRATION_ID, SAND_LOCAL_OPENROUTER_MIGRATION_ID, SAND_FAST_RELIABLE_TRIO_MIGRATION_ID] as const;
 
 export function coerceInferenceProviderToOpenRouter(provider: SandInferenceProvider | undefined): "openrouter" {
   return provider === "openrouter" ? "openrouter" : "openrouter";
@@ -161,6 +162,21 @@ export class SandSettingsStore {
         inferenceProvider: "openrouter",
         boxRuntime: "local-docker",
         settingsMigrations: [...next.settingsMigrations, SAND_LOCAL_OPENROUTER_MIGRATION_ID],
+      };
+      changed = true;
+    }
+    if (!next.settingsMigrations.includes(SAND_FAST_RELIABLE_TRIO_MIGRATION_ID)) {
+      // The glm/qwen router picks were slow and outside pi-ai's catalog; move
+      // stored settings that still carry them to the fast/reliable defaults so
+      // the Router panel stays truthful after the redeploy.
+      const hadLegacyTrio = next.openRouterModel === "z-ai/glm-5.3-flash"
+        && next.openRouterComputerModel === "qwen/qwen3.8-flash";
+      next = {
+        ...next,
+        ...(hadLegacyTrio
+          ? { openRouterModel: "google/gemini-3.7-flash", openRouterComputerModel: "anthropic/claude-haiku-4.5", openRouterSummarizeModel: "google/gemini-2.5-flash", openRouterReasoningEffort: "low" as const }
+          : {}),
+        settingsMigrations: [...next.settingsMigrations, SAND_FAST_RELIABLE_TRIO_MIGRATION_ID],
       };
       changed = true;
     }

@@ -216,10 +216,10 @@ export function createRpcDispatcher(options: {
     setWebauthnProxyEnabled: () => stub("setWebauthnProxyEnabled"),
     getUpdateStatus: () => ({
       state: { type: "disabled", reason: "disabled-by-env" },
-      // The web/Dokploy runtime pairs the pinned 0.36.0 shipped renderer with
+      // The web/Dokploy runtime pairs the pinned 0.39.0 shipped renderer with
       // this reconstruction host; keep the displayed version in sync with
       // webRendererVersion in scripts/lib/config.mjs.
-      currentVersion: `${process.env.SAND_WEB_DISPLAY_VERSION ?? "0.36.0"}-reconstructed.1`,
+      currentVersion: `${process.env.SAND_WEB_DISPLAY_VERSION ?? "0.39.0"}-reconstructed.1`,
       currentTrack: "stable",
       trackOverride: null,
       buildDefaultTrack: "stable",
@@ -291,6 +291,10 @@ export function createRpcDispatcher(options: {
       }
       return { status: "dev-fallback-finished" };
     },
+    getComputerUpgradeSchedule: () => ({ schedule: null }),
+    scheduleComputerUpgrade: () => ({ schedule: null }),
+    rescheduleComputerUpgrade: () => ({ schedule: null }),
+    cancelComputerUpgrade: () => ({ schedule: null }),
     forceReconnectGateway: () => { options.restartCoordinator(); return null; },
     getExperimentsSnapshot: () => ({ flags: {}, runtime: "docker" }),
     applyFeatureFlagOverride: () => stub("applyFeatureFlagOverride"),
