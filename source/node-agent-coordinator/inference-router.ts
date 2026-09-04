@@ -91,6 +91,7 @@ type StoredEntry = {
   readonly author?: AgentRef;
   readonly fromUser?: { readonly name?: string };
   readonly images?: readonly RoutedAgentImage[];
+  readonly widget?: { readonly type: "auto-review-approval"; readonly approval: Record<string, unknown> };
 };
 type Store = { readonly schemaVersion: 2; readonly agents: Readonly<Record<string, readonly StoredEntry[]>> };
 
@@ -346,6 +347,15 @@ export function overlayRoutedRosterLastEntry(
 }
 
 export function projectInferenceRouterTranscriptEntry(entry: StoredEntry): Record<string, unknown> {
+  if (entry.widget != null) {
+    return {
+      kind: "send-message",
+      id: entry.id,
+      message: entry.widget,
+      timestampMs: entry.timestampMs,
+      ...(entry.reactions === undefined ? {} : { reactions: entry.reactions }),
+    };
+  }
   return entry.role === "user"
     ? {
         kind: "message",
@@ -493,6 +503,54 @@ export function createCoordinatorInferenceRouter(options: {
       await mkdir(dirname(automationRunsPath), { recursive: true });
       await writeFile(automationRunsPath, `${JSON.stringify({ schemaVersion: 1, automations: { ...runs, [automationId]: next.slice(-25) } }, null, 2)}\n`, { mode: 0o600 });
     } catch {}
+  };
+  // Auto-review gate for routed computer/browser tools: the box's runner owns
+  // approvals in the desktop product, but routed turns never reach it, so the
+  // router enforces the rules and parks the tool call on an approval widget
+  // the shipped renderer already knows how to render and resolve.
+  const pendingToolApprovals = new Map<string, {
+    resolve: (approved: boolean) => void;
+    agentId: string;
+    entryId: string;
+    toolName: string;
+  }>();
+  const alwaysAllowedTools = new Set<string>();
+  const updateStoredEntry = async (agentId: string, id: string, patch: (entry: StoredEntry) => StoredEntry): Promise<void> => {
+    await withStore(async () => {
+      const current = await load();
+      const entries = current.agents[agentId] ?? [];
+      await persist({ ...current, agents: { ...current.agents, [agentId]: entries.map(entry => entry.id === id ? patch(entry) : entry) } });
+      return current;
+    });
+  };
+  const settleApprovalEntry = async (agentId: string, entryId: string, status: string): Promise<void> => {
+    await updateStoredEntry(agentId, entryId, entry => {
+      if (entry.widget?.type !== "auto-review-approval") return entry;
+      return { ...entry, widget: { ...entry.widget, approval: { ...entry.widget.approval, status } } };
+    });
+    const current = await load();
+    const stored = (current.agents[agentId] ?? []).find(entry => entry.id === entryId);
+    if (stored != null) emitTranscript(agentId, "updated", projectInferenceRouterTranscriptEntry(stored));
+  };
+  const resolvePendingToolApproval = async (requestId: string, resolution: string): Promise<boolean> => {
+    const pending = pendingToolApprovals.get(requestId);
+    if (pending == null) return false;
+    pendingToolApprovals.delete(requestId);
+    const approved = resolution === "approved";
+    if (approved) alwaysAllowedTools.add(pending.toolName);
+    // Settle the card before waking the tool call so later transcript reads
+    // never observe a stale pending status.
+    await settleApprovalEntry(pending.agentId, pending.entryId, approved ? "allowed" : "denied");
+    pending.resolve(approved);
+    return true;
+  };
+  const expirePendingToolApproval = (requestId: string): boolean => {
+    const pending = pendingToolApprovals.get(requestId);
+    if (pending == null) return false;
+    pendingToolApprovals.delete(requestId);
+    pending.resolve(false);
+    void settleApprovalEntry(pending.agentId, pending.entryId, "expired");
+    return true;
   };
   const overlayAgents = (payload: unknown): unknown => overlayCoordinatorRosterEvent(payload, snapshot, stampLiveTurnState);
   const append = async (agentId: string, entries: readonly StoredEntry[]): Promise<Store> => withStore(async () => {
@@ -813,6 +871,7 @@ export function createCoordinatorInferenceRouter(options: {
       turnActivity.reveal({ composing: false, activity: { kind: "tool", tool, callId: "progress" } });
     };
     let screenshotStreak = 0;
+    let approvalSequence = 0;
     let boxHandedOff = false;
     const loadRoster = async () => {
       const remote = await dispatchRemote("listAgents", {});
@@ -988,6 +1047,56 @@ export function createCoordinatorInferenceRouter(options: {
         if (screenshotStreak >= ROUTED_COMPUTER_SCREENSHOT_LOOP_LIMIT) {
           log(`tool-stop screenshot-loop ${screenshotStreak}`);
           return routedComputerMcpResult({ text: computerScreenshotLoopMessage(), isError: true });
+        }
+        // Auto-review gate: the box's enforcement defaults to shadow (observe
+        // only) until rules exist, so no rules → allow. Block rules deny,
+        // allow rules permit, conflicting rules park the action on an approval
+        // widget; prior "approved" decisions remember the tool for the session.
+        const autoReview = settings.getAutoReviewInstructions();
+        const hasBlockRules = autoReview.blockInstructions.length > 0;
+        const hasAllowRules = autoReview.allowInstructions.length > 0;
+        let gate: "allow" | "deny" | "ask" = "allow";
+        if (autoReview.isEnabled) {
+          if (hasBlockRules && !hasAllowRules) gate = "deny";
+          else if (hasAllowRules && !hasBlockRules) gate = "allow";
+          else if (hasBlockRules && hasAllowRules) gate = "ask";
+          else if (alwaysAllowedTools.has(name)) gate = "allow";
+          else gate = "allow";
+        }
+        if (gate === "deny") {
+          log(`tool-deny auto-review ${name}`);
+          return routedComputerMcpResult({ text: "That action is blocked by your Auto-review rules, so it was not run.", isError: true });
+        }
+        if (gate === "ask") {
+          const requestId = randomUUID();
+          const approvalId = `t${turn}ar${approvalSequence += 1}`;
+          const summary = `Use the computer (${name})`;
+          const approval = { requestId, surface: "computer", summary, reason: "Auto-review asks before this action.", status: "pending" };
+          const widgetEntry = {
+            kind: "send-message",
+            id: approvalId,
+            message: { type: "auto-review-approval", approval },
+            timestampMs: now(),
+          };
+          await append(agentId, [{
+            provider,
+            role: "assistant",
+            content: summary,
+            id: approvalId,
+            widget: { type: "auto-review-approval", approval },
+            timestampMs: now(),
+          }]);
+          emitTranscript(agentId, "appended", widgetEntry);
+          log(`tool-approval requested ${name} ${requestId}`);
+          const approved = await new Promise<boolean>(resolve => {
+            pendingToolApprovals.set(requestId, { resolve, agentId, entryId: approvalId, toolName: name });
+            setTimeout(() => { if (pendingToolApprovals.get(requestId) != null) expirePendingToolApproval(requestId); }, 600_000).unref?.();
+          });
+          if (!approved) {
+            log(`tool-deny approval ${name} ${requestId}`);
+            return routedComputerMcpResult({ text: "That action was not approved, so it was not run.", isError: true });
+          }
+          log(`tool-approval granted ${name} ${requestId}`);
         }
       } else {
         screenshotStreak = 0;
@@ -1346,6 +1455,21 @@ export function createCoordinatorInferenceRouter(options: {
     provider(): SandInferenceProvider { return settings.getInferenceProvider(); },
     async dispatch(method: string, args: unknown): Promise<{ handled: boolean; value?: unknown }> {
       const provider = settings.getInferenceProvider();
+      if (method === "resolveAutoReviewApproval") {
+        // Routed-turn approval cards are settled here (the box runner is
+        // bypassed on this path).
+        const record = asRecord(args) ?? {};
+        const requestId = typeof record.requestId === "string" ? record.requestId : "";
+        const resolution = typeof record.resolution === "string" ? record.resolution : "";
+        const resolved = requestId.length > 0 ? await resolvePendingToolApproval(requestId, resolution) : false;
+        return { handled: true, value: resolved };
+      }
+      if (method === "expireAutoReviewApprovals" || method === "dismissWidget") {
+        const record = asRecord(args) ?? {};
+        const requestId = typeof record.requestId === "string" ? record.requestId : "";
+        if (requestId.length > 0) expirePendingToolApproval(requestId);
+        return { handled: true, value: null };
+      }
       if (method === "resolveAgentCreation") {
         // The 0.36 renderer resolves a creation route before createAgent; the
         // reconstruction always creates agents locally on the box.
